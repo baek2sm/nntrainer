@@ -222,7 +222,10 @@ if get_option('reduce-tolerance')
   extra_defines += '-DREDUCE_TOLERANCE=1'
 endif
 
-if get_option('platform') != 'windows'
+if get_option('platform') == 'windows'
+  libm_dep = dependency('m', required : false)
+  libdl_dep = dependency('dl', required : false)
+else
   libm_dep = cxx.find_library('m') # cmath library
   libdl_dep = cxx.find_library('dl') # DL library
 endif
@@ -235,20 +238,9 @@ if get_option('platform') == 'android'
   run_command(meson.source_root() / 'jni' / 'prepare_iniparser.sh', meson.build_root(), check: true)
   iniparser_root = meson.build_root() / 'iniparser'
   iniparser_dep = found_dummy_dep
-elif get_option('platform') == 'windows'
-  iniparser_dir = include_directories('./iniparser')
-  iniparser_sources = []  
-  subdir('iniparser')
-  iniparser_lib = static_library('iniparser',
-      iniparser_sources,
-      include_directories : iniparser_dir    
-  )
-  iniparser_dep = declare_dependency(link_with: iniparser_lib,
-      include_directories : iniparser_dir
-  )
 endif
 
-if not iniparser_dep.found()
+if not iniparser_dep.found() and get_option('platform') != 'windows'
   message('falling back to find libiniparser library and header files')
   libiniparser_dep = cxx.find_library('iniparser')
   sysroot = run_command(
@@ -353,6 +345,21 @@ message('extra defines are:' + ' '.join(extra_defines))
 foreach defs: extra_defines
   add_project_arguments(defs, language: ['c', 'cpp'])
 endforeach
+
+# Build iniparser on windows
+if get_option('platform') == 'windows'
+  iniparser_dir = include_directories('./iniparser')
+  iniparser_sources = []  
+  subdir('iniparser')
+  iniparser_lib = static_library('iniparser',
+      iniparser_sources,
+      include_directories : iniparser_dir    
+  )
+  iniparser_dep = declare_dependency(link_with: iniparser_lib,
+      include_directories : iniparser_dir
+  )
+endif
+
 
 # Build nntrainer
 subdir('nntrainer')
