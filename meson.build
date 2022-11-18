@@ -103,13 +103,17 @@ endif
 
 # handle resources
 nntrainer_resdir = meson.build_root() / 'res'
-run_command('mkdir', '-p', nntrainer_resdir)
+if get_option('platform') != 'windows'
+  run_command('mkdir', '-p', nntrainer_resdir)
+endif
 
-if get_option('install-app')
-# add a script to install resources from installs to application_install_dir
-meson.add_install_script(
-  'sh', '-c', 'cp -r @0@ ${DESTDIR}@1@'.format(nntrainer_resdir, application_install_dir)
-)
+if get_option('platform') != 'windows'
+  if get_option('install-app')
+  # add a script to install resources from installs to application_install_dir
+  meson.add_install_script(
+    'sh', '-c', 'cp -r @0@ ${DESTDIR}@1@'.format(nntrainer_resdir, application_install_dir)
+  )
+  endif
 endif
 
 # Set default configuration
@@ -159,6 +163,13 @@ if get_option('enable-blas')
     run_command(meson.source_root() / 'jni' / 'prepare_openblas.sh', meson.build_root(), check: true)
     blas_dep = found_dummy_dep
     blas_root = meson.build_root() / 'openblas'
+  elif get_option('platform') == 'windows'
+    blas_lib = cxx.find_library('libopenblas', dirs: meson.current_source_dir() / 'openblas/lib')
+    blas_dir = include_directories('./openblas/include')
+    blas_dep = declare_dependency(
+        dependencies: blas_lib,
+        include_directories : blas_dir
+    )
   else
     blas_dep = dependency('openblas')
   endif
@@ -211,8 +222,11 @@ if get_option('reduce-tolerance')
   extra_defines += '-DREDUCE_TOLERANCE=1'
 endif
 
-libm_dep = cxx.find_library('m') # cmath library
-libdl_dep = cxx.find_library('dl') # DL library
+if get_option('platform') != 'windows'
+  libm_dep = cxx.find_library('m') # cmath library
+  libdl_dep = cxx.find_library('dl') # DL library
+endif
+
 thread_dep = dependency('threads') # pthread for tensorflow-lite
 
 iniparser_dep = dependency('iniparser', required : false, version : '>=4.1') # iniparser
@@ -221,6 +235,17 @@ if get_option('platform') == 'android'
   run_command(meson.source_root() / 'jni' / 'prepare_iniparser.sh', meson.build_root(), check: true)
   iniparser_root = meson.build_root() / 'iniparser'
   iniparser_dep = found_dummy_dep
+elif get_option('platform') == 'windows'
+  iniparser_dir = include_directories('./iniparser')
+  iniparser_sources = []  
+  subdir('iniparser')
+  iniparser_lib = static_library('iniparser',
+      iniparser_sources,
+      include_directories : iniparser_dir    
+  )
+  iniparser_dep = declare_dependency(link_with: iniparser_lib,
+      include_directories : iniparser_dir
+  )
 endif
 
 if not iniparser_dep.found()
