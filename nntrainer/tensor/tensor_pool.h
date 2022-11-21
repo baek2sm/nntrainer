@@ -48,10 +48,16 @@ public:
    */
   TensorPool(bool enable_swap, const std::string &swap_path = "",
              const std::string &swap_name = "") {
-    if (enable_swap)
+
+#ifdef _WIN32
+  mem_pool = std::make_unique<MemoryPool>();
+#else
+  if (enable_swap)
       mem_pool = std::make_unique<CachePool>(swap_path, swap_name);
     else
       mem_pool = std::make_unique<MemoryPool>();
+#endif
+    
   }
 
   /**

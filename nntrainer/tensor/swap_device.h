@@ -18,114 +18,121 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <system_error>
 #include <unistd.h>
 #include <utility>
 
+/*#ifdef _WIN32
+  #include <mman.h>
+#else
+  #include <sys/mman.h>
+#endif*/
+
 /* Uncomment this to use mmap for swap data */
 //#define USE_MMAP
-
-namespace nntrainer {
-
-/**
- * @class   SwapDevice
- * @brief   A device used to storing data with long access time
- */
-class SwapDevice {
-public:
-  /**
-   * @brief swap device default path
-   *
-   */
-  const std::string swap_device_default_path = ".";
+  #ifndef _WIN32
+  #include <sys/mman.h>
+  namespace nntrainer {
 
   /**
-   * @brief SwapDevice default constructor
-   *
-   */
-  explicit SwapDevice(const std::string &name) :
-    dev_path(swap_device_default_path + name),
-    fd(-1) {}
+  * @class   SwapDevice
+  * @brief   A device used to storing data with long access time
+  */
+  class SwapDevice {
+  public:
+    /**
+    * @brief swap device default path
+    *
+    */
+    const std::string swap_device_default_path = ".";
 
-  /**
-   * @brief SwapDevice default constructor
-   *
-   */
-  explicit SwapDevice(const std::string &path, const std::string &name) :
-    dev_path(path + "/" + name),
-    fd(-1) {}
+    /**
+    * @brief SwapDevice default constructor
+    *
+    */
+    explicit SwapDevice(const std::string &name) :
+      dev_path(swap_device_default_path + name),
+      fd(-1) {}
 
-  /**
-   * @brief SwapDevice destructor
-   *
-   */
-  virtual ~SwapDevice() = default;
+    /**
+    * @brief SwapDevice default constructor
+    *
+    */
+    explicit SwapDevice(const std::string &path, const std::string &name) :
+      dev_path(path + "/" + name),
+      fd(-1) {}
 
-  /**
-   * @brief Start device
-   *
-   * @param size The size of requested swap device space
-   *
-   */
-  void start(size_t size);
+    /**
+    * @brief SwapDevice destructor
+    *
+    */
+    virtual ~SwapDevice() = default;
 
-  /**
-   * @brief Allocate and get data
-   *
-   * @param offset Requested offset of swap device file
-   * @param size Requested size.
-   *
-   * @return The pointer of the swap space
-   *
-   */
-  void *getBuffer(int offset, size_t size);
+    /**
+    * @brief Start device
+    *
+    * @param size The size of requested swap device space
+    *
+    */
+    void start(size_t size);
 
-  /**
-   * @brief Deallocate and put data
-   *
-   * @param ptr The pointer obtained from getBuffer
-   *
-   */
-  void putBuffer(void *ptr);
+    /**
+    * @brief Allocate and get data
+    *
+    * @param offset Requested offset of swap device file
+    * @param size Requested size.
+    *
+    * @return The pointer of the swap space
+    *
+    */
+    void *getBuffer(int offset, size_t size);
 
-  /**
-   * @brief Close device
-   *
-   */
-  void finish();
+    /**
+    * @brief Deallocate and put data
+    *
+    * @param ptr The pointer obtained from getBuffer
+    *
+    */
+    void putBuffer(void *ptr);
 
-  /**
-   * @brief Check device is operating
-   *
-   * @return Device operating status
-   *
-   */
-  bool isOperating() const { return (fd >= 0); }
+    /**
+    * @brief Close device
+    *
+    */
+    void finish();
 
-  /**
-   * @brief Get device path
-   *
-   * @return Device path
-   *
-   */
-  const std::string getDevicePath() const { return dev_path; }
+    /**
+    * @brief Check device is operating
+    *
+    * @return Device operating status
+    *
+    */
+    bool isOperating() const { return (fd >= 0); }
 
-private:
-  const std::string dev_path; /**< device path */
-  int fd;                     /**< device file description */
+    /**
+    * @brief Get device path
+    *
+    * @return Device path
+    *
+    */
+    const std::string getDevicePath() const { return dev_path; }
 
-#ifdef USE_MMAP
-  std::map<void *, std::pair<void *, size_t>>
-    mapped; /**< <pointer, <orig_pointer, size>> */
-#else
-  std::map<void *, std::pair<int, ssize_t>>
-    allocated; /**< <pointer, <offset, size>> */
+  private:
+    const std::string dev_path; /**< device path */
+    int fd;                     /**< device file description */
+
+  #ifdef USE_MMAP
+    std::map<void *, std::pair<void *, size_t>>
+      mapped; /**< <pointer, <orig_pointer, size>> */
+  #else
+    std::map<void *, std::pair<int, ssize_t>>
+      allocated; /**< <pointer, <offset, size>> */
+  #endif
+  };
+
+  } // namespace nntrainer
 #endif
-};
-
-} // namespace nntrainer
 
 #endif /** __SWAP_DEVICE_H__ */

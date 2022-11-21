@@ -411,13 +411,17 @@ bool TensorPool::isTensorLongTerm(const TensorLifespan &lifespan) {
 }
 
 void TensorPool::flushCache() {
+#ifndef _WIN32
   if (auto pool = dynamic_cast<CachePool *>(mem_pool.get()))
     pool->flush();
+#endif
 }
 
 void TensorPool::flushCacheExcept(unsigned int order) {
+#ifndef _WIN32
   if (auto pool = dynamic_cast<CachePool *>(mem_pool.get()))
     pool->flushExcept(order);
+#endif
 }
 
 } // namespace nntrainer

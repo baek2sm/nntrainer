@@ -17,7 +17,10 @@
 #include <lr_scheduler_exponential.h>
 #include <nntrainer_error.h>
 #include <nntrainer_log.h>
-#include <node_exporter.h>
+
+#ifndef _WIN32
+  #include <node_exporter.h>
+#endif
 
 namespace nntrainer {
 
@@ -40,11 +43,13 @@ void ExponentialLearningRateScheduler::setProperty(
   ConstantLearningRateScheduler::setProperty(left);
 }
 
+#ifndef _WIN32
 void ExponentialLearningRateScheduler::exportTo(
   Exporter &exporter, const ml::train::ExportMethods &method) const {
   ConstantLearningRateScheduler::exportTo(exporter, method);
   exporter.saveResult(lr_props, method, this);
 }
+#endif
 
 double ExponentialLearningRateScheduler::getLearningRate(size_t iteration) {
   auto const &lr = ConstantLearningRateScheduler::getLearningRate(iteration);

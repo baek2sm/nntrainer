@@ -1,6 +1,6 @@
 tensor_sources = [
   'blas_interface.cpp',
-  'cache_pool.cpp',
+  # 'cache_pool.cpp',
   'lazy_tensor.cpp',
   'manager.cpp',
   'tensor.cpp',
@@ -9,7 +9,7 @@ tensor_sources = [
   'weight.cpp',
   'basic_planner.cpp',
   'memory_pool.cpp',
-  'swap_device.cpp',
+  # 'swap_device.cpp',
   'tensor_pool.cpp',
   'optimized_v1_planner.cpp'
 ]

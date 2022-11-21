@@ -10,6 +10,10 @@
  * @author Jihoon Lee <jhoon.it.lee@samsung.com>
  * @bug    No known bugs except for NYI items
  */
+
+// edited by SeungBaek
+#define uint unsigned int
+
 #ifndef __COMMON_PROPERTIES_H__
 #define __COMMON_PROPERTIES_H__
 

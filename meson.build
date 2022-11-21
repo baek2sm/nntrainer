@@ -360,6 +360,20 @@ if get_option('platform') == 'windows'
   )
 endif
 
+# Build mman on windows
+if get_option('platform') == 'windows'
+  mman_dir = include_directories('./mman')
+  mman_sources = []  
+  subdir('mman')
+  mman_lib = static_library('mman',
+      mman_sources,
+      include_directories : mman_dir    
+  )
+  mman_dep = declare_dependency(link_with: mman_lib,
+      include_directories : mman_dir
+  )
+endif
+
 
 # Build nntrainer
 subdir('nntrainer')

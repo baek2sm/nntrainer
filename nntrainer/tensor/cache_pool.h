@@ -18,184 +18,186 @@
 #include <mutex>
 
 #include <memory_pool.h>
-#include <swap_device.h>
 
-namespace nntrainer {
+  #ifndef _WIN32
+  #include <swap_device.h>
 
-/**
- * @class   CacheElem
- * @brief   Cache element containing swap address
- */
-class CacheElem {
-public:
-  /**
-   * @brief CacheElem default constructor
-   *
-   */
-  explicit CacheElem(std::shared_ptr<SwapDevice> dev, unsigned int mem_id,
-                     int off, size_t len,
-                     std::shared_ptr<MemoryData<float>> data,
-                     std::vector<unsigned int> order) :
-    device(dev),
-    active(false),
-    id(mem_id),
-    offset(off),
-    length(len),
-    mem_data(data),
-    exe_order(order) {}
+  namespace nntrainer {
 
   /**
-   * @brief CacheElem destructor
-   *
-   */
-  virtual ~CacheElem() {}
+  * @class   CacheElem
+  * @brief   Cache element containing swap address
+  */
+  class CacheElem {
+  public:
+    /**
+    * @brief CacheElem default constructor
+    *
+    */
+    explicit CacheElem(std::shared_ptr<SwapDevice> dev, unsigned int mem_id,
+                      int off, size_t len,
+                      std::shared_ptr<MemoryData<float>> data,
+                      std::vector<unsigned int> order) :
+      device(dev),
+      active(false),
+      id(mem_id),
+      offset(off),
+      length(len),
+      mem_data(data),
+      exe_order(order) {}
+
+    /**
+    * @brief CacheElem destructor
+    *
+    */
+    virtual ~CacheElem() {}
+
+    /**
+    * @brief load data from swap device
+    *
+    */
+    void swapIn();
+
+    /**
+    * @brief unload data to swap device
+    *
+    */
+    void swapOut();
+
+    /**
+    * @brief unload data to swap device
+    *
+    * @return active status
+  ''   */
+    bool isActive() const { return active; }
+
+    /**
+    * @brief get execution orders
+    *
+    * @return execution orders
+    */
+    std::vector<unsigned int> &getExeOrder() { return exe_order; }
+
+    /**
+    * @brief get length of cache element
+    *
+    * @return length of cache element in byte
+    */
+    size_t getLength() const { return length; }
+
+    /**
+    * @brief get id of cache element
+    *
+    * @return cache element id
+    */
+    unsigned int getId() const { return id; }
+
+  private:
+    std::mutex device_mutex;            /**< protect device */
+    std::shared_ptr<SwapDevice> device; /**< swap device */
+    bool active;                        /**< element is loaded */
+    unsigned int id;                    /**< memory id */
+    int offset;                         /**< element offset from swap device */
+    size_t length;                      /**< element size */
+    std::shared_ptr<MemoryData<float>> mem_data; /**< allocated memory data */
+    std::vector<unsigned int> exe_order;         /**< execution order */
+  };
 
   /**
-   * @brief load data from swap device
-   *
-   */
-  void swapIn();
+  * @class   CachePool
+  * @brief   Cache memory with fixed size utilizing swap device
+  */
+  class CachePool : public MemoryPool {
+  public:
+    /**
+    * @brief CachePool default constructor
+    *
+    */
+    explicit CachePool(const std::string &name);
 
-  /**
-   * @brief unload data to swap device
-   *
-   */
-  void swapOut();
+    /**
+    * @brief CachePool constructor with cache path
+    *
+    */
+    explicit CachePool(const std::string &path, const std::string &name);
 
-  /**
-   * @brief unload data to swap device
-   *
-   * @return active status
-''   */
-  bool isActive() const { return active; }
+    /**
+    * @brief MemoryPool destructor
+    *
+    */
+    virtual ~CachePool();
 
-  /**
-   * @brief get execution orders
-   *
-   * @return execution orders
-   */
-  std::vector<unsigned int> &getExeOrder() { return exe_order; }
+    /**
+    * @brief Do the allocation of cache
+    *
+    */
+    virtual void allocate();
 
-  /**
-   * @brief get length of cache element
-   *
-   * @return length of cache element in byte
-   */
-  size_t getLength() const { return length; }
+    /**
+    * @brief Free all the allocated cache
+    *
+    */
+    virtual void deallocate();
 
-  /**
-   * @brief get id of cache element
-   *
-   * @return cache element id
-   */
-  unsigned int getId() const { return id; }
+    /**
+    * @brief Get the allocated cache
+    *
+    * @param id The token received from the requestMemory
+    *
+    * @return The pointer of the cache
+    *
+    * @details This function will throw if called before allocation.
+    */
+    virtual std::shared_ptr<MemoryData<float>> getMemory(unsigned int id);
 
-private:
-  std::mutex device_mutex;            /**< protect device */
-  std::shared_ptr<SwapDevice> device; /**< swap device */
-  bool active;                        /**< element is loaded */
-  unsigned int id;                    /**< memory id */
-  int offset;                         /**< element offset from swap device */
-  size_t length;                      /**< element size */
-  std::shared_ptr<MemoryData<float>> mem_data; /**< allocated memory data */
-  std::vector<unsigned int> exe_order;         /**< execution order */
-};
+    /**
+    * @brief Is the cache pool allocated
+    *
+    * @return true if the memory is allocated, else false
+    */
+    virtual bool isAllocated() const;
 
-/**
- * @class   CachePool
- * @brief   Cache memory with fixed size utilizing swap device
- */
-class CachePool : public MemoryPool {
-public:
-  /**
-   * @brief CachePool default constructor
-   *
-   */
-  explicit CachePool(const std::string &name);
+    /**
+    * @brief Flush cache data to device
+    *
+    */
+    virtual void flush();
 
-  /**
-   * @brief CachePool constructor with cache path
-   *
-   */
-  explicit CachePool(const std::string &path, const std::string &name);
+    /**
+    * @brief Flush cache data to device except given order
+    *
+    * @param order except execution order
+    */
+    virtual void flushExcept(unsigned int order);
 
-  /**
-   * @brief MemoryPool destructor
-   *
-   */
-  virtual ~CachePool();
+    /**
+    * @brief Clear the memory pool
+    *
+    */
+    virtual void clear();
 
-  /**
-   * @brief Do the allocation of cache
-   *
-   */
-  virtual void allocate();
+  protected:
+    /**
+    * @brief validate cache element
+    *
+    * @param cache element id
+    */
+    virtual void validate(unsigned int id);
 
-  /**
-   * @brief Free all the allocated cache
-   *
-   */
-  virtual void deallocate();
+    /**
+    * @brief invalidate cache element
+    *
+    * @param cache element id
+    */
+    virtual void invalidate(unsigned int id);
 
-  /**
-   * @brief Get the allocated cache
-   *
-   * @param id The token received from the requestMemory
-   *
-   * @return The pointer of the cache
-   *
-   * @details This function will throw if called before allocation.
-   */
-  virtual std::shared_ptr<MemoryData<float>> getMemory(unsigned int id);
+    std::shared_ptr<SwapDevice> swap_device; /**< swap device */
+    std::map<unsigned int, std::shared_ptr<CacheElem>>
+      elems; /**< cache elements */
 
-  /**
-   * @brief Is the cache pool allocated
-   *
-   * @return true if the memory is allocated, else false
-   */
-  virtual bool isAllocated() const;
+    std::list<std::shared_ptr<CacheElem>> actives;
+  };
 
-  /**
-   * @brief Flush cache data to device
-   *
-   */
-  virtual void flush();
-
-  /**
-   * @brief Flush cache data to device except given order
-   *
-   * @param order except execution order
-   */
-  virtual void flushExcept(unsigned int order);
-
-  /**
-   * @brief Clear the memory pool
-   *
-   */
-  virtual void clear();
-
-protected:
-  /**
-   * @brief validate cache element
-   *
-   * @param cache element id
-   */
-  virtual void validate(unsigned int id);
-
-  /**
-   * @brief invalidate cache element
-   *
-   * @param cache element id
-   */
-  virtual void invalidate(unsigned int id);
-
-  std::shared_ptr<SwapDevice> swap_device; /**< swap device */
-  std::map<unsigned int, std::shared_ptr<CacheElem>>
-    elems; /**< cache elements */
-
-  std::list<std::shared_ptr<CacheElem>> actives;
-};
-
-} // namespace nntrainer
-
+  } // namespace nntrainer
+  #endif
 #endif /** __CACHE_POOL_H__ */

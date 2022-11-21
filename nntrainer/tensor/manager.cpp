@@ -24,7 +24,6 @@
 #include <functional>
 #include <limits>
 #include <stdexcept>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
@@ -42,6 +41,13 @@
 #include <tensor_wrap_specs.h>
 #include <util_func.h>
 #include <var_grad.h>
+
+#ifdef _WIN32
+  #include <mman.h>
+#else
+  #include <sys/mman.h>
+#endif
+
 
 namespace nntrainer {
 MMapedMemory::MMapedMemory(size_t size, bool allocate_fd_) :

@@ -31,6 +31,29 @@
 #include <stdarg.h>
 #include <stdexcept>
 
+#if !HAVE_TIME_R
+struct tm *gmtime_r(time_t *_clock, struct tm *_result)
+{
+  struct tm *p = gmtime(_clock);
+
+  if (p)
+    *(_result) = *p;
+
+  return p;
+}
+
+struct tm *localtime_r(time_t *_clock, struct tm *_result)
+{
+  struct tm *p = localtime(_clock);
+
+  if (p)
+    *(_result) = *p;
+
+  return p;
+}
+#endif // !HAVE_TIME_R
+
+
 namespace nntrainer {
 
 /**

@@ -30,7 +30,11 @@ nntrainer_base_deps=[
 
 if get_option('platform') == 'tizen'
   nntrainer_base_deps += dependency('dlog')
+elif get_option('platform') == 'windows'
+  nntrainer_base_deps += mman_dep
 endif
+
+
 
 nntrainer_elements = [
   'compiler',

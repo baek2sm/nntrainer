@@ -11,8 +11,12 @@
  * @bug	   No known bugs except for NYI items
  *
  */
+
+#ifndef _WIN32
+  #include <dlfcn.h>
+#endif
+
 #include <dirent.h>
-#include <dlfcn.h>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -393,7 +397,11 @@ void AppContext::setWorkingDirectory(const std::string &base) {
   }
   closedir(dir);
 
+#ifdef _WIN32
+  char *ret = _fullpath(nullptr, base.c_str(), 1024);
+#else
   char *ret = realpath(base.c_str(), nullptr);
+#endif
 
   if (ret == nullptr) {
     std::stringstream ss;
@@ -456,7 +464,7 @@ const std::vector<std::string> AppContext::getProperties(void) {
 
   return properties;
 }
-
+#ifndef _WIN32
 int AppContext::registerLayer(const std::string &library_path,
                               const std::string &base_path) {
   const std::string full_path = getFullPath(library_path, base_path);
@@ -571,6 +579,7 @@ AppContext::registerPluggableFromDirectory(const std::string &base_path) {
 
   return keys;
 }
+#endif
 
 template <typename T>
 const int AppContext::registerFactory(const FactoryType<T> factory,

@@ -16,11 +16,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include <unistd.h>
 
 #include <nntrainer_error.h>
 #include <nntrainer_log.h>
 #include <swap_device.h>
+
+#ifdef _WIN32
+  #define ssize_t int
+#else
+  #include <unistd.h>
+#endif
 
 namespace nntrainer {
 
