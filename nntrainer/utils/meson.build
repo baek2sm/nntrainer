@@ -2,14 +2,14 @@ util_sources = [
   'util_func.cpp',
   'profiler.cpp',
   'ini_wrapper.cpp',
-  # 'node_exporter.cpp',
+  'node_exporter.cpp',
   'base_properties.cpp',
   'nntr_threads.cpp'
 ]
 
 util_headers = [
   'base_properties.h',
-  # 'node_exporter.h',
+  'node_exporter.h',
   'util_func.h',
   'profiler.h',
   'nntr_threads.h'
