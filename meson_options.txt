@@ -1,5 +1,5 @@
 option('platform', type: 'combo', choices: ['none', 'tizen', 'yocto', 'android', 'windows'], value: 'none')
-option('enable-app', type: 'boolean', value: false)
+option('enable-app', type: 'boolean', value: true)
 option('install-app', type: 'boolean', value: false)
 option('use_gym', type: 'boolean', value: false)
 option('enable-capi', type: 'feature', value: 'auto')

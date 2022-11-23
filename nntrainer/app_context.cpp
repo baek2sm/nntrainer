@@ -93,11 +93,19 @@ static std::string layerlib_suffix = "layer.so";
 static std::string optimizerlib_suffix = "optimizer.so";
 static const std::string func_tag = "[AppContext] ";
 
+
+//temp windows path code
+constexpr const char *DEFAULT_CONF_PATH = "C:\\projects\\nt_1117\\build\\nntrainer\\nntrainer.ini";
+
+/*
 #ifdef NNTRAINER_CONF_PATH
 constexpr const char *DEFAULT_CONF_PATH = NNTRAINER_CONF_PATH;
+#elif defined(_WIN32)
+constexpr const char *DEFAULT_CONF_PATH = "./build/nntrainer.ini";
 #else
 constexpr const char *DEFAULT_CONF_PATH = "/etc/nntrainer.ini";
 #endif
+*/
 
 constexpr const char *getConfPath() { return DEFAULT_CONF_PATH; }
 

@@ -398,6 +398,8 @@ endif
 if get_option('enable-app')
   if get_option('platform') == 'android'
     warning('android app is not supported for now, building app skipped')
+  elif get_option('platform') == 'windows'
+    subdir('Applications')
   else
     # this is needed for reinforcement application. We can move this to reinforecement app dependency
     jsoncpp_dep = dependency('jsoncpp') # jsoncpp
