@@ -216,7 +216,13 @@ int main(int argc, char *argv[]) {
 
   // create train and validation data
   std::array<UserDataType, 2> user_datas;
-  user_datas = createFakeDataGenerator(batch_size, data_size, data_split);
+  try {
+    user_datas = createFakeDataGenerator(batch_size, data_size, data_split);
+  } catch (const std::exception &e) {
+    std::cerr << "uncaught error while creating data generator! details: "
+              << e.what() << std::endl;
+    return EXIT_FAILURE;
+  }
   auto &[train_user_data, valid_user_data] = user_datas;
 
   auto dataset_train = ml::train::createDataset(
@@ -224,41 +230,47 @@ int main(int argc, char *argv[]) {
   auto dataset_valid = ml::train::createDataset(
     ml::train::DatasetType::GENERATOR, validData_cb, valid_user_data.get());
 
-  // create YOLO v2 model
-  ModelHandle model = YOLO();
-  model->setProperty({withKey("batch_size", batch_size),
-                      withKey("epochs", epochs),
-                      withKey("save_path", "yolov2.bin")});
+  try {
+    // create YOLO v2 model
+    ModelHandle model = YOLO();
+    model->setProperty({withKey("batch_size", batch_size),
+                        withKey("epochs", epochs),
+                        withKey("save_path", "yolov2.bin")});
 
-  // create optimizer
-  auto optimizer = ml::train::createOptimizer("adam", {"learning_rate=0.001"});
-  model->setOptimizer(std::move(optimizer));
+    // create optimizer
+    auto optimizer = ml::train::createOptimizer("adam", {"learning_rate=0.001"});
+    model->setOptimizer(std::move(optimizer));
 
-  // compile and initialize model
-  model->compile();
-  model->initialize();
+    // compile and initialize model
+    model->compile();
+    model->initialize();
 
-  model->setDataset(ml::train::DatasetModeType::MODE_TRAIN,
-                    std::move(dataset_train));
-  model->setDataset(ml::train::DatasetModeType::MODE_VALID,
-                    std::move(dataset_valid));
+    model->setDataset(ml::train::DatasetModeType::MODE_TRAIN,
+                      std::move(dataset_train));
+    model->setDataset(ml::train::DatasetModeType::MODE_VALID,
+                      std::move(dataset_valid));
 
-  model->summarize(std::cout, ML_TRAIN_SUMMARY_MODEL);
+    model->summarize(std::cout, ML_TRAIN_SUMMARY_MODEL);
 
-  model->load("./best_model.bin");
+    model->load("./best_model.bin");
 
-  // simple inference example
-  std::vector<float *> input_db;
-  std::vector<float *> output_db;
+    // simple inference example
+    std::vector<float *> input_db;
+    std::vector<float *> output_db;
 
-  float input_sample[1 * 3 * 416 * 416];
-  for (int i = 0; i < 1 * 3 * 416 * 416; i++) {
-    input_sample[i] = 1;
+    float input_sample[1 * 3 * 416 * 416];
+    for (int i = 0; i < 1 * 3 * 416 * 416; i++) {
+      input_sample[i] = 1;
+    }
+    input_db.push_back(input_sample);
+
+    auto output = model->inference(1, input_db, output_db);
+  } catch (const std::exception &e) {
+    std::cerr << "uncaught error while running! details: " << e.what()
+              << std::endl;
+    return EXIT_FAILURE;
   }
-  input_db.push_back(input_sample);
-
-  auto output = model->inference(1, input_db, output_db);
-
+  
   // print end time and duration
   auto end = std::chrono::system_clock::now();
   std::chrono::duration<double> elapsed_seconds = end - start;
