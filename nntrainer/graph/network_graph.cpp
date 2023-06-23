@@ -44,6 +44,7 @@
 #include <time_dist.h>
 #include <tracer.h>
 #include <util_func.h>
+#include <iostream>
 
 #define LNODE(x) std::static_pointer_cast<LayerNode>(x)
 
@@ -356,6 +357,19 @@ sharedConstTensors NetworkGraph::forwarding(
     auto &ln = *iter;
     PROFILE_TIME_START(profile_keys.at(ln->getType()));
     forwarding_op(*iter, training);
+    
+    // std::cout << iter->getWeights()[0] << std::endl;
+    if (ln->getTrainable()) {
+      std::cout << ln->getName() << std::endl;
+      std::cout << "weights:" << std::endl;
+      std::cout << *ln->getWeights()[0] << std::endl;
+      std::cout << *(ln->getWeights()[0]+1) << std::endl;
+      std::cout << "bias:" << std::endl;
+      std::cout << *ln->getWeights()[1] << std::endl;
+      std::cout << *(ln->getWeights()[1]+1) << std::endl;
+      std::cout << "output:" << std::endl;
+      std::cout << ln->getOutput(0) << std::endl;
+    }
     PROFILE_TIME_END(profile_keys.at(ln->getType()));
   }
 
