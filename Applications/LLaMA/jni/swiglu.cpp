@@ -59,7 +59,6 @@ void SwiGLULayer::forwarding(nntrainer::RunLayerContext &context,
       }
     }
   }
-
 }
 
 void SwiGLULayer::calcDerivative(nntrainer::RunLayerContext &context) {
