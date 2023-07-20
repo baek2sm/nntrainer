@@ -70,6 +70,182 @@ static std::string withKey(const std::string &key,
   return ss.str();
 }
 
+ModelHandle create_llama() {
+  using ml::train::createLayer;
+
+  ModelHandle model = ml::train::createModel();
+
+  std::vector<LayerHandle> layers;
+
+  std::shared_ptr<ml::train::Layer> wte_input = ml::train::layer::Input(
+    {"name=wte_input",
+     "input_shape=1:1:" + std::to_string(init_input_seq_len)});
+  model->addLayer(wte_input);
+
+  std::shared_ptr<ml::train::Layer> wte = ml::train::layer::Embedding(
+    {"name=wte", "in_dim=" + std::to_string(NUM_VOCAB),
+     "out_dim=" + std::to_string(MODEL_DIM)});
+  model->addLayer(wte);
+
+  std::shared_ptr<ml::train::Layer> wpe_input = ml::train::layer::Input(
+    {"name=wpe_input",
+     "input_shape=1:1:" + std::to_string(init_input_seq_len)});
+  model->addLayer(wpe_input);
+
+  std::shared_ptr<ml::train::Layer> wpe = ml::train::layer::Embedding(
+    {"name=wpe", "in_dim=" + std::to_string(NUM_CTX),
+     "out_dim=" + std::to_string(MODEL_DIM)});
+  model->addLayer(wpe);
+
+  std::shared_ptr<ml::train::Layer> add =
+    ml::train::layer::Addition({"name=add", "input_layers=wte, wpe"});
+  model->addLayer(add);
+
+  for (unsigned int i = 0; i < NUM_LAYERS; ++i) {
+    std::shared_ptr<ml::train::Layer> ln_multiout1 = ml::train::layer::MultiOut(
+      {"name=layer" + std::to_string(i) + "/ln_multiout1"});
+    model->addLayer(ln_multiout1);
+
+    std::shared_ptr<ml::train::Layer> ln1 =
+      ml::train::layer::LayerNormalization(
+        {"name=layer" + std::to_string(i) + "/ln1", "axis=3", "epsilon=1e-5"});
+    model->addLayer(ln1);
+
+    std::shared_ptr<ml::train::Layer> multiout1 = ml::train::layer::MultiOut(
+      {"name=layer" + std::to_string(i) + "/multi_out1"});
+    model->addLayer(multiout1);
+
+    std::string concat_input = "";
+
+    for (unsigned int j = 0; j < NUM_HEADS; ++j) {
+      std::shared_ptr<ml::train::Layer> multi_head_attention_v_fc =
+        ml::train::layer::FullyConnected(
+          {"name=layer" + std::to_string(i) + "/multi_head_attention/v_fc" +
+             std::to_string(NUM_HEADS - 1 - j),
+           "input_layers=layer" + std::to_string(i) + "/multi_out1(" +
+             std::to_string(2 * NUM_HEADS + j) + ")",
+           "unit=" + std::to_string(MODEL_DIM / NUM_HEADS)});
+      model->addLayer(multi_head_attention_v_fc);
+    }
+
+    for (unsigned int j = 0; j < NUM_HEADS; ++j) {
+      std::shared_ptr<ml::train::Layer> multi_head_attention_k_fc =
+        ml::train::layer::FullyConnected(
+          {"name=layer" + std::to_string(i) + "/multi_head_attention/k_fc" +
+             std::to_string(NUM_HEADS - 1 - j),
+           "input_layers=layer" + std::to_string(i) + "/multi_out1(" +
+             std::to_string(NUM_HEADS + j) + ")",
+           "unit=" + std::to_string(MODEL_DIM / NUM_HEADS)});
+      model->addLayer(multi_head_attention_k_fc);
+    }
+
+    for (unsigned int j = 0; j < NUM_HEADS; ++j) {
+      std::shared_ptr<ml::train::Layer> multi_head_attention_q_fc =
+        ml::train::layer::FullyConnected(
+          {"name=layer" + std::to_string(i) + "/multi_head_attention/q_fc" +
+             std::to_string(NUM_HEADS - 1 - j),
+           "input_layers=layer" + std::to_string(i) + "/multi_out1(" +
+             std::to_string(j) + ")",
+           "unit=" + std::to_string(MODEL_DIM / NUM_HEADS)});
+      model->addLayer(multi_head_attention_q_fc);
+    }
+
+    for (unsigned int j = 0; j < NUM_HEADS; ++j) {      
+      std::shared_ptr<ml::train::Layer> multi_head_attention_attention =
+        ml::train::layer::Attention(
+          {"name=layer" + std::to_string(i) +
+              "/multi_head_attention/attention" +
+              std::to_string(NUM_HEADS - 1 - j),
+            "input_layers=layer" + std::to_string(i) +
+              "/multi_head_attention/q_fc" +
+              std::to_string(NUM_HEADS - 1 - j) + ",layer" +
+              std::to_string(i) + "/multi_head_attention/v_fc" +
+              std::to_string(NUM_HEADS - 1 - j) + ",layer" +
+              std::to_string(i) + "/multi_head_attention/k_fc" +
+              std::to_string(NUM_HEADS - 1 - j),
+            "scaled_dot_product=true"});
+      model->addLayer(multi_head_attention_attention);
+      
+
+      concat_input += "layer" + std::to_string(i) +
+                      "/multi_head_attention/attention" + std::to_string(j);
+      if (j != NUM_HEADS - 1) {
+        concat_input += ",";
+      }
+    }
+
+    std::shared_ptr<ml::train::Layer> multi_head_attention_concat =
+      ml::train::layer::Concat(
+        {"name=layer" + std::to_string(i) + "/multi_head_attention/concat",
+         "input_layers=" + concat_input, "axis=3"});
+    model->addLayer(multi_head_attention_concat);
+
+    std::shared_ptr<ml::train::Layer> multi_head_attention_fc =
+      ml::train::layer::FullyConnected(
+        {"name=layer" + std::to_string(i) + "/multi_head_attention/fc",
+         "input_layers=layer" + std::to_string(i) +
+           "/multi_head_attention/concat",
+         "unit=" + std::to_string(MODEL_DIM)});
+    model->addLayer(multi_head_attention_fc);
+
+    std::shared_ptr<ml::train::Layer> multi_head_attention =
+      ml::train::layer::Identity(
+        {"name=layer" + std::to_string(i) + "/multi_head_attention",
+         "input_layers=layer" + std::to_string(i) +
+           "/multi_head_attention/fc"});
+    model->addLayer(multi_head_attention);
+
+    std::shared_ptr<ml::train::Layer> add1 = ml::train::layer::Addition(
+      {"name=layer" + std::to_string(i) + "/add1",
+       "input_layers=layer" + std::to_string(i) + "/ln_multiout1(1), layer" +
+         std::to_string(i) + "/multi_head_attention"});
+    model->addLayer(add1);
+
+    std::shared_ptr<ml::train::Layer> ln_multiout2 = ml::train::layer::MultiOut(
+      {"name=layer" + std::to_string(i) + "/ln_multiout2"});
+    model->addLayer(ln_multiout2);
+
+    std::shared_ptr<ml::train::Layer> ln2 =
+      ml::train::layer::LayerNormalization(
+        {"name=layer" + std::to_string(i) + "/ln2", "axis=3", "epsilon=1e-5"});
+    model->addLayer(ln2);
+
+    std::shared_ptr<ml::train::Layer> multiout3 = ml::train::layer::MultiOut(
+      {"name=layer" + std::to_string(i) + "/multi_out3"});
+    model->addLayer(multiout3);
+
+    std::shared_ptr<ml::train::Layer> fc1 = ml::train::layer::FullyConnected(
+      {"name=layer" + std::to_string(i) + "/fc1",
+       "input_layers=layer" + std::to_string(i) + "/multi_out3(0)",
+       "unit=" + std::to_string(FC_UNIT), "activation=gelu"});
+    model->addLayer(fc1);
+
+    std::shared_ptr<ml::train::Layer> fc2 = ml::train::layer::FullyConnected(
+      {"name=layer" + std::to_string(i) + "/fc2",
+       "unit=" + std::to_string(MODEL_DIM)});
+    model->addLayer(fc2);
+
+    std::shared_ptr<ml::train::Layer> add2 = ml::train::layer::Addition(
+      {"name=layer" + std::to_string(i) + "/add2",
+       "input_layers=layer" + std::to_string(i) + "/ln_multiout2(1), layer" +
+         std::to_string(i) + "/fc2"});
+    model->addLayer(add2);
+  }
+
+  std::shared_ptr<ml::train::Layer> layer_normalization =
+    ml::train::layer::LayerNormalization(
+      {"name=layer_normalization", "axis=3", "epsilon=1e-5"});
+  model->addLayer(layer_normalization);
+
+  model->setOptimizer(
+    ml::train::createOptimizer("sgd", {"learning_rate = 0.1"}));
+  model->setProperty({"input_layers=wte_input, wpe_input"});
+
+  return model;
+}
+
+
+
 ModelHandle create_model() {
   using ml::train::createLayer;
 
