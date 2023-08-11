@@ -85,7 +85,7 @@ void EmbeddingLayer::forwarding(RunLayerContext &context, bool training) {
 
     Tensor batchsliced_hidden = hidden_.getBatchSlice(b, 1);
     for (unsigned int i = 0; i < input_.width(); ++i) {
-      uint embed_idx = ((uint *)(in_data))[i];
+      uint embed_idx = (uint)(in_data)[i];
       if (embed_idx >= in_dim) {
         throw std::invalid_argument("input word index is greater than in_dim");
       }
@@ -142,7 +142,7 @@ void EmbeddingLayer::calcGradient(RunLayerContext &context) {
     float *in_data = input_.getAddress(b * input_.getDim().getFeatureLen());
 
     for (unsigned int i = 0; i < input_.width(); ++i) {
-      uint embed_idx = ((uint *)(in_data))[i];
+      uint embed_idx = (uint)in_data[i];
       // Assume padding is 0 and index always start from 1.
       // If in_data[i] - 1 < 0, then it skips.
       // if (embed_idx == 0)

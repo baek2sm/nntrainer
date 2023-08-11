@@ -34,17 +34,16 @@ using UserDataType = std::unique_ptr<nntrainer::util::DataLoader>;
 
 // Hyper params for LLaMA
 int const DIM = 4096;
-int const NUM_LAYERS = 4;
-int const NUM_HEADS = 32;
+int const NUM_LAYERS = 1;
+int const NUM_HEADS = 1;
 
 int const MULTIPLE_OF = 256;
 
 int const NORM_EPS = 0.00001;
-int const NUM_VOCAB = 32000;
+int const NUM_VOCAB = 2;
 int MAX_SEQ_LEN = 2048;
 
-unsigned int INIT_SEQ_LEN = 2;
-unsigned int total_size = 1;
+unsigned int INIT_SEQ_LEN = 1;
 unsigned int batch_size = 1;
 unsigned int epoch = 1;
 
@@ -98,6 +97,7 @@ std::vector<LayerHandle> createAttentionLayer(const int layer_id, int seq_len, i
     createLayer("fully_connected",
                 {withKey("name", "layer" + std::to_string(layer_id) + "_wq_" + std::to_string(i)),
                 withKey("unit", head_dim),
+                withKey("disable_bias", "true"),
                 withKey("input_layers", query_name)}));
   }
 
@@ -107,6 +107,7 @@ std::vector<LayerHandle> createAttentionLayer(const int layer_id, int seq_len, i
       createLayer("fully_connected",
                   {withKey("name", "layer" + std::to_string(layer_id) + "_wk_" + std::to_string(i)),
                   withKey("unit", head_dim),
+                  withKey("disable_bias", "true"),
                   withKey("input_layers", key_name)}));
   }
 
@@ -116,6 +117,7 @@ std::vector<LayerHandle> createAttentionLayer(const int layer_id, int seq_len, i
       createLayer("fully_connected",
                   {withKey("name", "layer" + std::to_string(layer_id) + "_wv_" + std::to_string(i)),
                   withKey("unit", head_dim),
+                  withKey("disable_bias", "true"),
                   withKey("input_layers", value_name)}));
   }
 
@@ -176,15 +178,23 @@ std::vector<LayerHandle> createAttentionLayer(const int layer_id, int seq_len, i
   layers.push_back(
     createLayer("concat",
                 {withKey("name", "layer" + std::to_string(layer_id) + "_attention_concat"),
-                withKey("axis", 1),
+                withKey("axis", 2),
                 withKey("input_layers", concat_input)}));
+
+  // reshape for flatten
+  layers.push_back(
+      createLayer("reshape",
+                  {withKey("name", "layer" + std::to_string(layer_id) + "_attention_flatten"),
+                  withKey("target_shape", "1:1:" + std::to_string(n_heads * head_dim)),
+                  withKey("input_layers", "layer" + std::to_string(layer_id) + "_attention_concat")}));
 
   // linear transformation of attention output
   layers.push_back(
     createLayer("fully_connected",
                 {withKey("name", "layer" + std::to_string(layer_id) + "_attention_out"),
                 withKey("unit", head_dim * n_heads),
-                withKey("input_layers", "layer" + std::to_string(layer_id) + "_attention_concat")}));
+                withKey("disable_bias", "true"),
+                withKey("input_layers", "layer" + std::to_string(layer_id) + "_attention_flatten")}));
 
   return layers;
 }
@@ -200,12 +210,14 @@ std::vector<LayerHandle> createFeedForwardLayer(const int layer_id, int dim, int
     createLayer("fully_connected",
                 {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_1"),
                 withKey("unit", hidden_dim),
+                withKey("disable_bias", "true"),
                 withKey("input_layers", input_name)}));
 
   layers.push_back(
     createLayer("fully_connected",
                 {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_2"),
                 withKey("unit", hidden_dim),
+                withKey("disable_bias", "true"),
                 withKey("input_layers", input_name)}));
 
   layers.push_back(
@@ -216,6 +228,7 @@ std::vector<LayerHandle> createFeedForwardLayer(const int layer_id, int dim, int
     createLayer("fully_connected",
                 {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_output"),
                 withKey("unit", dim),
+                withKey("disable_bias", "true"),
                 withKey("input_layers", "layer" + std::to_string(layer_id) + "_ffn_swiglu")}));
 
   return layers;
@@ -250,8 +263,7 @@ std::vector<LayerHandle> createTransformerDecoder(const int layer_id, std::strin
 ModelHandle createLLaMA() {
   using ml::train::createLayer;
 
-  ModelHandle model = ml::train::createModel(ml::train::ModelType::NEURAL_NET,
-                                            {withKey("loss", "mse")});
+  ModelHandle model = ml::train::createModel(ml::train::ModelType::NEURAL_NET);
 
   std::vector<LayerHandle> layers;
 
@@ -259,11 +271,7 @@ ModelHandle createLLaMA() {
     "input", {withKey("name", "input0"), withKey("input_shape", "1:1:" + std::to_string(INIT_SEQ_LEN))}));
 
   layers.push_back(ml::train::layer::Embedding(
-    {"name=embedding0", "in_dim=" + std::to_string(NUM_VOCAB),
-     "out_dim=" + std::to_string(DIM)}));
-
-  // layers.push_back(createLayer(
-  // "embedding", {withKey("name", "embedding0"), withKey("input_layers", "input0"), withKey("in_dim", std::to_string(NUM_VOCAB)), withKey("out_dim", std::to_string(DIM))}));
+    {"name=embedding0", "in_dim=" + std::to_string(NUM_VOCAB), "out_dim=" + std::to_string(DIM)}));
 
   for (int i = 0; i < NUM_LAYERS; i++) {
     std::vector<LayerHandle> transformer;
@@ -276,6 +284,13 @@ ModelHandle createLLaMA() {
 
   layers.push_back(createLayer(
     "rms_norm", {withKey("name", "output_norm"), withKey("input_layers", "layer" + std::to_string(last_layer) + "_decoder_output")}));
+
+  layers.push_back(
+    createLayer("fully_connected",
+                {withKey("name", "output_of_llama"),
+                withKey("unit", NUM_VOCAB),
+                withKey("disable_bias", "true"),
+                withKey("input_layers", "output_norm")}));
 
   for (auto &layer : layers) {
     model->addLayer(layer);
@@ -314,21 +329,32 @@ void createAndRun(unsigned int epochs, unsigned int batch_size) {
   
   model->summarize(std::cout, ML_TRAIN_SUMMARY_MODEL);
 
+  model->load("/home/seungbaek/hdd/projects/nntrainer/build/Applications/LLaMA/jni/llama_v2.bin");
+
   std::vector<float *> input;
   std::vector<float *> label;
 
-  int const data_size = batch_size * INIT_SEQ_LEN;
+  int data_size = batch_size * INIT_SEQ_LEN;
 
-  float* input_sample = (float *)malloc(sizeof(float) * 2);
+  float* input_sample = (float *)malloc(sizeof(float) * data_size);
 
-  for (int i = 0; i < data_size; i++) {
-    input_sample[i] = 1;
-  }
+  // for (int i = 0; i < 1; i++) {
+  //   input_sample[i] = 1;
+  // }
 
+  input_sample[0] = 1;
+  input_sample[1] = 0;
+  
   input.push_back(input_sample);
 
-  model->inference(1, input, label);
+  auto output = model->inference(1, input, label);
 
+  for (int i = 0; i < (int)10; i++) {
+    std::cout << output[0][i] << " ";
+  }
+
+
+  // model->save("/home/seungbaek/hdd/projects/nntrainer/build/Applications/LLaMA/jni/llama_v2_test.bin");
   // free(input_sample);
 }
 

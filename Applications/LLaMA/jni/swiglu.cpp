@@ -17,7 +17,9 @@
 
 namespace custom {
 
-static constexpr size_t SINGLE_INOUT_IDX = 0;
+static constexpr size_t OUT_IDX = 0;
+static constexpr size_t INPUT_IDX_1 = 0;
+static constexpr size_t INPUT_IDX_2 = 1;
 
 namespace ActivationOp {
 /**
@@ -29,32 +31,21 @@ float swish(float x) { return x / (1 + nntrainer::exp_util(-x)); }
 } // namespace ActivationOp
 
 void SwiGLULayer::finalize(nntrainer::InitLayerContext &context) {
-  std::vector<nntrainer::TensorDim> dim = context.getInputDimensions();
-
-  for (unsigned int i = 0; i < dim.size(); ++i) {
-    if (dim[i].getDataLen() == 0) {
-      throw std::invalid_argument("Input dimension is not set");
-    } else {
-      dim[i].channel(dim[i].channel());
-      dim[i].height(dim[i].height());
-      dim[i].width(dim[i].width());
-    }
-  }
-
-  context.setOutputDimensions(dim);
+  context.setOutputDimensions({context.getInputDimensions()[0]});
 }
 
 void SwiGLULayer::forwarding(nntrainer::RunLayerContext &context,
                              bool training) {
-  nntrainer::Tensor &in = context.getInput(SINGLE_INOUT_IDX);
-  nntrainer::Tensor &out = context.getOutput(SINGLE_INOUT_IDX);
+  nntrainer::Tensor &in1 = context.getInput(INPUT_IDX_1);
+  nntrainer::Tensor &in2 = context.getInput(INPUT_IDX_2);
+  nntrainer::Tensor &out = context.getOutput(OUT_IDX);
 
-  for (int b = 0; b < (int)in.batch(); b++) {
-    for (int c = 0; c < (int)in.channel(); c++) {
-      for (int h = 0; h < (int)in.height(); h++) {
-        for (int w = 0; w < (int)in.width(); w++) {
-          int in_idx = in.batch() * b + in.channel() * c + in.height() * h + w;
-          out.setValue(b, c, h, w, in.getValue(in_idx) * ActivationOp::swish(in.getValue(in_idx)));
+  for (int b = 0; b < (int)in1.batch(); b++) {
+    for (int c = 0; c < (int)in1.channel(); c++) {
+      for (int h = 0; h < (int)in1.height(); h++) {
+        for (int w = 0; w < (int)in1.width(); w++) {
+          out.setValue(b, c, h, w,
+            ActivationOp::swish(in1.getValue(b, c, h, w)) * in2.getValue(b, c, h, w));
         }
       }
     }
@@ -62,7 +53,7 @@ void SwiGLULayer::forwarding(nntrainer::RunLayerContext &context,
 }
 
 void SwiGLULayer::calcDerivative(nntrainer::RunLayerContext &context) {
-  std::throw_with_nested(std::runtime_error("Training is not supported yet."));
+  // std::throw_with_nested(std::runtime_error("Training is not supported yet."));
 }
 
 #ifdef PLUGGABLE

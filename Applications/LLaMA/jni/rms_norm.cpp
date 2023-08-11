@@ -12,6 +12,7 @@
  */
 
 #include <iostream>
+#include <cmath>
 
 #include "rms_norm.h"
 
@@ -35,8 +36,9 @@ void RMSNormLayer::finalize(nntrainer::InitLayerContext &context) {
   context.setOutputDimensions(dim);
 
   auto &rmsparams_gamma = std::get<props::RMS_NORM_GAMMA_INIT>(rms_props);
+    
   wt_idx[RMSParams::gamma] = context.requestWeight(
-    dim[0], rmsparams_gamma, nntrainer::WeightRegularizer::NONE, 1.0f, 0.0f,
+    {1, 1, 1, 4096}, rmsparams_gamma, nntrainer::WeightRegularizer::NONE, 1.0f, 0.0f,
     "gamma", false);
 }
 
@@ -46,13 +48,16 @@ void RMSNormLayer::forwarding(nntrainer::RunLayerContext &context,
   nntrainer::Tensor &out = context.getOutput(SINGLE_INOUT_IDX);
   nntrainer::Tensor &gamma = context.getWeight(wt_idx[RMSParams::gamma]);
 
-  auto t = in.multiply(in).average(3).pow(-1 / 2);
+  std::function<float(float)> f = [](float x) { return 1 / std::sqrt(x); };
+  auto t = in.multiply(in).average(3).add(0.00001);;
+  t.apply_i(f);
+
   in.multiply(t, out);
   out.multiply_i(gamma);
 }
 
 void RMSNormLayer::calcDerivative(nntrainer::RunLayerContext &context) {
-  std::throw_with_nested(std::runtime_error("Training is not supported yet."));
+  //std::throw_with_nested(std::runtime_error("Training is not supported yet."));
 }
 
 #ifdef PLUGGABLE

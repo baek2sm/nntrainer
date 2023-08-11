@@ -88,7 +88,7 @@ void RotaryEmbeddingLayer::forwarding(nntrainer::RunLayerContext &context,
 }
 
 void RotaryEmbeddingLayer::calcDerivative(nntrainer::RunLayerContext &context) {
-  std::throw_with_nested(std::runtime_error("Training is not supported yet."));
+  // std::throw_with_nested(std::runtime_error("Training is not supported yet."));
 }
 
 #ifdef PLUGGABLE
