@@ -34,8 +34,8 @@ using UserDataType = std::unique_ptr<nntrainer::util::DataLoader>;
 
 // Hyper params for LLaMA
 int const DIM = 4096;
-int const NUM_LAYERS = 1;
-int const NUM_HEADS = 1;
+int const NUM_LAYERS = 2;
+int const NUM_HEADS = 2;
 
 int const MULTIPLE_OF = 256;
 
