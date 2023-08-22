@@ -34,8 +34,8 @@ using UserDataType = std::unique_ptr<nntrainer::util::DataLoader>;
 
 // Hyper params for LLaMA
 int const DIM = 4096;
-int const NUM_LAYERS = 2;
-int const NUM_HEADS = 2;
+int const NUM_LAYERS = 1;
+int const NUM_HEADS = 1;
 
 int const MULTIPLE_OF = 256;
 
@@ -43,7 +43,7 @@ int const NORM_EPS = 0.00001;
 int const NUM_VOCAB = 2;
 int MAX_SEQ_LEN = 2048;
 
-unsigned int INIT_SEQ_LEN = 1;
+unsigned int INIT_SEQ_LEN = 2;
 unsigned int batch_size = 1;
 unsigned int epoch = 1;
 
@@ -158,7 +158,8 @@ std::vector<LayerHandle> createAttentionLayer(const int layer_id, int seq_len, i
     layers.push_back(
       ml::train::layer::Attention(
         {"name=layer" + std::to_string(layer_id) + "_attention_" + std::to_string(i),
-          "input_layers=layer" + std::to_string(layer_id) + "_q_rotary_" + std::to_string(i) + ",layer" + std::to_string(layer_id) + "_v_reshape_" + std::to_string(i) + ",layer" + std::to_string(layer_id) + "_k_rotary_" + std::to_string(i)})
+          "input_layers=layer" + std::to_string(layer_id) + "_q_rotary_" + std::to_string(i) + ",layer" + std::to_string(layer_id) + "_v_reshape_" + std::to_string(i) + ",layer" + std::to_string(layer_id) + "_k_rotary_" + std::to_string(i),
+          "scaled_dot_product=true"})
     );
 
     layers.push_back(
@@ -185,7 +186,7 @@ std::vector<LayerHandle> createAttentionLayer(const int layer_id, int seq_len, i
   layers.push_back(
       createLayer("reshape",
                   {withKey("name", "layer" + std::to_string(layer_id) + "_attention_flatten"),
-                  withKey("target_shape", "1:1:" + std::to_string(n_heads * head_dim)),
+                  withKey("target_shape", "1:" + std::to_string(seq_len) + ":" + std::to_string(n_heads * head_dim)),
                   withKey("input_layers", "layer" + std::to_string(layer_id) + "_attention_concat")}));
 
   // linear transformation of attention output
@@ -268,7 +269,7 @@ ModelHandle createLLaMA() {
   std::vector<LayerHandle> layers;
 
   layers.push_back(createLayer(
-    "input", {withKey("name", "input0"), withKey("input_shape", "1:1:" + std::to_string(INIT_SEQ_LEN))}));
+    "input", {withKey("name", "input0"), withKey("input_shape", "1:" + std::to_string(INIT_SEQ_LEN) + ":" + std::to_string(INIT_SEQ_LEN))}));
 
   layers.push_back(ml::train::layer::Embedding(
     {"name=embedding0", "in_dim=" + std::to_string(NUM_VOCAB), "out_dim=" + std::to_string(DIM)}));
@@ -342,8 +343,8 @@ void createAndRun(unsigned int epochs, unsigned int batch_size) {
   //   input_sample[i] = 1;
   // }
 
-  input_sample[0] = 1;
-  input_sample[1] = 0;
+  input_sample[0] = 0;
+  input_sample[1] = 1;
   
   input.push_back(input_sample);
 

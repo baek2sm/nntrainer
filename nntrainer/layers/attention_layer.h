@@ -16,7 +16,9 @@
 #ifdef __cplusplus
 
 #include <acti_func.h>
+#include <common_properties.h>
 #include <layer_devel.h>
+#include <limits>
 
 namespace nntrainer {
 
@@ -57,6 +59,13 @@ public:
    * @copydoc Layer::forwarding(RunLayerContext &context, bool training)
    */
   void forwarding(RunLayerContext &context, bool training) override;
+
+  /**
+   * @copydoc Layer::incremental_forwarding(RunLayerContext &context, unsigned
+   * int from, unsigned int to, bool training)
+   */
+  void incremental_forwarding(RunLayerContext &context, unsigned int from,
+                              unsigned int to, bool training);
 
   /**
    * @copydoc Layer::calcDerivative(RunLayerContext &context)
@@ -101,6 +110,8 @@ protected:
    * with derived classes as well
    */
   void finalizeCommon(InitLayerContext &context);
+
+  std::tuple<props::ScaledDotProduct, props::CausalMask> attention_props;
 
 private:
   ActiFunc sm;                        /** softmax activation operation */
