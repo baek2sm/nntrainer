@@ -1,3 +1,17 @@
+transpose_src = files('transpose_layer.cpp')
+transpose_layer = shared_library('transpose',
+  transpose_src,
+  dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+  include_directories: include_directories('./'),
+  install: true,
+  install_dir: application_install_dir,
+  cpp_args: '-DPLUGGABLE'
+)
+transpose_dep = declare_dependency(
+  link_with: transpose_layer,
+  include_directories: include_directories('./')
+)
+
 rms_norm_src = files('rms_norm.cpp')
 rms_norm_layer = shared_library('rms_norm',
   rms_norm_src,
@@ -51,6 +65,7 @@ llama_sources = [
 llama_dependencies = [app_utils_dep,
   nntrainer_dep,
   nntrainer_ccapi_dep,
+  transpose_dep,
   rms_norm_dep,
   swiglu_dep,
   rotary_emb_dep

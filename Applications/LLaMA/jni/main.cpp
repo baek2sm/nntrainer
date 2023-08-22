@@ -23,6 +23,7 @@
 #include <cifar_dataloader.h>
 
 #include <app_context.h>
+#include <transpose_layer.h>
 #include <rms_norm.h>
 #include <swiglu.h>
 #include <rotary_embedding.h>
@@ -34,8 +35,8 @@ using UserDataType = std::unique_ptr<nntrainer::util::DataLoader>;
 
 // Hyper params for LLaMA
 int const DIM = 4096;
-int const NUM_LAYERS = 1;
-int const NUM_HEADS = 1;
+int const NUM_LAYERS = 2;
+int const NUM_HEADS = 2;
 
 int const MULTIPLE_OF = 256;
 
@@ -179,15 +180,21 @@ std::vector<LayerHandle> createAttentionLayer(const int layer_id, int seq_len, i
   layers.push_back(
     createLayer("concat",
                 {withKey("name", "layer" + std::to_string(layer_id) + "_attention_concat"),
-                withKey("axis", 2),
+                withKey("axis", 1),
                 withKey("input_layers", concat_input)}));
+
+  // transpose attention output
+  layers.push_back(
+    createLayer("transpose",
+                {withKey("name", "layer" + std::to_string(layer_id) + "_attention_transpose"),
+                withKey("input_layers", "layer" + std::to_string(layer_id) + "_attention_concat")}));
 
   // reshape for flatten
   layers.push_back(
       createLayer("reshape",
                   {withKey("name", "layer" + std::to_string(layer_id) + "_attention_flatten"),
                   withKey("target_shape", "1:" + std::to_string(seq_len) + ":" + std::to_string(n_heads * head_dim)),
-                  withKey("input_layers", "layer" + std::to_string(layer_id) + "_attention_concat")}));
+                  withKey("input_layers", "layer" + std::to_string(layer_id) + "_attention_transpose")}));
 
   // linear transformation of attention output
   layers.push_back(
@@ -382,6 +389,15 @@ int main(int argc, char *argv[]) {
   try {
     auto &app_context = nntrainer::AppContext::Global();
     app_context.registerFactory(nntrainer::createLayer<custom::RotaryEmbeddingLayer>);
+  } catch (std::invalid_argument &e) {
+    std::cerr << "failed to register factory, reason: " << e.what()
+              << std::endl;
+    return 1;
+  }
+
+  try {
+    auto &app_context = nntrainer::AppContext::Global();
+    app_context.registerFactory(nntrainer::createLayer<custom::TransposeLayer>);
   } catch (std::invalid_argument &e) {
     std::cerr << "failed to register factory, reason: " << e.what()
               << std::endl;
