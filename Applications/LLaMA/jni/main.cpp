@@ -34,14 +34,14 @@ using ModelHandle = std::unique_ptr<ml::train::Model>;
 using UserDataType = std::unique_ptr<nntrainer::util::DataLoader>;
 
 // Hyper params for LLaMA
-int const DIM = 4096;
-int const NUM_LAYERS = 2;
-int const NUM_HEADS = 2;
+int const DIM = 2304;
+int const NUM_LAYERS = 28;
+int const NUM_HEADS = 18;
 
 int const MULTIPLE_OF = 256;
 
 int const NORM_EPS = 0.00001;
-int const NUM_VOCAB = 2;
+int const NUM_VOCAB = 96000;
 int MAX_SEQ_LEN = 2048;
 
 unsigned int INIT_SEQ_LEN = 2;

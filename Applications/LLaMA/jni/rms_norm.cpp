@@ -38,7 +38,7 @@ void RMSNormLayer::finalize(nntrainer::InitLayerContext &context) {
   auto &rmsparams_gamma = std::get<props::RMS_NORM_GAMMA_INIT>(rms_props);
     
   wt_idx[RMSParams::gamma] = context.requestWeight(
-    {1, 1, 1, 4096}, rmsparams_gamma, nntrainer::WeightRegularizer::NONE, 1.0f, 0.0f,
+    {1, 1, 1, 2304}, rmsparams_gamma, nntrainer::WeightRegularizer::NONE, 1.0f, 0.0f,
     "gamma", false);
 }
 
