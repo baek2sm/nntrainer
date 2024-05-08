@@ -197,7 +197,7 @@ class YoloV2_LOSS(nn.Module):
         _cls_built = torch.zeros((hw, num_anchors, self.num_classes))
         _cls_mask = torch.zeros((hw, num_anchors, 1))
                         
-        # find best anchors
+        # find best anchors      
         _bbox_gt_wh = _bbox_gt.clone()[:, 2:]        
         best_anchors = find_best_ratio(self.anchors, _bbox_gt_wh)
         

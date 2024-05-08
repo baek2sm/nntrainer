@@ -10,48 +10,62 @@
 import glob
 import numpy as np
 import torch
+import re
 from torch.utils.data import Dataset
 from torch.utils.data.dataloader import default_collate
 from PIL import Image
 
+
 ##
 # @brief dataset class for yolo
-# @note Need annotation text files corresponding to the name of the images.    
+# @note Need annotation text files corresponding to the name of the images.
 class YOLODataset(Dataset):
     def __init__(self, img_dir, ann_dir):
         super().__init__()
-        img_list = glob.glob(img_dir)
-        ann_list = glob.glob(ann_dir)
-        img_list.sort(), ann_list.sort()
+        pattern = re.compile("\/(\d+)\.")
 
-        self.length = len(img_list)
+        img_list = glob.glob(img_dir + "*")
+        ann_list = glob.glob(ann_dir + "*")
+
+        img_ids = list(map(lambda x: pattern.search(x).group(1), img_list))
+        ann_ids = list(map(lambda x: pattern.search(x).group(1), ann_list))
+        ids_list = list(set(img_ids) & set(ann_ids))
+
         self.input_images = []
         self.bbox_gt = []
         self.cls_gt = []
 
-        for i in range(len(img_list)):
-            img = np.array(Image.open(img_list[i]).resize((416, 416))) / 255
+        for ids in ids_list:
+            img = (
+                np.array(Image.open(img_dir + ids_list[i] + ".jpg").resize((416, 416)))
+                / 255
+            )
             label_bbox = []
             label_cls = []
-            with open(ann_list[i], 'rt') as f:
+            with open(ann_dir + ids + ".txt", "rt") as f:
                 for line in f.readlines():
                     line = [float(i) for i in line.split()]
                     label_bbox.append(np.array(line[1:], dtype=np.float32) / 416)
                     label_cls.append(int(line[0]))
 
+            if len(label_bbox) == 0:
+                continue
+
             self.input_images.append(img)
             self.bbox_gt.append(label_bbox)
             self.cls_gt.append(label_cls)
 
+        self.length = len(self.input_images)
         self.input_images = np.array(self.input_images)
         self.input_images = torch.FloatTensor(self.input_images).permute((0, 3, 1, 2))
 
     def __len__(self):
         return self.length
-    
+
     def __getitem__(self, idx):
         return self.input_images[idx], self.bbox_gt[idx], self.cls_gt[idx]
-    
+
+
 ##
 # @brief collate db function for yolo
 def collate_db(batch):
