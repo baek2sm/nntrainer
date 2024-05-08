@@ -61,8 +61,9 @@ def find_best_ratio(anchors, bbox):
 # @brief loss class for yolo
 class YoloV2_LOSS(nn.Module):
     """Yolo v2 loss"""
-    def __init__(self, num_classes, img_shape = (416, 416), outsize = (13, 13)):
+    def __init__(self, num_classes, img_shape, device = 'cpu', outsize = (13, 13)):
         super().__init__()
+        self.device = device
         self.num_classes = num_classes
         self.img_shape = img_shape
         self.outsize = outsize
@@ -75,10 +76,10 @@ class YoloV2_LOSS(nn.Module):
             (9.47112, 4.84053),
             (11.2364, 10.0071)]
         )
-                
+
         self.mse = nn.MSELoss()
         self.bbox_loss, self.iou_loss, self.cls_loss = None, None, None
-    
+
     ##
     # @brief function to track gradients of non-leaf varibles.    
     def hook_variable(self, name, var):
@@ -131,8 +132,8 @@ class YoloV2_LOSS(nn.Module):
         @param bbox_pred shape(batch_size, cell_h x cell_w, num_anchors, 4)
         @return bbox_pred shape(batch_size, cell_h x cell_w, num_anchors, 4)    
         """
-        anchor_w = self.anchors[:, 0].contiguous().view(-1, 1)
-        anchor_h = self.anchors[:, 1].contiguous().view(-1, 1)
+        anchor_w = self.anchors[:, 0].contiguous().view(-1, 1).to(self.device)
+        anchor_h = self.anchors[:, 1].contiguous().view(-1, 1).to(self.device)
         bbox_pred_tmp = bbox_pred.clone()
         bbox_pred_tmp[:, :, :, 2:3] = torch.sqrt(bbox_pred[:, :, :, 2:3] * anchor_w)
         bbox_pred_tmp[:, :, :, 3:4] = torch.sqrt(bbox_pred[:, :, :, 3:4] * anchor_h)
@@ -155,7 +156,7 @@ class YoloV2_LOSS(nn.Module):
             _bbox_built, _iou_built, _cls_built,\
                 _bbox_mask, _iou_mask, _cls_mask =\
                     self._make_target_per_sample(
-                        torch.FloatTensor(bbox_pred[i]),
+                        bbox_pred[i],
                         torch.FloatTensor(np.array(bbox_gt[i])),
                         torch.LongTensor(cls_gt[i])
                     )
@@ -174,7 +175,8 @@ class YoloV2_LOSS(nn.Module):
         cls_built = torch.stack(cls_built)
         cls_mask = torch.stack(cls_mask)
                     
-        return bbox_built, iou_built, cls_built, bbox_mask, iou_mask, cls_mask
+        return bbox_built.to(self.device), iou_built.to(self.device), cls_built.to(self.device),\
+              bbox_mask.to(self.device), iou_mask.to(self.device), cls_mask.to(self.device)
         
     def _make_target_per_sample(self, _bbox_pred, _bbox_gt, _cls_gt):
         """
@@ -220,7 +222,8 @@ class YoloV2_LOSS(nn.Module):
         _cls_mask[cell_idx, best_anchors, :] = 1
         
         # set confidence score of gt
-        _iou_built = calculate_iou(_bbox_pred.reshape(-1, 4), _bbox_built.view(-1, 4)).detach()
+        _iou_built = calculate_iou(_bbox_pred.reshape(-1, 4),\
+                                   _bbox_built.view(-1, 4).to(self.device)).detach()
         _iou_built = _iou_built.view(hw, num_anchors, 1)
         _iou_mask[cell_idx, best_anchors, :] = 1
         
