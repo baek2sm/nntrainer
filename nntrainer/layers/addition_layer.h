@@ -49,6 +49,11 @@ public:
   AdditionLayer &operator=(AdditionLayer &&rhs) = default;
 
   /**
+   * @brief    Initialize the layer
+   */
+  void initialize(RunLayerContext &context) { in_place = true; };
+
+  /**
    * @copydoc Layer::finalize(InitLayerContext &context)
    */
   void finalize(InitLayerContext &context) override;

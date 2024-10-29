@@ -246,7 +246,7 @@ public:
    * @details all layers default to out of place execution
    * @note all layers default to out of place execution
    */
-  virtual bool supportInPlace() const { return false; }
+  virtual bool supportInPlace() const { return in_place; }
 
   /**
    * @brief  check if this layer requires label to be passed
@@ -264,6 +264,9 @@ public:
    * @return true if supports backwarding, else false
    */
   virtual bool supportBackwarding() const = 0;
+
+protected:
+  bool in_place = false;
 };
 
 /// @todo Decide where to put and how to implement(#986)

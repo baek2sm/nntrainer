@@ -51,6 +51,8 @@ class Activation;
 class SharedFrom;
 class InputConnection;
 class ClipGradByGlobalNorm;
+class InplaceProp;
+class InPlaceDirectionProp;
 class Packed;
 class LossScaleForMixed;
 } // namespace props
@@ -65,6 +67,15 @@ enum class InPlaceType {
                     ahead of it to be in-place */
   NON_RESTRICTING /**< layer is in-place and does NOT place restriction on the
                     layers ahead of it to be in-place */
+};
+
+/**
+ * @brief Enum class for the various types of inplace modes supported by layer
+ *
+ */
+enum class InPlaceDirection {
+  LEFT,  /**< inplace with left side */
+  RIGHT, /**< inplace with right side */
 };
 
 /**
@@ -385,11 +396,18 @@ public:
   InPlaceType getInPlaceType() const { return inplace_type; }
 
   /**
+   * @brief Get the Inplace Direction property of the layer node
+   *
+   * @return InPlaceDirection direction of the layer node
+   */
+  InPlaceDirection getInPlaceDirection() const { return inplace_dir; }
+
+  /**
    * @brief  check if this layer requires label to be passed
    * @return true if requires a label when training, else false
-   * @note   if requireLabel() == true means, for now, that it is endpoint of a
-   * graph(numOutlayers == 0). label will be fed to the gradient of hidden if
-   * requireLabel is true
+   * @note   if requireLabel() == true means, for now, that it is endpoint of
+   * a graph(numOutlayers == 0). label will be fed to the gradient of hidden
+   * if requireLabel is true
    */
   bool requireLabel() const;
 
@@ -967,10 +985,13 @@ private:
   std::unique_ptr<nntrainer::Layer>
     layer; /**< The actual object in the graph node */
 
+  bool inplace_enabled; /**< store if the current layer is going to operate */
   InPlaceType inplace_type; /**< store if the current layer is going to operate
                                in-place */
-  bool needs_calc_derivative; /**< cache if this layer needs to do
-                                 calcDerivative */
+  InPlaceDirection inplace_dir; /**< store if the current layer is going to
+                                   operate in-place with direction */
+  bool needs_calc_derivative;   /**< cache if this layer needs to
+                                                    do calcDerivative */
   bool needs_calc_gradient; /**< cache if this layer needs to do calcGradient */
 
   std::vector<std::unique_ptr<Connection>>

@@ -125,6 +125,29 @@ public:
 };
 
 /**
+ * @brief Inplace operation property
+ *
+ */
+class InPlaceProp : public nntrainer::Property<bool> {
+public:
+  static constexpr const char *key = "inplace"; /**< unique key to access */
+  using prop_tag = bool_prop_tag;               /**< property type */
+};
+
+/**
+ * @brief Inplace direction property (default: left)
+ * @details 'left' or 'right' indicates which side of the tensor will be
+ * overwritten
+ *
+ */
+class InPlaceDirectionProp : public nntrainer::Property<std::string> {
+public:
+  static constexpr const char *key =
+    "inplace_direction";         /**< unique key to access */
+  using prop_tag = str_prop_tag; /**< property type */
+};
+
+/**
  * @brief trainable property, use this to set and check how if certain layer is
  * trainable
  *
@@ -1351,8 +1374,8 @@ public:
 };
 
 /**
- * @brief ProjectedValueDim property, projected value dim per head in multi head
- * attention
+ * @brief ProjectedValueDim property, projected value dim per head in multi
+ * head attention
  * @details Correspond with value_dim of tensorflow
  *
  */

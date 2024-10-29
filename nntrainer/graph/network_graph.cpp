@@ -853,9 +853,13 @@ NetworkGraph::finalizeContext(const std::shared_ptr<LayerNode> &lnode,
         if (lnode->getType() == IdentityLayer::type) {
           s.variable_spec.reference_name = inputs[i]->getName();
           s.variable_spec.dim.setFormat(inputs[i]->getDim().getFormat());
-        } else {
+        } else if (lnode->getInPlaceDirection() == InPlaceDirection::LEFT) {
+          std::cout << inputs[0]->getName() << std::endl;
           s.variable_spec.reference_name = inputs[0]->getName();
           s.variable_spec.dim.setFormat(inputs[0]->getDim().getFormat());
+        } else if (lnode->getInPlaceDirection() == InPlaceDirection::RIGHT) {
+          s.variable_spec.reference_name = inputs[1]->getName();
+          s.variable_spec.dim.setFormat(inputs[1]->getDim().getFormat());
         }
       }
       if (shared_grad && s.gradient_spec) {
@@ -864,9 +868,12 @@ NetworkGraph::finalizeContext(const std::shared_ptr<LayerNode> &lnode,
         if (lnode->getType() == IdentityLayer::type) {
           s.gradient_spec->reference_name = inputs[i]->getGradientName();
           s.gradient_spec->dim.setFormat(inputs[i]->getDim().getFormat());
-        } else {
+        } else if (lnode->getInPlaceDirection() == InPlaceDirection::LEFT) {
           s.gradient_spec->reference_name = inputs[0]->getGradientName();
           s.gradient_spec->dim.setFormat(inputs[0]->getDim().getFormat());
+        } else if (lnode->getInPlaceDirection() == InPlaceDirection::RIGHT) {
+          s.gradient_spec->reference_name = inputs[1]->getGradientName();
+          s.gradient_spec->dim.setFormat(inputs[1]->getDim().getFormat());
         }
       }
     }
@@ -909,6 +916,7 @@ NetworkGraph::finalizeContext(const std::shared_ptr<LayerNode> &lnode,
   /** create shared weight names if requested */
   std::vector<std::string> shared_weight_names;
   std::vector<std::string> shared_tensor_names;
+
   if (auto shared_node_str = lnode->getSharedFrom(); !shared_node_str.empty()) {
     /// @note below is commented but kept from quick fix to be referenced for
     /// later(#1707)
@@ -942,6 +950,11 @@ NetworkGraph::finalizeContext(const std::shared_ptr<LayerNode> &lnode,
     const auto &t_specs = init_context.getTensorsSpec();
     for (auto i = 0u; i < t_specs.size(); ++i) {
       shared_tensor_names.emplace_back(std::get<3>(t_specs.at(i)));
+    }
+
+    for (unsigned int i = 0; i < shared_tensor_names.size(); ++i) {
+      std::cout << "shared tensor name: " << shared_tensor_names[i]
+                << std::endl;
     }
 
     const auto &w_specs = init_context.getWeightsSpec();
@@ -1008,7 +1021,9 @@ NetworkGraph::refinalizeContext(const std::shared_ptr<LayerNode> &lnode,
           TensorSpecV2::RequestType::READ_ONLY_VIEW;
         if (lnode->getType() == IdentityLayer::type) {
           s.variable_spec.reference_name = inputs[i]->getName();
-        } else {
+        } else if (lnode->getInPlaceDirection() == InPlaceDirection::LEFT) {
+          s.variable_spec.reference_name = inputs[0]->getName();
+        } else if (lnode->getInPlaceDirection() == InPlaceDirection::RIGHT) {
           s.variable_spec.reference_name = inputs[0]->getName();
         }
       }
@@ -1017,12 +1032,15 @@ NetworkGraph::refinalizeContext(const std::shared_ptr<LayerNode> &lnode,
           TensorSpecV2::RequestType::READ_ONLY_VIEW;
         if (lnode->getType() == IdentityLayer::type) {
           s.gradient_spec->reference_name = inputs[i]->getGradientName();
-        } else {
+        } else if (lnode->getInPlaceDirection() == InPlaceDirection::LEFT) {
           s.gradient_spec->reference_name = inputs[0]->getGradientName();
+        } else if (lnode->getInPlaceDirection() == InPlaceDirection::RIGHT) {
+          s.gradient_spec->reference_name = inputs[1]->getGradientName();
         }
       }
     }
   }
+
   if (lnode->requireLabel()) {
     NNTR_THROW_IF(out_specs.size() != 1, std::invalid_argument)
       << "out specification size must be 1 for label layer for now, "
