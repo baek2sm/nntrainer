@@ -10,11 +10,16 @@ compiler_sources = [
   'multiout_realizer.cpp',
   'bn_realizer.cpp',
   'loss_realizer.cpp',
+  'onnx.pb.cc',
+  'onnx_interpreter.cpp',
 ]
 
 compiler_headers = [
   'compiler_fwd.h'
 ]
+
+protobuf_dep = dependency('protobuf', required:true)
+nntrainer_base_deps += protobuf_dep
 
 if get_option('enable-tflite-interpreter')
   if not tflite_dep.found()

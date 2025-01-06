@@ -434,6 +434,7 @@ if get_option('platform') != 'android'
   endif
 endif
 flatc_prog = find_program('flatc', required: false)
+protoc = find_program('protoc', require: false)
 
 # Install .pc
 configure_file(input: 'nntrainer.pc.in', output: 'nntrainer.pc',

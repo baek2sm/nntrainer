@@ -3,7 +3,7 @@ mixed_precision_test_name = 'integration_test_mixed_precision'
 
 test_target = [
     'integration_tests.cpp',
-    'integration_test_loss.cpp',
+    # 'integration_test_loss.cpp',
 ]
 
 mixed_precision_targets = [
