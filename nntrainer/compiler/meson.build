@@ -22,7 +22,10 @@ if get_option('enable-onnx-interpreter')
 
   compiler_sources += [
     'onnx.pb.cc',
+    'onnx_interpreter.cpp',
   ]
+
+  extra_defines += '-DENABLE_ONNX_INTERPRETER=1'
 endif
 
 if get_option('enable-tflite-interpreter')
