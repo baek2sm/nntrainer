@@ -16,6 +16,15 @@ compiler_headers = [
   'compiler_fwd.h'
 ]
 
+if get_option('enable-onnx-interpreter')
+  protobuf_dep = dependency('protobuf', required: true)
+  nntrainer_base_deps += protobuf_dep
+
+  compiler_sources += [
+    'onnx.pb.cc',
+  ]
+endif
+
 if get_option('enable-tflite-interpreter')
   if not tflite_dep.found()
     error('Tensorflow2-Lite dependency not found')
