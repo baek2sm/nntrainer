@@ -16,6 +16,9 @@ compiler_headers = [
   'compiler_fwd.h'
 ]
 
+nntrainer_schema_dir = meson.build_root() / 'schema'
+run_command('mkdir', '-p', nntrainer_schema_dir)
+
 if get_option('enable-onnx-interpreter')
   protobuf_dep = dependency('protobuf', required: true)
   nntrainer_base_deps += protobuf_dep
@@ -26,7 +29,7 @@ if get_option('enable-onnx-interpreter')
                               output: ['@BASENAME@.pb.cc', '@BASENAME@.pb.h'],
                               command: [
                                 protoc,
-                                '--cpp_out=' + meson.build_root() + '/nntrainer/compiler',
+                                '--cpp_out=' + nntrainer_schema_dir,
                                 '-I=' + meson.current_source_dir(),
                                 meson.current_source_dir() + '/onnx.proto'
                               ])
@@ -48,7 +51,7 @@ if get_option('enable-tflite-interpreter')
   flat_header = custom_target('tflite-schema',
                                input: 'tf_schema.fbs',
                                output: 'tf_schema_generated.h',
-                               command: [flatc_prog, '-o', '@OUTDIR@', '-c', '@INPUT@'])
+                               command: [flatc_prog, '-o', nntrainer_schema_dir, '-c', '@INPUT@'])
 
   nntrainer_inc_abs += meson.current_build_dir()
   nntrainer_inc += include_directories('.')
@@ -67,7 +70,7 @@ endif
   flat_header2 = custom_target('nntrainer-schema',
                                input: 'nntrainer_schema.fbs',
                                output: 'nntrainer_schema_generated.h',
-                               command: [flatc_prog, '-o', '@OUTDIR@', '-c', '@INPUT@'])
+                               command: [flatc_prog, '-o', nntrainer_schema_dir, '-c', '@INPUT@'])
 
   nntrainer_inc_abs += meson.current_build_dir()
   nntrainer_inc += include_directories('.')
