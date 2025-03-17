@@ -1210,6 +1210,12 @@ std::vector<unsigned int> Tensor::argmax() const {
   return itensor->argmax();
 }
 
+std::vector<unsigned int> Tensor::argmin() const {
+  NNTR_THROW_IF(!getContiguous(), std::invalid_argument)
+    << getName() << " is not contiguous, cannot get argmin.";
+  return itensor->argmin();
+}
+
 float Tensor::max_abs() const {
   NNTR_THROW_IF(!getContiguous(), std::invalid_argument)
     << getName() << " is not contiguous, cannot get max_abs.";
