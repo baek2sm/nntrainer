@@ -175,6 +175,11 @@ public:
                 float value, float beta) override;
 
   /**
+   * @copydoc Tensor::abs()
+   */
+  Tensor &abs(Tensor &output) const override;
+
+  /**
    * @copydoc Tensor::setZero()
    */
   void setZero() override;

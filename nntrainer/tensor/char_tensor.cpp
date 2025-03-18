@@ -436,6 +436,14 @@ void CharTensor::read(std::ifstream &file) {
   putData();
 }
 
+Tensor &CharTensor::abs(Tensor &output) const {
+  auto f = [](int8_t in) {
+    return static_cast<int8_t>(std::abs(static_cast<float>(in)));
+  };
+  apply(f, output);
+  return output;
+}
+
 std::vector<unsigned int> CharTensor::argmax() const {
   std::vector<unsigned int> result;
   const int8_t *data = (int8_t *)getData();

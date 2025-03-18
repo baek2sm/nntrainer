@@ -222,6 +222,11 @@ public:
               float const scale) const override;
 
   /**
+   * @copydoc Tensor::abs()
+   */
+  Tensor &abs(Tensor &output) const override;
+
+  /**
    * @copydoc Tensor::copy(const Tensor &from)
    */
   void copy(const Tensor &from) override;

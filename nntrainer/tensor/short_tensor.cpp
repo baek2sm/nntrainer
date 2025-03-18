@@ -337,6 +337,14 @@ void ShortTensor::read(std::ifstream &file) {
   putData();
 }
 
+Tensor &ShortTensor::abs(Tensor &output) const {
+  auto f = [](int16_t in) {
+    return static_cast<int16_t>(std::abs(static_cast<float>(in)));
+  };
+  apply(f, output);
+  return output;
+}
+
 std::vector<unsigned int> ShortTensor::argmax() const {
   std::vector<unsigned int> result;
   const int16_t *data = (int16_t *)getData();

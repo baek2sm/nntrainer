@@ -722,6 +722,8 @@ Tensor &Tensor::sum(const std::vector<unsigned int> &axes, Tensor &output,
   return output;
 }
 
+Tensor &Tensor::abs(Tensor &output) const { return itensor->abs(output); }
+
 Tensor Tensor::average(unsigned int axis) const {
   Tensor output("", this->getFormat(), this->getDataType());
   return average(axis, output);
