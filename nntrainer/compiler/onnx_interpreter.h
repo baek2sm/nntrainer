@@ -12,6 +12,7 @@
 
 #ifndef __ONNX_INTERPRETER_H__
 #define __ONNX_INTERPRETER_H__
+#include "compiler_fwd.h"
 #ifdef ENABLE_ONNX_INTERPRETER
 
 #include <app_context.h>
@@ -26,6 +27,10 @@
 #include <util_func.h>
 
 namespace nntrainer {
+
+using NodeHandler =
+  std::function<void(const onnx::NodeProto &, GraphRepresentation &)>;
+
 /**
  * @brief ONNX Interpreter class for converting onnx model to nntrainer model.
  *
@@ -36,7 +41,7 @@ public:
    * @brief Construct a new ONNXInterpreter object
    *
    */
-  ONNXInterpreter(){};
+  ONNXInterpreter() { registerNodeHandlers(); };
 
   /**
    * @brief Destroy the ONNXInterpreter object
@@ -44,7 +49,45 @@ public:
    */
   ~ONNXInterpreter(){};
 
-  std::string getDataType(int onnx_type);
+  void handleUnaryOp(const onnx::NodeProto &node,
+                     GraphRepresentation &representation,
+                     const std::string &op_type,
+                     std::vector<std::string> &props);
+
+  void handleBinaryOp(const onnx::NodeProto &node,
+                      GraphRepresentation &representation,
+                      const std::string &op_type,
+                      std::vector<std::string> &props);
+
+  void registerNodeHandlers();
+
+  std::vector<std::string> createOutputRemap(const onnx::NodeProto &node);
+
+  /**
+   * @brief Get data type from onnx type enum.
+   *
+   * @param onnx_type
+   * @return std::string tensor data type
+   */
+  std::string getDataTypeFromONNX(int onnx_type);
+
+  /**
+   * @brief Load the onnx model from file
+   *
+   */
+  void loadONNXModel(const std::string &file_path);
+
+  /**
+   * @brief Load inputs and weights from onnx model to nntrainer model.
+   *
+   */
+  void loadInputsAndWeights(GraphRepresentation &representation);
+
+  /**
+   * @brief Load operations from onnx model to nntrainer model.
+   *
+   */
+  void loadOperations(GraphRepresentation &representation);
 
   /**
    * @copydoc GraphInterpreter::serialize(const GraphRepresentation
@@ -87,6 +130,17 @@ private:
     layerOutputMap; // key: name of output, value: name of layer
   std::unordered_map<std::string, onnx::TensorProto>
     initializers; // initializers are used to identify weights
+  std::unordered_map<std::string, NodeHandler>
+    NodeHandlers; // node handlers function map
+
+  std::unordered_map<std::string, std::string> layerKeyMap = {
+    {"Add", "add"},           {"Sub", "subtract"},  {"Mul", "multiply"},
+    {"Div", "divide"},        {"MatMul", "matmul"}, {"Reshape", "reshape"},
+    {"Transpose", "permute"}, {"Cast", "cast"},     {"Concat", "concat"},
+    {"Softmax", "activation"}};
+
+  std::unordered_map<std::string, std::string> activationKeyMap = {
+    {"Softmax", "softmax"}};
 };
 
 } // namespace nntrainer
