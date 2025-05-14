@@ -238,6 +238,7 @@ class LossScaleForMixed;
 class InPlaceProp;
 class InPlaceDirectionProp;
 class Exponent;
+class LayerTensorDataType;
 } // namespace props
 
 class LayerNode;
@@ -251,7 +252,8 @@ void Exporter::saveTflResult(
                    std::vector<props::InputConnection>,
                    std::vector<props::InputShape>, props::SharedFrom,
                    props::ClipGradByGlobalNorm, props::Packed,
-                   props::LossScaleForMixed, props::ComputeEngine> &props,
+                   props::LossScaleForMixed, props::ComputeEngine,
+                   props::LayerTensorDataType> &props,
   const LayerNode *self);
 
 class BatchNormalizationLayer;

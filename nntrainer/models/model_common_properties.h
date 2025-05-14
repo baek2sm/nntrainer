@@ -221,7 +221,7 @@ struct ModelTensorDataTypeInfo {
  * @brief Activation Enumeration Information
  *
  */
-class ModelTensorDataType final : public EnumProperty<ModelTensorDataTypeInfo> {
+class ModelTensorDataType : public EnumProperty<ModelTensorDataTypeInfo> {
 public:
   using prop_tag = enum_class_prop_tag;
   static constexpr const char *key = "model_tensor_type";

@@ -12,6 +12,7 @@
  */
 
 #include "layer_context.h"
+#include "model_common_properties.h"
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -199,10 +200,11 @@ LayerNode::LayerNode(std::unique_ptr<nntrainer::Layer> &&l) :
 
   output_connections(),
   run_context(nullptr),
-  layer_node_props(new PropsType(
-    props::Name(), props::Distribute(), props::Trainable(), {}, {},
-    props::SharedFrom(), props::ClipGradByGlobalNorm(), props::Packed(),
-    props::LossScaleForMixed(), props::ComputeEngine())),
+  layer_node_props(
+    new PropsType(props::Name(), props::Distribute(), props::Trainable(), {},
+                  {}, props::SharedFrom(), props::ClipGradByGlobalNorm(),
+                  props::Packed(), props::LossScaleForMixed(),
+                  props::ComputeEngine(), props::LayerTensorDataType())),
   layer_node_props_realization(
     new RealizationPropsType(props::Flatten(), props::Activation())),
   loss(new props::Loss()),
@@ -602,7 +604,16 @@ InitLayerContext LayerNode::finalize(const std::vector<TensorDim> &input_dims,
     compute_engine = std::get<props::ComputeEngine>(*layer_node_props).get();
   }
 
-  if (!std::get<props::Packed>(*layer_node_props).empty()) {
+  if (!std::get<props::LayerTensorDataType>(*layer_node_props).empty()) {
+    std::string data_types_str =
+      std::to_string(std::get<props::LayerTensorDataType>(*layer_node_props));
+
+    std::vector<std::string> data_types =
+      split(data_types_str, getRegex("\\-"));
+
+    tensor_type[1] = data_types[0];
+    // tensor_type[2] = data_types[1];
+  } else if (!std::get<props::Packed>(*layer_node_props).empty()) {
     bool isPacked = std::get<props::Packed>(*layer_node_props);
     if (!isPacked) {
       // set weight type = activation type

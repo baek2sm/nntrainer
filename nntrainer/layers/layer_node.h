@@ -55,6 +55,7 @@ class ClipGradByGlobalNorm;
 class Packed;
 class LossScaleForMixed;
 class ComputeEngine;
+class LayerTensorDataType;
 } // namespace props
 
 /**
@@ -289,7 +290,6 @@ public:
    * @note configureRunContext() is expected to called right after this.
    */
   InitLayerContext refinalize(const std::vector<TensorDim> &input_dims = {});
-
 
   void initialize() override { layer->initialize(*run_context); }
 
@@ -1021,12 +1021,11 @@ will also contain the properties of the layer. The properties will be copied
 upon final creation. Editing properties of the layer after init will not the
 properties in the context/graph unless intended. */
 
-  using PropsType =
-    std::tuple<props::Name, props::Distribute, props::Trainable,
-               std::vector<props::InputConnection>,
-               std::vector<props::InputShape>, props::SharedFrom,
-               props::ClipGradByGlobalNorm, props::Packed,
-               props::LossScaleForMixed, props::ComputeEngine>;
+  using PropsType = std::tuple<
+    props::Name, props::Distribute, props::Trainable,
+    std::vector<props::InputConnection>, std::vector<props::InputShape>,
+    props::SharedFrom, props::ClipGradByGlobalNorm, props::Packed,
+    props::LossScaleForMixed, props::ComputeEngine, props::LayerTensorDataType>;
 
   using RealizationPropsType = std::tuple<props::Flatten, props::Activation>;
   /** these realization properties results in addition of new layers, hence

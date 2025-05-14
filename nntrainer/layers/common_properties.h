@@ -20,6 +20,7 @@
 #include <base_properties.h>
 #include <common.h>
 #include <connection.h>
+#include <model_common_properties.h>
 #include <tensor.h>
 #include <tensor_wrap_specs.h>
 
@@ -967,6 +968,12 @@ struct ActivationTypeInfo {
     "tanh",      "sigmoid",      "relu",    "swish",    "gelu",
     "tanh_gelu", "sigmoid_gelu", "softmax", "softplus", "leaky_relu",
     "elu",       "selu",         "mish",    "none",     "unknown"};
+};
+
+class LayerTensorDataType final : public ModelTensorDataType {
+public:
+  using prop_tag = enum_class_prop_tag;
+  static constexpr const char *key = "layer_tensor_type";
 };
 
 /**
