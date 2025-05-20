@@ -17,6 +17,7 @@ if enable_ccapi
   subdir('MNIST/jni')
   if get_option('enable-fp16')
     subdir('MixedPrecision/jni')
+    subdir('MixedPrecisionLayer/jni')
   endif
 endif
 subdir('VGG/jni')

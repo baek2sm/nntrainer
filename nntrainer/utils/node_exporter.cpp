@@ -10,6 +10,7 @@
  * @author Donghak Park <donghak.park@samsung.com>
  * @bug No known bugs except for NYI items
  */
+#include "base_properties.h"
 #include <node_exporter.h>
 
 #ifdef ENABLE_TFLITE_INTERPRETER
@@ -92,7 +93,8 @@ void Exporter::saveTflResult(
                    std::vector<props::InputConnection>,
                    std::vector<props::InputShape>, props::SharedFrom,
                    props::ClipGradByGlobalNorm, props::Packed,
-                   props::LossScaleForMixed, props::ComputeEngine> &props,
+                   props::LossScaleForMixed, props::ComputeEngine,
+                   props::TensorDataType> &props,
   const LayerNode *self) {
   createIfNull(tf_node);
   tf_node->setLayerNode(*self);
