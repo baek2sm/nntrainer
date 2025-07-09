@@ -749,7 +749,6 @@ private:
    * @retval true if matches, false is error
    */
   bool validateInput(sharedConstTensors X);
-
 };
 
 } /* namespace nntrainer */

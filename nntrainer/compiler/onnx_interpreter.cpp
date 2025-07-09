@@ -27,6 +27,7 @@ void ONNXInterpreter::handleUnaryOp(const onnx::NodeProto &node,
     props.push_back("activation=" + activationKeyMap[node.op_type()]);
   }
   props.push_back("input_layers=" + inputNames[0]);
+
   representation.push_back(
     createLayerNode(op_type, {props.begin(), props.end()}));
 }
@@ -64,7 +65,16 @@ void ONNXInterpreter::registerNodeHandlers() {
   registerBasicBinaryOp("Mul");
   registerBasicBinaryOp("Div");
   registerBasicBinaryOp("MatMul");
+  registerBasicUnaryOp("Pow");
+  registerBasicUnaryOp("Sqrt");
   registerBasicUnaryOp("Softmax");
+  registerBasicUnaryOp("Sigmoid");
+  registerBasicUnaryOp("Identity");
+  registerBasicUnaryOp("Gather");
+  registerBasicUnaryOp("Cosine");
+  registerBasicUnaryOp("Sine");
+  registerBasicUnaryOp("Tangent");
+  registerBasicUnaryOp("Neg");
 
   NodeHandlers["Reshape"] = [this](const onnx::NodeProto &node,
                                    GraphRepresentation &rep) {
@@ -91,6 +101,26 @@ void ONNXInterpreter::registerNodeHandlers() {
     handleUnaryOp(node, rep, layerKeyMap[node.op_type()], props);
   };
 
+  NodeHandlers["Unsqueeze"] = [this](const onnx::NodeProto &node,
+                                     GraphRepresentation &rep) {
+    std::vector<std::string> props;
+    const std::string &input_name = node.input(0); // input tensor name
+    const std::string &shape_name = node.input(1);
+    const auto &shape_node = constantTensors.at(shape_name);
+    for (const auto &attr : shape_node.attribute()) {
+      if (attr.name() == "value") {
+        const auto &shape_tensor = attr.t().raw_data();
+        const int64_t *vals =
+          reinterpret_cast<const int64_t *>(shape_tensor.data());
+        int size = shape_tensor.size() / sizeof(int64_t);
+        std::ostringstream oss;
+        oss << "target_shape=1:8:1";
+        props.push_back(oss.str());
+      }
+    }
+    handleUnaryOp(node, rep, layerKeyMap[node.op_type()], props);
+  };
+
   NodeHandlers["Transpose"] = [this](const onnx::NodeProto &node,
                                      GraphRepresentation &rep) {
     std::vector<std::string> props;
@@ -110,12 +140,88 @@ void ONNXInterpreter::registerNodeHandlers() {
     handleUnaryOp(node, rep, layerKeyMap[node.op_type()], props);
   };
 
+  NodeHandlers["Gather"] = [this](const onnx::NodeProto &node,
+                                  GraphRepresentation &rep) {
+    std::vector<std::string> props;
+    props.push_back("axis=3");
+    handleBinaryOp(node, rep, layerKeyMap[node.op_type()], props);
+  };
+
   NodeHandlers["Cast"] = [this](const onnx::NodeProto &node,
                                 GraphRepresentation &rep) {
     std::vector<std::string> props;
     for (const auto &attr : node.attribute()) {
       if (attr.name() == "to") {
         props.push_back("tensor_dtype=" + getDataTypeFromONNX(attr.i()));
+        break;
+      }
+    }
+    handleUnaryOp(node, rep, layerKeyMap[node.op_type()], props);
+  };
+
+  NodeHandlers["Slice"] = [this](const onnx::NodeProto &node,
+                                 GraphRepresentation &rep) {
+    std::vector<std::string> props;
+    const std::string &data = node.input(0);
+    const std::string &start = node.input(1);
+    const std::string &end = node.input(2);
+    const std::string &axis = node.input(3);
+    for (const auto &attr : constantTensors[start].attribute()) {
+      if (attr.name() == "value" && attr.has_t()) {
+        const auto &tensor = attr.t();
+        if (tensor.raw_data().size() > 0) {
+          const int data =
+            reinterpret_cast<const int *>(tensor.raw_data().data())[0];
+
+          props.push_back("start_index=" + std::to_string(data + 1));
+        }
+      }
+    }
+
+    for (const auto &attr : constantTensors[end].attribute()) {
+      if (attr.name() == "value" && attr.has_t()) {
+        const auto &tensor = attr.t();
+        if (tensor.raw_data().size() > 0) {
+          const int data =
+            reinterpret_cast<const int *>(tensor.raw_data().data())[0];
+          props.push_back("end_index=" + std::to_string(data + 1));
+        }
+      }
+    }
+
+    for (const auto &attr : constantTensors[axis].attribute()) {
+      if (attr.name() == "value" && attr.has_t()) {
+        const auto &tensor = attr.t();
+        if (tensor.raw_data().size() > 0) {
+          const int data =
+            reinterpret_cast<const int *>(tensor.raw_data().data())[0];
+          props.push_back("axis=" + std::to_string(data));
+        }
+      }
+    }
+
+    handleUnaryOp(node, rep, layerKeyMap[node.op_type()], props);
+  };
+
+  NodeHandlers["Concat"] = [this](const onnx::NodeProto &node,
+                                  GraphRepresentation &rep) {
+    std::vector<std::string> props;
+    for (const auto &attr : node.attribute()) {
+      if (attr.name() == "axis") {
+        props.push_back("axis=" + std::to_string(attr.i()));
+      }
+    }
+
+    handleBinaryOp(node, rep, layerKeyMap[node.op_type()], props);
+  };
+
+  NodeHandlers["ReduceMean"] = [this](const onnx::NodeProto &node,
+                                      GraphRepresentation &rep) {
+    std::vector<std::string> props;
+    for (const auto &attr : node.attribute()) {
+      if (attr.name() == "axes") {
+        props.push_back(withKey("axis=", attr.ints(0) + 1));
+        break;
       }
     }
     handleUnaryOp(node, rep, layerKeyMap[node.op_type()], props);
@@ -161,13 +267,14 @@ void ONNXInterpreter::loadInputsAndWeights(
     }
     inputDims.insert({cleanName(input.name()), shape});
     std::string dim = transformDimString(shape);
-    if (input.name().find("input") != std::string::npos) { // Create input layer
-      representation.push_back(
-        createLayerNode("input", {withKey("name", cleanName(input.name())),
-                                  withKey("input_shape", dim)}));
-    } else {
-      throw std::runtime_error(input.name() + " is not supported yet.");
-    }
+    // if (input.name().find("input") != std::string::npos) { // Create input
+    // layer
+    representation.push_back(
+      createLayerNode("input", {withKey("name", cleanName(input.name())),
+                                withKey("input_shape", dim)}));
+    // } else {
+    //   throw std::runtime_error(input.name() + " is not supported yet.");
+    // }
   }
 }
 
@@ -199,7 +306,14 @@ void ONNXInterpreter::loadOperations(GraphRepresentation &representation) {
 
   // Create graph
   for (const auto &node : onnx_model.graph().node()) {
+    std::cout << node.name() << std::endl;
+
     if (node.op_type() == "Constant") {
+      for (const auto &attr : node.attribute()) {
+        if (attr.name() == "value" && attr.has_t()) {
+          const auto &tensor = attr.t();
+        }
+      }
       constantTensors.insert({node.name() + "_output_0", node});
       continue;
     }

@@ -142,12 +142,32 @@ private:
     layerOutputMap; // key: name of output, value: name of layer
 
   std::unordered_map<std::string, std::string> layerKeyMap = {
-    {"Add", "add"},           {"Sub", "subtract"},  {"Mul", "multiply"},
-    {"Div", "divide"},        {"MatMul", "matmul"}, {"Reshape", "reshape"},
-    {"Transpose", "permute"}, {"Cast", "cast"},     {"Softmax", "activation"}};
+    {"Add", "add"},
+    {"Sub", "subtract"},
+    {"Mul", "multiply"},
+    {"Div", "divide"},
+    {"MatMul", "matmul"},
+    {"ReduceMean", "reduce_mean"},
+    {"Reshape", "reshape"},
+    {"Transpose", "permute"},
+    {"Cast", "cast"},
+    {"Pow", "pow"},
+    {"Sqrt", "sqrt"},
+    {"Softmax", "activation"},
+    {"Sigmoid", "activation"},
+    {"Relu", "relu"},
+    {"Identity", "identity"},
+    {"Unsqueeze", "reshape"},
+    {"Gather", "gather"},
+    {"Cosine", "cosine"},
+    {"Sine", "sine"},
+    {"Tangent", "tanget"},
+    {"Slice", "slice"},
+    {"Neg", "negative"},
+    {"Concat", "concat"}};
 
   std::unordered_map<std::string, std::string> activationKeyMap = {
-    {"Softmax", "softmax"}, {"Relu", "relu"}};
+    {"Softmax", "softmax"}, {"Relu", "relu"}, {"Sigmoid", "sigmoid"}};
 };
 
 } // namespace nntrainer
