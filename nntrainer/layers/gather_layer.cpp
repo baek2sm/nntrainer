@@ -37,9 +37,7 @@ void GatherLayer::finalize(InitLayerContext &context) {
       "The batch size of the input and index should be same.");
   }
 
-  TensorDim outputDim =
-    TensorDim(indexDim.batch(), indexDim.height(), indexDim.width());
-  context.setOutputDimensions({outputDim});
+  context.setOutputDimensions({indexDim});
 }
 
 void GatherLayer::forwarding_operation(const Tensor &input, const Tensor &index,
@@ -61,6 +59,7 @@ void GatherLayer::forwarding_operation(const Tensor &input, const Tensor &index,
             break;
           case 3:
             output.setValue(b, i, j, k, input.getValue(b, i, j, selected));
+            break;
           default:
             break;
           }
@@ -90,6 +89,7 @@ void GatherLayer::calcDerivative(RunLayerContext &context) {
             break;
           case 3:
             outDeriv.addValue(b, i, j, selected, inDerivValue, 1);
+            break;
           default:
             break;
           }
