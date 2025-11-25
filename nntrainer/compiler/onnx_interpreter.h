@@ -12,7 +12,6 @@
 
 #ifndef __ONNX_INTERPRETER_H__
 #define __ONNX_INTERPRETER_H__
-#include "compiler_fwd.h"
 #ifdef ENABLE_ONNX_INTERPRETER
 
 #include <app_context.h>

@@ -27,12 +27,13 @@ void NegativeLayer::finalize(InitLayerContext &context) {
 }
 
 void NegativeLayer::forwarding_operation(const Tensor &input, Tensor &hidden) {
-  input.multiply(-1, hidden);
+  input.neg(hidden);
 }
 
 void NegativeLayer::calcDerivative(RunLayerContext &context) {
-  context.getOutgoingDerivative(SINGLE_INOUT_IDX)
-    .copy(context.getIncomingDerivative(SINGLE_INOUT_IDX).multiply(-1));
+  auto &deriv = context.getOutgoingDerivative(SINGLE_INOUT_IDX);
+  deriv.copy(context.getIncomingDerivative(SINGLE_INOUT_IDX));
+  deriv.multiply(-1.0f);
 }
 
 void NegativeLayer::setProperty(const std::vector<std::string> &values) {

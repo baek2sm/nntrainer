@@ -29,7 +29,8 @@ public:
   /**
    * @brief Constructor of Gather Layer
    */
-  GatherLayer() : support_backwarding(true) {}
+  GatherLayer() :
+    support_backwarding(true), gather_props(props::Print(), props::Axis()) {}
 
   /**
    * @brief Destructor of Gather Layer

@@ -126,12 +126,15 @@ enum LayerType {
   LAYER_UPSAMPLE2D =
     ML_TRAIN_LAYER_TYPE_UPSAMPLE2D, /**< Upsample 2D Layer type */
 
-  LAYER_TIME_DIST = 1000,                /**< Time Distributed Layer type */
-  LAYER_BACKBONE_TFLITE = 1001,          /**< Backbone using TFLite */
-  LAYER_LOSS_CONSTANT_DERIVATIVE = 1002, /**< Synthetic loss layer to feed
-                                       constant derivative */
+  LAYER_UNKNOWN = ML_TRAIN_LAYER_TYPE_UNKNOWN, /**< Unknown */
 
-  LAYER_UNKNOWN = ML_TRAIN_LAYER_TYPE_UNKNOWN /**< Unknown */
+  LAYER_TIME_DIST =
+    ML_TRAIN_LAYER_EXPERIMENTAL, /**< Time Distributed Layer type */
+  LAYER_BACKBONE_TFLITE =
+    ML_TRAIN_LAYER_EXPERIMENTAL + 1, /**< Backbone using TFLite */
+  LAYER_LOSS_CONSTANT_DERIVATIVE =
+    ML_TRAIN_LAYER_EXPERIMENTAL +
+    2, /**< Synthetic loss layer to feed constant derivative */
 };
 
 /**
