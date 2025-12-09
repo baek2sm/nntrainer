@@ -51,7 +51,7 @@ jobs:
       if: env.rebuild == '1'
       run: |
         echo "::group::LogisticRegression"
-        pushd Applications/LogisticRegression/jni
+        pushd Applications/Examples/LogisticRegression/jni
         ndk-build NDK_PROJECT_PATH=./ APP_BUILD_SCRIPT=./Android.mk NDK_APPLICATION_MK=./Application.mk
         popd
         echo "::endgroup::"

@@ -86,7 +86,7 @@ The user can also build applications located in the `Applications` directory.
 In this document, `LogisticRegression` application is used as an example, but all applications containing files `jni/Application.mk` and `jni/Android.mk` can be build accordingly.
 
 ```bash
-$ cd Applications/LogisticRegression/jni
+$ cd Applications/Examples/LogisticRegression/jni
 $ ls
 Android.mk  Application.mk  CMakeLists.txt  main.cpp  meson.build
 $
