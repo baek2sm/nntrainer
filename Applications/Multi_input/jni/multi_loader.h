@@ -81,7 +81,7 @@ private:
   std::vector<TensorDim> input_shapes;
   std::vector<TensorDim> output_shapes;
 
-  std::uniform_int_distribution<int> input_dist;
+  std::uniform_real_distribution<float> input_dist;
   std::uniform_int_distribution<int> label_dist;
 };
 
