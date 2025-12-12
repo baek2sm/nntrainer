@@ -531,13 +531,11 @@ void transform_int4_osv32_isv2_to_q4_0(size_t N, size_t K,
                                        size_t scale_group_size,
                                        void *dst_q4_0x) {
 #if defined(__aarch64__) || defined(_M_ARM64)
-  // neon::transform_int4_osv32_isv2_to_q4_0x4_old(N, K, osv32_weights,
-  // osv32_scales, scale_group_size, dst_q4_0x);
   neon::transform_int4_osv32_isv2_to_q4_0x4(N, K, osv32_weights, osv32_scales,
                                             scale_group_size, dst_q4_0x);
 #else
-  Q4_0Utils::transformQ4_0x_FromInt4(N, K, osv32_weights, osv32_scales,
-                                     scale_group_size, 4, dst_q4_0x);
+  __fallback_transform_int4_osv32_isv2_to_q4_0(
+    N, K, osv32_weights, osv32_scales, scale_group_size, 4, dst_q4_0x);
 #endif
 }
 

@@ -629,9 +629,11 @@ void __fallback_transform_int4_osv32_isv2_to_q4_0(size_t N, size_t K,
                                                   const uint8_t *osv32_weights,
                                                   const uint16_t *osv32_scales,
                                                   size_t scale_group_size,
+                                                  int q4_0x_block_size,
                                                   void *dst_q4_0x) {
-  throw std::runtime_error(
-    "NYI : __fallback_transform_int4_osv32_isv2_to_q4_0");
+  Q4_0Utils::transformQ4_0x_FromInt4(N, K, osv32_weights, osv32_scales,
+                                     scale_group_size, q4_0x_block_size,
+                                     dst_q4_0x);
 }
 
 } // namespace nntrainer

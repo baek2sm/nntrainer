@@ -795,11 +795,6 @@ void transform_int4_osv32_isv2_to_q4_0x4(size_t N, size_t K,
                                          const uint16_t *osv32_scales,
                                          size_t scale_group_size,
                                          void *dst_q4_0x4);
-void transform_int4_osv32_isv2_to_q4_0x4_old(size_t N, size_t K,
-                                             const uint8_t *osv32_weights,
-                                             const uint16_t *osv32_scales,
-                                             size_t scale_group_size,
-                                             void *dst_q4_0x4);
 
 /// @note The structure should later be neon_impl_aarch64 and neon_impl_armv7l
 #if defined(__aarch64__) || defined(_M_ARM64)

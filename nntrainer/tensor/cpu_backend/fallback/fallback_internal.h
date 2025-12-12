@@ -1262,12 +1262,14 @@ void __fallback_create_q4_0_weights(const uint8_t *int4_weight,
  * @param osv32_weights uint8_t* data of weights in osv32_isv2 layout
  * @param osv32_scales fp16* scales
  * @param scale_group_size group size (32 or 64 or 128)
+ * @param q4_0x_block_size output q4_0x block size - number of rows (4 or 8)
  * @param dst_q4_0x void * output data in block_q4_0x8 or block_q4_0x4 layout
  */
 void __fallback_transform_int4_osv32_isv2_to_q4_0(size_t N, size_t K,
                                                   const uint8_t *osv32_weights,
                                                   const uint16_t *osv32_scales,
                                                   size_t scale_group_size,
+                                                  int q4_0x_block_size,
                                                   void *dst_q4_0x);
 
 } // namespace nntrainer

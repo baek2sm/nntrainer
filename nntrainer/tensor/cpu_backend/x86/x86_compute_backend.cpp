@@ -472,7 +472,12 @@ void transform_int4_osv32_isv2_to_q4_0(size_t N, size_t K,
                                        const uint16_t *osv32_scales,
                                        size_t scale_group_size,
                                        void *dst_q4_0x) {
+#ifdef __AVX2__
   nntrainer::avx2::transform_int4_osv32_isv2_to_q4_0x8(
     N, K, osv32_weights, osv32_scales, scale_group_size, dst_q4_0x);
+#else
+  __fallback_transform_int4_osv32_isv2_to_q4_0(
+    N, K, osv32_weights, osv32_scales, scale_group_size, 8, dst_q4_0x);
+#endif
 }
 } /* namespace nntrainer */

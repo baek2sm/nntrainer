@@ -1375,230 +1375,55 @@ void clamp(const float *input, float *output, size_t length, float lower_bound,
   }
 }
 
-/**
- * @brief Highly optimized version - processes 4 rows simultaneously
- * and writes directly to output block, eliminating intermediate copies.
- * Uses 128-bit NEON operations and prefetching for maximum throughput.
- */
-inline static void neon_transform_4rows_to_q4_0x4(
-  const uint8_t *__restrict row0_ptr, const uint8_t *__restrict row1_ptr,
-  const uint8_t *__restrict row2_ptr, const uint8_t *__restrict row3_ptr,
-  uint16_t scale0, uint16_t scale1, uint16_t scale2, uint16_t scale3,
-  block_q4_0x4 *__restrict out) {
-
-  // Prefetch next cache lines
-#ifndef _MSC_VER
-  __builtin_prefetch(row0_ptr + 64, 0, 3);
-  __builtin_prefetch(row1_ptr + 64, 0, 3);
-  __builtin_prefetch(row2_ptr + 64, 0, 3);
-  __builtin_prefetch(row3_ptr + 64, 0, 3);
-#endif
-
-  // Store scales directly
-  out->d[0] = scale0;
-  out->d[1] = scale1;
-  out->d[2] = scale2;
-  out->d[3] = scale3;
-
-  // Load 16 bytes from each row (strided by 32 bytes in source)
-  // For each row: load bytes at offsets 0, 32, 64, ..., 480 (16 values)
-  uint8_t r0[16], r1[16], r2[16], r3[16];
-
-  // Gather 16 bytes per row with stride 32
-  for (int j = 0; j < 16; j++) {
-    r0[j] = row0_ptr[j * 32];
-    r1[j] = row1_ptr[j * 32];
-    r2[j] = row2_ptr[j * 32];
-    r3[j] = row3_ptr[j * 32];
-  }
-
-  // Process all 4 rows with NEON
-  const uint8x8_t mask = vdup_n_u8(0x0F);
-
-  // Row 0
-  {
-    uint8x8_t lo = vld1_u8(r0);
-    uint8x8_t hi = vld1_u8(r0 + 8);
-    uint8x8_t v0 = vand_u8(lo, mask);
-    uint8x8_t v1 = vshr_n_u8(lo, 4);
-    uint8x8_t v2 = vand_u8(hi, mask);
-    uint8x8_t v3 = vshr_n_u8(hi, 4);
-    uint8x8_t even = vorr_u8(v0, vshl_n_u8(v2, 4));
-    uint8x8_t odd = vorr_u8(v1, vshl_n_u8(v3, 4));
-    uint8x8x2_t zip = vzip_u8(even, odd);
-    // First half goes to qs[0..7], second half to qs[32..39]
-    vst1_u8(reinterpret_cast<uint8_t *>(&out->qs[0]), zip.val[0]);
-    vst1_u8(reinterpret_cast<uint8_t *>(&out->qs[32]), zip.val[1]);
-  }
-
-  // Row 1
-  {
-    uint8x8_t lo = vld1_u8(r1);
-    uint8x8_t hi = vld1_u8(r1 + 8);
-    uint8x8_t v0 = vand_u8(lo, mask);
-    uint8x8_t v1 = vshr_n_u8(lo, 4);
-    uint8x8_t v2 = vand_u8(hi, mask);
-    uint8x8_t v3 = vshr_n_u8(hi, 4);
-    uint8x8_t even = vorr_u8(v0, vshl_n_u8(v2, 4));
-    uint8x8_t odd = vorr_u8(v1, vshl_n_u8(v3, 4));
-    uint8x8x2_t zip = vzip_u8(even, odd);
-    vst1_u8(reinterpret_cast<uint8_t *>(&out->qs[8]), zip.val[0]);
-    vst1_u8(reinterpret_cast<uint8_t *>(&out->qs[40]), zip.val[1]);
-  }
-
-  // Row 2
-  {
-    uint8x8_t lo = vld1_u8(r2);
-    uint8x8_t hi = vld1_u8(r2 + 8);
-    uint8x8_t v0 = vand_u8(lo, mask);
-    uint8x8_t v1 = vshr_n_u8(lo, 4);
-    uint8x8_t v2 = vand_u8(hi, mask);
-    uint8x8_t v3 = vshr_n_u8(hi, 4);
-    uint8x8_t even = vorr_u8(v0, vshl_n_u8(v2, 4));
-    uint8x8_t odd = vorr_u8(v1, vshl_n_u8(v3, 4));
-    uint8x8x2_t zip = vzip_u8(even, odd);
-    vst1_u8(reinterpret_cast<uint8_t *>(&out->qs[16]), zip.val[0]);
-    vst1_u8(reinterpret_cast<uint8_t *>(&out->qs[48]), zip.val[1]);
-  }
-
-  // Row 3
-  {
-    uint8x8_t lo = vld1_u8(r3);
-    uint8x8_t hi = vld1_u8(r3 + 8);
-    uint8x8_t v0 = vand_u8(lo, mask);
-    uint8x8_t v1 = vshr_n_u8(lo, 4);
-    uint8x8_t v2 = vand_u8(hi, mask);
-    uint8x8_t v3 = vshr_n_u8(hi, 4);
-    uint8x8_t even = vorr_u8(v0, vshl_n_u8(v2, 4));
-    uint8x8_t odd = vorr_u8(v1, vshl_n_u8(v3, 4));
-    uint8x8x2_t zip = vzip_u8(even, odd);
-    vst1_u8(reinterpret_cast<uint8_t *>(&out->qs[24]), zip.val[0]);
-    vst1_u8(reinterpret_cast<uint8_t *>(&out->qs[56]), zip.val[1]);
-  }
-}
-
-void transform_int4_osv32_isv2_to_q4_0x4_old(size_t N, size_t K,
-                                             const uint8_t *osv32_weights,
-                                             const uint16_t *osv32_scales,
-                                             size_t scale_group_size,
-                                             void *dst_q4_0x4) {
-  NNTR_THROW_IF((!(scale_group_size == 32 || scale_group_size == 64 ||
-                   scale_group_size == 128)),
-                std::invalid_argument)
-    << "Scale group size must be 32/64/128";
-  NNTR_THROW_IF(K % QK4_0 != 0, std::invalid_argument)
-    << "K size must be divisible by QK4_0 (32)";
-  NNTR_THROW_IF(N % 4 != 0, std::invalid_argument)
-    << "N size must be divisible by 4";
-  constexpr size_t ROW_BLOCK_SIZE = 32;
-  constexpr size_t Q4_0X_BLOCK_SIZE = 4;
-
-  const size_t rows_count_pad = align(N, ROW_BLOCK_SIZE);
-  const size_t columns_count_pad = align(K, ROW_BLOCK_SIZE);
-  const size_t column_blocks_count = columns_count_pad / 2;
-  const size_t bytes_per_row_block_span = column_blocks_count * ROW_BLOCK_SIZE;
-  const size_t num_blocks_per_row = K / QK4_0;
-
-  block_q4_0x4 *dst_ptr = reinterpret_cast<block_q4_0x4 *>(dst_q4_0x4);
-
-#pragma omp parallel for schedule(static)
-  for (long long row_id = 0; row_id < static_cast<long long>(N);
-       row_id += Q4_0X_BLOCK_SIZE) {
-    const size_t row_block_id = row_id / ROW_BLOCK_SIZE;
-    const size_t i_in_block = row_id % ROW_BLOCK_SIZE;
-    const size_t row_base =
-      row_block_id * bytes_per_row_block_span + i_in_block;
-
-    // Output pointer for this row group
-    block_q4_0x4 *out =
-      dst_ptr + (row_id / Q4_0X_BLOCK_SIZE) * num_blocks_per_row;
-
-    // Precompute row pointers for fast inner loop
-    const uint8_t *row0_base = osv32_weights + row_base;
-    const uint8_t *row1_base = osv32_weights + row_base + 1;
-    const uint8_t *row2_base = osv32_weights + row_base + 2;
-    const uint8_t *row3_base = osv32_weights + row_base + 3;
-
-    for (size_t col_idx = 0; col_idx < K; col_idx += QK4_0) {
-      // Calculate weight offset: (col_idx / 2) * 32 = col_idx * 16
-      const size_t weight_offset = (col_idx / 2) * ROW_BLOCK_SIZE;
-
-      // Get scales for all 4 rows
-      const size_t scale_col = col_idx / scale_group_size;
-      const size_t scale_base = scale_col * rows_count_pad;
-      uint16_t s0 = osv32_scales[row_id + 0 + scale_base];
-      uint16_t s1 = osv32_scales[row_id + 1 + scale_base];
-      uint16_t s2 = osv32_scales[row_id + 2 + scale_base];
-      uint16_t s3 = osv32_scales[row_id + 3 + scale_base];
-
-      // Transform 4 rows directly to output
-      neon_transform_4rows_to_q4_0x4(
-        row0_base + weight_offset, row1_base + weight_offset,
-        row2_base + weight_offset, row3_base + weight_offset, s0, s1, s2, s3,
-        out);
-      out++;
-    }
-  }
-}
-
-// 8x8 matrix transpose using NEON instructions for 1-byte elements
-static inline void transpose_matrix_8x8(const uint8_t *input, int input_stride,
-                                        uint8_t *output, int output_stride) {
-  uint8x8_t rows[8];
-  for (int i = 0; i < 8; i++) {
-    rows[i] = vld1_u8(&input[i * input_stride]);
-  }
-
-  uint8x8x2_t trn01 = vtrn_u8(rows[0], rows[1]);
-  uint8x8x2_t trn23 = vtrn_u8(rows[2], rows[3]);
-  uint8x8x2_t trn45 = vtrn_u8(rows[4], rows[5]);
-  uint8x8x2_t trn67 = vtrn_u8(rows[6], rows[7]);
-
-  uint16x4x2_t trn0123a = vtrn_u16(vreinterpret_u16_u8(trn01.val[0]),
-                                   vreinterpret_u16_u8(trn23.val[0]));
-  uint16x4x2_t trn0123b = vtrn_u16(vreinterpret_u16_u8(trn01.val[1]),
-                                   vreinterpret_u16_u8(trn23.val[1]));
-  uint16x4x2_t trn4567a = vtrn_u16(vreinterpret_u16_u8(trn45.val[0]),
-                                   vreinterpret_u16_u8(trn67.val[0]));
-  uint16x4x2_t trn4567b = vtrn_u16(vreinterpret_u16_u8(trn45.val[1]),
-                                   vreinterpret_u16_u8(trn67.val[1]));
-
-  uint32x2x2_t last0 = vtrn_u32(vreinterpret_u32_u16(trn0123a.val[0]),
-                                vreinterpret_u32_u16(trn4567a.val[0]));
-  uint32x2x2_t last1 = vtrn_u32(vreinterpret_u32_u16(trn0123b.val[0]),
-                                vreinterpret_u32_u16(trn4567b.val[0]));
-  uint32x2x2_t last2 = vtrn_u32(vreinterpret_u32_u16(trn0123a.val[1]),
-                                vreinterpret_u32_u16(trn4567a.val[1]));
-  uint32x2x2_t last3 = vtrn_u32(vreinterpret_u32_u16(trn0123b.val[1]),
-                                vreinterpret_u32_u16(trn4567b.val[1]));
-
-  vst1_u8(&output[0 * output_stride], vreinterpret_u8_u32(last0.val[0]));
-  vst1_u8(&output[1 * output_stride], vreinterpret_u8_u32(last1.val[0]));
-  vst1_u8(&output[2 * output_stride], vreinterpret_u8_u32(last2.val[0]));
-  vst1_u8(&output[3 * output_stride], vreinterpret_u8_u32(last3.val[0]));
-  vst1_u8(&output[4 * output_stride], vreinterpret_u8_u32(last0.val[1]));
-  vst1_u8(&output[5 * output_stride], vreinterpret_u8_u32(last1.val[1]));
-  vst1_u8(&output[6 * output_stride], vreinterpret_u8_u32(last2.val[1]));
-  vst1_u8(&output[7 * output_stride], vreinterpret_u8_u32(last3.val[1]));
-}
-
-static inline void transpose_matrix_16x16(const uint8_t *input,
-                                          int input_stride, uint8_t *output,
-                                          int output_stride) {
-  transpose_matrix_8x8(input, input_stride, output, output_stride);
-  transpose_matrix_8x8(input + 8, input_stride, output + 8 * output_stride,
-                       output_stride);
-  transpose_matrix_8x8(input + 8 * input_stride, input_stride, output + 8,
-                       output_stride);
-  transpose_matrix_8x8(input + 8 * input_stride + 8, input_stride,
-                       output + 8 * output_stride + 8, output_stride);
-}
-
 static inline void transpose_matrix_16x8(const uint8_t *input, int input_stride,
                                          uint8_t *output, int output_stride) {
-  transpose_matrix_8x8(input, input_stride, output, output_stride);
-  transpose_matrix_8x8(input + 8 * input_stride, input_stride, output + 8,
-                       output_stride);
+  uint8x8_t rows[16];
+  for (int i = 0; i < 8; i++) {
+    rows[2 * i] = vld1_u8(&input[2 * i * input_stride]);
+    rows[2 * i + 1] = vld1_u8(&input[(2 * i + 1) * input_stride]);
+  }
+
+  uint8x16_t rows2[8];
+  rows2[0] = vcombine_u8(rows[0], rows[8]);
+  rows2[1] = vcombine_u8(rows[1], rows[9]);
+  rows2[2] = vcombine_u8(rows[2], rows[10]);
+  rows2[3] = vcombine_u8(rows[3], rows[11]);
+  rows2[4] = vcombine_u8(rows[4], rows[12]);
+  rows2[5] = vcombine_u8(rows[5], rows[13]);
+  rows2[6] = vcombine_u8(rows[6], rows[14]);
+  rows2[7] = vcombine_u8(rows[7], rows[15]);
+
+  uint8x16x2_t trn01 = vtrnq_u8(rows2[0], rows2[1]);
+  uint8x16x2_t trn23 = vtrnq_u8(rows2[2], rows2[3]);
+  uint8x16x2_t trn45 = vtrnq_u8(rows2[4], rows2[5]);
+  uint8x16x2_t trn67 = vtrnq_u8(rows2[6], rows2[7]);
+
+  uint16x8x2_t trn0123a = vtrnq_u16(vreinterpretq_u16_u8(trn01.val[0]),
+                                    vreinterpretq_u16_u8(trn23.val[0]));
+  uint16x8x2_t trn0123b = vtrnq_u16(vreinterpretq_u16_u8(trn01.val[1]),
+                                    vreinterpretq_u16_u8(trn23.val[1]));
+  uint16x8x2_t trn4567a = vtrnq_u16(vreinterpretq_u16_u8(trn45.val[0]),
+                                    vreinterpretq_u16_u8(trn67.val[0]));
+  uint16x8x2_t trn4567b = vtrnq_u16(vreinterpretq_u16_u8(trn45.val[1]),
+                                    vreinterpretq_u16_u8(trn67.val[1]));
+
+  uint32x4x2_t last0 = vtrnq_u32(vreinterpretq_u32_u16(trn0123a.val[0]),
+                                 vreinterpretq_u32_u16(trn4567a.val[0]));
+  uint32x4x2_t last1 = vtrnq_u32(vreinterpretq_u32_u16(trn0123b.val[0]),
+                                 vreinterpretq_u32_u16(trn4567b.val[0]));
+  uint32x4x2_t last2 = vtrnq_u32(vreinterpretq_u32_u16(trn0123a.val[1]),
+                                 vreinterpretq_u32_u16(trn4567a.val[1]));
+  uint32x4x2_t last3 = vtrnq_u32(vreinterpretq_u32_u16(trn0123b.val[1]),
+                                 vreinterpretq_u32_u16(trn4567b.val[1]));
+
+  vst1q_u8(&output[0 * output_stride], vreinterpretq_u8_u32(last0.val[0]));
+  vst1q_u8(&output[1 * output_stride], vreinterpretq_u8_u32(last1.val[0]));
+  vst1q_u8(&output[2 * output_stride], vreinterpretq_u8_u32(last2.val[0]));
+  vst1q_u8(&output[3 * output_stride], vreinterpretq_u8_u32(last3.val[0]));
+  vst1q_u8(&output[4 * output_stride], vreinterpretq_u8_u32(last0.val[1]));
+  vst1q_u8(&output[5 * output_stride], vreinterpretq_u8_u32(last1.val[1]));
+  vst1q_u8(&output[6 * output_stride], vreinterpretq_u8_u32(last2.val[1]));
+  vst1q_u8(&output[7 * output_stride], vreinterpretq_u8_u32(last3.val[1]));
 }
 
 inline static void
@@ -1690,9 +1515,7 @@ void transform_int4_osv32_isv2_to_q4_0x4(size_t N, size_t K,
   static constexpr const size_t COLUMN_BLOCK_SIZE = 2;
   static constexpr const size_t ROW_BLOCK_BYTE_SIZE = 16;
 
-  // uint8_t dst_tmp[8 * ROW_BLOCK_BYTE_SIZE];
   uint8_t *dst_ = reinterpret_cast<uint8_t *>(dst_q4_0x);
-  uint8_t mx8x16[8 * 16];
 
   // --- Layout ---
   const size_t rows_count_pad = align(N, ROW_BLOCK_SIZE);
@@ -1702,21 +1525,23 @@ void transform_int4_osv32_isv2_to_q4_0x4(size_t N, size_t K,
   const size_t bytes_per_row_block_span = column_blocks_count * ROW_BLOCK_SIZE;
   const int column_blocks_cnt = K / QK4_0;
 
+#pragma omp parallel for schedule(dynamic)
   for (int column_out_block_id = 0; column_out_block_id < column_blocks_cnt;
        column_out_block_id++) {
-    int column_idx = column_out_block_id * QK4_0;
-    int scale_offset = (column_idx / scale_group_size) * rows_count_pad;
+    uint8_t mx8x16[8 * 16];
+    const int column_idx = column_out_block_id * QK4_0;
+    const int scale_offset = (column_idx / scale_group_size) * rows_count_pad;
     for (size_t row_id = 0; row_id < N; row_id += 8) {
       const size_t row_in_block_id = row_id / ROW_BLOCK_SIZE;
-      size_t i_in_block = row_id % ROW_BLOCK_SIZE;
+      const size_t i_in_block = row_id % ROW_BLOCK_SIZE;
       const size_t row_block_base =
         row_in_block_id * bytes_per_row_block_span + i_in_block;
-      int src_offset =
+      const int src_offset =
         row_block_base + column_out_block_id * 16 * ROW_BLOCK_SIZE;
 
       transpose_matrix_16x8(&osv32_weights[src_offset], ROW_BLOCK_SIZE, mx8x16,
                             16);
-      size_t row_out_block_id = row_id / NUM_Q4_0_BLOCKS;
+      const size_t row_out_block_id = row_id / NUM_Q4_0_BLOCKS;
       int dst_offset =
         (NUM_Q4_0_BLOCKS * sizeof(block_q4_0)) *
         (column_out_block_id + row_out_block_id * column_blocks_cnt);

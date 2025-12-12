@@ -354,7 +354,7 @@ void transform_int4_osv32_isv2_to_q4_0(size_t N, size_t K,
                                        size_t scale_group_size,
                                        void *dst_q4_0x) {
   __fallback_transform_int4_osv32_isv2_to_q4_0(
-    N, K, osv32_weights, osv32_scales, scale_group_size, dst_q4_0x);
+    N, K, osv32_weights, osv32_scales, scale_group_size, 8, dst_q4_0x);
 }
 
 } /* namespace nntrainer */
