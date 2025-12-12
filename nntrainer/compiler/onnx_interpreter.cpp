@@ -251,8 +251,8 @@ void ONNXInterpreter::loadInputsAndWeights(
     // weight layer should be modified not to use input_shape as a parameter
     representation.push_back(createLayerNode(
       "weight",
-      {withKey("name", cleanName(initializer.name())), withKey("dim", dim),
-       withKey("input_shape", dim),
+      {withKey("name", cleanName(initializer.name())),
+       withKey("weight_dim", dim),
        withKey("tensor_dtype", getDataTypeFromONNX(initializer.data_type())),
        withKey("weight_name", cleanName(initializer.name()))}));
   }
