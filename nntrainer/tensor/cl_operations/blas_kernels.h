@@ -14,10 +14,10 @@
 #ifndef __BLAS_KERNELS_H__
 #define __BLAS_KERNELS_H__
 
-#include <cl_buffer_manager.h>
 #include <cl_context.h>
 #include <engine.h>
 #include <opencl_buffer.h>
+#include <opencl_buffer_manager.h>
 #include <opencl_kernel.h>
 
 #include <string>

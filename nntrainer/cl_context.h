@@ -31,7 +31,7 @@
 #include <layer_devel.h>
 #include <mem_allocator.h>
 
-#include <cl_buffer_manager.h>
+#include <opencl_buffer_manager.h>
 #include <opencl_command_queue_manager.h>
 #include <opencl_context_manager.h>
 #include <opencl_kernel.h>

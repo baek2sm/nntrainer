@@ -2,16 +2,17 @@
 /**
  * Copyright (C) 2024 Debadri Samaddar <s.debadri@samsung.com>
  *
- * @file    cl_buffer_manager.h
+ * @file    opencl_buffer_manager.h
  * @date    01 Dec 2024
  * @see     https://github.com/nnstreamer/nntrainer
  * @author  Debadri Samaddar <s.debadri@samsung.com>
+ * @author  Donghyeon Jeong <dhyeon.jeong@samsung.com>
  * @bug     No known bugs except for NYI items
  * @brief   This file contains global Buffer objects and manages them
  */
 
-#ifndef __CL_BUFFER_MANAGER_H__
-#define __CL_BUFFER_MANAGER_H__
+#ifndef __OPENCL_BUFFER_MANAGER_H__
+#define __OPENCL_BUFFER_MANAGER_H__
 
 #include <string>
 
@@ -34,12 +35,11 @@ class ClBufferManager : public Singleton<ClBufferManager> {
 private:
   /**
    * @brief OpenCl context global instance
-   *
    */
   opencl::ContextManager &context_inst_ = opencl::ContextManager::Global();
 
   /**
-   * @brief Buffer size in bytes preset (256 mebibytes)
+   * @brief Buffer size in bytes preset (32 mebibytes)
    */
   const size_t buffer_size_bytes = 1024 * 8192 * sizeof(float);
   const size_t unused_buffer_bytes = sizeof(float);
@@ -69,70 +69,55 @@ public:
 
   /**
    * @brief Get read only inBufferA.
-   * @return opencl::Buffer* or nullptr if initBuffers() is not called
+   * @return opencl::Buffer*
    */
-  opencl::Buffer *getInBufferA() { return inBufferA; }
+  opencl::Buffer *getInBufferA();
 
   /**
    * @brief Get read only inBufferB.
-   * @return opencl::Buffer* or nullptr if initBuffers() is not called
+   * @return opencl::Buffer*
    */
-  opencl::Buffer *getInBufferB() { return inBufferB; }
+  opencl::Buffer *getInBufferB();
 
   /**
    * @brief Get read only inBufferC.
-   * @return opencl::Buffer* or nullptr if initBuffers() is not called
+   * @return opencl::Buffer*
    */
-  opencl::Buffer *getInBufferC() { return inBufferC; }
+  opencl::Buffer *getInBufferC();
 
   /**
    * @brief Get read-write outBufferA.
-   * @return opencl::Buffer* or nullptr if initBuffers() is not called
+   * @return opencl::Buffer*
    */
-  opencl::Buffer *getOutBufferA() { return outBufferA; }
+  opencl::Buffer *getOutBufferA();
 
   /**
    * @brief Get read-write outBufferB.
-   * @return opencl::Buffer* or nullptr if initBuffers() is not called
+   * @return opencl::Buffer*
    */
-  opencl::Buffer *getOutBufferB() { return outBufferB; }
+  opencl::Buffer *getOutBufferB();
 
   /**
    * @brief Get the SVM pointer to data_input
    */
-  void *getSVMInput() { return data_input; }
+  void *getSVMInput();
 
   /**
    * @brief Get the SVM pointer to data_input
    *
    * @note remove this when fp16 is enabled on Windows
    */
-  void *getSVMOutput(unsigned int idx = 0) {
-    if (idx >= output_vec.size())
-      return nullptr;
-
-    return output_vec[idx];
-  }
+  void *getSVMOutput(unsigned int idx = 0);
 
   /**
    * @brief Get the SVM pointer to data_input
    */
-  void *getSVMScale(unsigned int idx = 0) {
-    if (idx >= scale_vec.size())
-      return nullptr;
-
-    return scale_vec[idx];
-  }
+  void *getSVMScale(unsigned int idx = 0);
 
   /**
    * @brief Get the SVM pointer to data_input
    */
-  void *getSVMQuant(unsigned int idx = 0) {
-    if (idx >= quant_vec.size())
-      return nullptr;
-
-    return quant_vec[idx];
-  }
+  void *getSVMQuant(unsigned int idx = 0);
 
   /**
    * @brief Destroy Buffer pointers.
@@ -142,4 +127,4 @@ public:
 };
 } // namespace nntrainer
 
-#endif /* __CL_BUFFER_MANAGER_H__ */
+#endif /* __OPENCL_BUFFER_MANAGER_H__ */
