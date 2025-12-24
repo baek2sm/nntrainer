@@ -767,8 +767,8 @@ void FloatTensor::dot(std::vector<Tensor *> input, std::vector<Tensor *> output,
         gemv_int4_async_cl(mdatas, scales, data, rdatas, K, Ns,
                            Int4QTensor::getGroupSize());
       } else {
-        openvino_gemm_async_cl(data, mdatas, scales, rdatas, M, Ns, K,
-                               Int4QTensor::getGroupSize());
+        gemm_int4_async_cl(data, mdatas, scales, rdatas, M, Ns, K,
+                           Int4QTensor::getGroupSize());
       }
     } else {
       /// @todo This should be replaced with standard CPU INT4 computation
@@ -1004,8 +1004,8 @@ Tensor &FloatTensor::dotQInteger(Tensor const &input, Tensor &output,
       gemv_int4_cl(mdata, input.getScale<uint16_t>(), data, rdata, K, N,
                    Int4QTensor::getGroupSize());
     } else {
-      openvino_sgemm_cl(data, mdata, input.getScale<uint16_t>(), rdata, M, N, K,
-                        Int4QTensor::getGroupSize());
+      sgemm_int4_cl(data, mdata, input.getScale<uint16_t>(), rdata, M, N, K,
+                    Int4QTensor::getGroupSize());
     }
   } else {
     /// @todo This should be replaced with standard CPU INT4 computation

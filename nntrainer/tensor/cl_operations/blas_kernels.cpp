@@ -446,11 +446,11 @@ void gemm_q4_0_cl(void *matAdata, float *matBdata, float *matCdata,
   }
 }
 
-void openvino_gemm_async_cl(float *input, std::vector<void *> weights,
-                            std::vector<uint16_t *> scales,
-                            std::vector<float *> matCdata, unsigned int M,
-                            std::vector<unsigned int> Ns, unsigned int K,
-                            unsigned int quantization_group_size) {
+void gemm_int4_async_cl(float *input, std::vector<void *> weights,
+                        std::vector<uint16_t *> scales,
+                        std::vector<float *> matCdata, unsigned int M,
+                        std::vector<unsigned int> Ns, unsigned int K,
+                        unsigned int quantization_group_size) {
   auto *blas_cc =
     static_cast<ClContext *>(Engine::Global().getRegisteredContext("gpu"));
   auto &clbuffInstance = ClBufferManager::Global();
@@ -525,8 +525,8 @@ void openvino_gemm_async_cl(float *input, std::vector<void *> weights,
 
     const bool scale_row_major = false;
 
-    ClContext::SharedPtrClKernel kernel_ptr = blas_cc->registerClKernel(
-      openvino_gemm_kernel, "fc_bf_tiled_kernel_default");
+    ClContext::SharedPtrClKernel kernel_ptr =
+      blas_cc->registerClKernel(gemm_int4_kernel, "fc_bf_tiled_kernel_default");
     if (!kernel_ptr) {
       throw std::runtime_error(
         "Failed to get kernel_ptr for fc_bf_tiled_kernel_default");
@@ -623,9 +623,9 @@ void openvino_gemm_async_cl(float *input, std::vector<void *> weights,
 }
 
 ///  @note remove this when fp16 is enabled on Windows
-void openvino_sgemm_cl(float *input, char *weight, uint16_t *scale,
-                       float *output, unsigned int M, unsigned int N,
-                       unsigned int K, unsigned int quantization_group_size) {
+void sgemm_int4_cl(float *input, char *weight, uint16_t *scale, float *output,
+                   unsigned int M, unsigned int N, unsigned int K,
+                   unsigned int quantization_group_size) {
   auto *blas_cc =
     static_cast<ClContext *>(Engine::Global().getRegisteredContext("gpu"));
   auto &clbuffInstance = ClBufferManager::Global();
@@ -634,17 +634,16 @@ void openvino_sgemm_cl(float *input, char *weight, uint16_t *scale,
   copy_fp32_u16(M * K, input, (uint16_t *)clbuffInstance.getSVMInput());
 
   // perform int4 matmul
-  openvino_gemm_cl(clbuffInstance.getSVMInput(), weight, scale,
-                   clbuffInstance.getSVMOutput(), M, N, K,
-                   quantization_group_size);
+  gemm_int4_cl(clbuffInstance.getSVMInput(), weight, scale,
+               clbuffInstance.getSVMOutput(), M, N, K, quantization_group_size);
 
   // copy fp16 output to fp32
   copy_u16_fp32(M * N, (uint16_t *)clbuffInstance.getSVMOutput(), output);
 }
 
-void openvino_gemm_cl(void *input, void *weights, void *scales, void *output,
-                      unsigned int M, unsigned int N, unsigned int K,
-                      unsigned int quantization_group_size) {
+void gemm_int4_cl(void *input, void *weights, void *scales, void *output,
+                  unsigned int M, unsigned int N, unsigned int K,
+                  unsigned int quantization_group_size) {
   int alignK = align(K, quantization_group_size);
   const auto N_GROUP_SIZE = 32; // due to input data format
   int alignN = align(N, N_GROUP_SIZE);
@@ -711,8 +710,8 @@ void openvino_gemm_cl(void *input, void *weights, void *scales, void *output,
   }
 
   // 3. Perform Matrix Multiplication
-  ClContext::SharedPtrClKernel kernel_ptr = blas_cc->registerClKernel(
-    openvino_gemm_kernel, "fc_bf_tiled_kernel_default");
+  ClContext::SharedPtrClKernel kernel_ptr =
+    blas_cc->registerClKernel(gemm_int4_kernel, "fc_bf_tiled_kernel_default");
   if (!kernel_ptr) {
     throw std::runtime_error(
       "Failed to get kernel_ptr for fc_bf_tiled_kernel_default");
