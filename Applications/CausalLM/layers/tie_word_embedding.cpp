@@ -35,7 +35,7 @@ enum TieWordEmbeddingParams {
 TieWordEmbedding::TieWordEmbedding() :
   LayerImpl(),
   tieword_embedding_props(nntrainer::props::InDim(), nntrainer::props::OutDim(),
-                          nntrainer::props::Unit()) {
+                          nntrainer::props::Unit(), causallm::props::Scale()) {
   weight_idx.fill(std::numeric_limits<unsigned>::max());
 }
 
@@ -192,6 +192,10 @@ void TieWordEmbedding::incremental_forwarding_embedding(
     std::get<nntrainer::props::InDim>(tieword_embedding_props);
   unsigned int out_dim =
     std::get<nntrainer::props::OutDim>(tieword_embedding_props);
+  float scale = std::get<causallm::props::Scale>(tieword_embedding_props).get();
+  if (scale == 0.0f) {
+    scale = 1.0f;
+  }
 
   unsigned int _from = from;
 
@@ -238,6 +242,10 @@ void TieWordEmbedding::incremental_forwarding_embedding(
           out_tensor.getData(), out_dim);
       } else {
         out_tensor.copyData(cur_weight);
+      }
+
+      if (scale != 1.0f) {
+        out_tensor.multiply_i(scale);
       }
     }
 

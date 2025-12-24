@@ -22,6 +22,7 @@
 #define WIN_EXPORT
 #endif
 
+#include <causallm_common_properties.h>
 #include <common_properties.h>
 #include <layer_devel.h>
 #include <layer_impl.h>
@@ -141,7 +142,7 @@ public:
 
 private:
   std::tuple<nntrainer::props::InDim, nntrainer::props::OutDim,
-             nntrainer::props::Unit>
+             nntrainer::props::Unit, causallm::props::Scale>
     tieword_embedding_props;
   enum mode { embedding, lm_head };
   enum mode mode_;

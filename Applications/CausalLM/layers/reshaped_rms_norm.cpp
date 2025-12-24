@@ -31,7 +31,7 @@ void ReshapedRMSNormLayer::finalize(nntrainer::InitLayerContext &context) {
     1, 1, 1, feature_size,
     nntrainer::TensorDim::TensorType(context.getFormat(),
                                      context.getWeightDataType()));
-  wt_idx[RMSParams::gamma] = context.requestWeight(
+  wt_idx[RMSParams::rms_gamma] = context.requestWeight(
     gamma_dim, nntrainer::props::InitializerInfo::Enum::NONE,
     nntrainer::WeightRegularizer::NONE, 1.0f, 0.0f, "gamma", false);
 }
@@ -46,7 +46,7 @@ void ReshapedRMSNormLayer::incremental_forwarding(
 
   nntrainer::Tensor &in = context.getInput(SINGLE_INOUT_IDX);
   nntrainer::Tensor &out = context.getOutput(SINGLE_INOUT_IDX);
-  nntrainer::Tensor &gamma = context.getWeight(wt_idx[RMSParams::gamma]);
+  nntrainer::Tensor &gamma = context.getWeight(wt_idx[RMSParams::rms_gamma]);
 
   ml::train::TensorDim in_dim = in.getDim();
   ml::train::TensorDim out_dim = out.getDim();

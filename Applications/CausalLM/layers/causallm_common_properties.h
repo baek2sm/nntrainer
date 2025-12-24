@@ -90,14 +90,25 @@ public:
   WIN_EXPORT RMS_NORM_GAMMA_INIT(
     nntrainer::Initializer value = nntrainer::Initializer::ONES) {
     set(value);
-  };
+  }
 
   using prop_tag = nntrainer::enum_class_prop_tag;
   static constexpr const char *key = "gamma_initializer";
 };
+
+/**
+ * @brief Scale, Scaling factor property
+ */
+class Scale : public nntrainer::Property<float> {
+public:
+  static constexpr const char *key = "scale";     /**< unique key to access */
+  using prop_tag = nntrainer::float_prop_tag;     /**< property type */
+};
+
+
 }; // namespace props
 
-WIN_EXPORT enum RMSParams { gamma };
+WIN_EXPORT enum RMSParams { rms_gamma };
 
 } // namespace causallm
 
