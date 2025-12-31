@@ -1326,6 +1326,15 @@ public:
 };
 
 /**
+ * @brief Scale, Scaling factor property
+ */
+class Scale : public nntrainer::Property<float> {
+public:
+  static constexpr const char *key = "scale"; /**< unique key to access */
+  using prop_tag = nntrainer::float_prop_tag; /**< property type */
+};
+
+/**
  * @brief scaled dot product property, used to check
  * whether attention layer is a kind of scaled dot product attention
  *

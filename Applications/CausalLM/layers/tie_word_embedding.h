@@ -141,7 +141,7 @@ public:
 
 private:
   std::tuple<nntrainer::props::InDim, nntrainer::props::OutDim,
-             nntrainer::props::Unit>
+             nntrainer::props::Unit, nntrainer::props::Scale>
     tieword_embedding_props;
   enum mode { embedding, lm_head };
   enum mode mode_;

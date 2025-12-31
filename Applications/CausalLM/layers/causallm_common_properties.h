@@ -95,6 +95,7 @@ public:
   using prop_tag = nntrainer::enum_class_prop_tag;
   static constexpr const char *key = "gamma_initializer";
 };
+
 }; // namespace props
 
 WIN_EXPORT enum RMSParams { gamma };
