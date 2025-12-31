@@ -153,7 +153,8 @@ void Transformer::constructModel() {
   layers.push_back(createLayer(
     embedding_type,
     {"name=embedding0", "in_dim=" + std::to_string(NUM_VOCAB),
-     "weight_dtype=" + EMBEDDING_DTYPE, "out_dim=" + std::to_string(DIM)}));
+     "weight_dtype=" + EMBEDDING_DTYPE, "out_dim=" + std::to_string(DIM),
+     "scale=" + std::to_string(EMBEDDING_SCALE)}));
 
   // create transformer layers
   for (int i = 0; i < NUM_LAYERS; ++i) {

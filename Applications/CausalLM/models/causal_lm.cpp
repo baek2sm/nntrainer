@@ -75,7 +75,9 @@ void CausalLM::setupParameters(json &cfg, json &generation_cfg,
   }
 
   EOS_TOKEN_ID =
-    generation_cfg["eos_token_id"].get<std::vector<unsigned int>>();
+    generation_cfg["eos_token_id"].empty()
+      ? cfg["eos_token_id"].get<std::vector<unsigned int>>()
+      : generation_cfg["eos_token_id"].get<std::vector<unsigned int>>();
   BOS_TOKEN_ID = generation_cfg["bos_token_id"].empty()
                    ? cfg["bos_token_id"].get<unsigned int>()
                    : generation_cfg["bos_token_id"].get<unsigned int>();
