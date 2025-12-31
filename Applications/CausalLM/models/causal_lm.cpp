@@ -76,7 +76,9 @@ void CausalLM::setupParameters(json &cfg, json &generation_cfg,
 
   EOS_TOKEN_ID =
     generation_cfg["eos_token_id"].get<std::vector<unsigned int>>();
-  BOS_TOKEN_ID = generation_cfg["bos_token_id"].get<unsigned int>();
+  BOS_TOKEN_ID = generation_cfg["bos_token_id"].empty()
+                   ? cfg["bos_token_id"].get<unsigned int>()
+                   : generation_cfg["bos_token_id"].get<unsigned int>();
   TOP_K = generation_cfg.contains("top_k")
             ? generation_cfg["top_k"].get<unsigned int>()
             : 20;
@@ -320,6 +322,8 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
     SYS_PROMP_LEN = tokenizer->Encode(system_prompt).size();
 
   auto _input = tokenizer->Encode(prompt_);
+  // insert bos token at the beginning of the input
+  _input.insert(_input.begin(), BOS_TOKEN_ID);
 #endif
 
   // | <------------------- MAX_SEQ_LEN -------------------> |
