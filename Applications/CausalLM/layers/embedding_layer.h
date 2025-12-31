@@ -117,7 +117,9 @@ public:
   inline static const std::string type = "embedding_layer";
 
 private:
-  std::tuple<nntrainer::props::InDim, nntrainer::props::OutDim> embedding_props;
+  std::tuple<nntrainer::props::InDim, nntrainer::props::OutDim,
+             nntrainer::props::Scale>
+    embedding_props;
   unsigned int weight_idx;
 };
 } // namespace causallm
