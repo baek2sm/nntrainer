@@ -37,11 +37,11 @@ def save_gemma3_for_nntrainer(params, config, dtype, file):
         save_weight(params[f"{layer_name}input_layernorm.weight"], is_rms=True)  
           
         # Save Q/K/V/O projections with layer norms
-        save_projection(layer_name, "self_attn.v_proj")
+        save_projection(layer_name, "self_attn.q_proj")
         save_projection(layer_name, "self_attn.k_proj")
+        save_projection(layer_name, "self_attn.v_proj")
         if f"{layer_name}self_attn.k_norm.weight" in params:
             save_weight(params[f"{layer_name}self_attn.k_norm.weight"], is_rms=True)
-        save_projection(layer_name, "self_attn.q_proj")
         if f"{layer_name}self_attn.q_norm.weight" in params:
             save_weight(params[f"{layer_name}self_attn.q_norm.weight"], is_rms=True)
         save_projection(layer_name, "self_attn.o_proj")
