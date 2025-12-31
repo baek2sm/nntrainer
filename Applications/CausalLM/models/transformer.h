@@ -165,6 +165,7 @@ protected:
   unsigned int SLIDING_WINDOW_PATTERN = 5;
   unsigned int ROPE_THETA = 10000; /**< RoPE theta value */
   float NORM_EPS = 1e-5;           /**< RMSNorm epsilon value */
+  float EMBEDDING_SCALE = 1.0f;
   int GQA_SIZE;
 
   unsigned int BATCH_SIZE;              /**< Batch size for the model */
