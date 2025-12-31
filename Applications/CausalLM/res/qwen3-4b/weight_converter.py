@@ -27,15 +27,17 @@ def save_qwen3_for_nntrainer(params, n_layers, dtype, file):
     def save_attention(layer_name):  
         """Save attention layer weights"""  
         save_weight(params[f"{layer_name}input_layernorm.weight"])  
-          
-        # Save Q/K/V/O projections using helper  
-        for proj in ["q_proj", "k_proj", "v_proj", "o_proj"]:  
-            save_projection(layer_name, f"self_attn.{proj}")  
-            # Qwen3
-            proj_norm_name = f"{layer_name}self_attn.{proj[0]}_norm.weight"
-            if proj_norm_name in params:
-                print(proj_norm_name)
-                save_weight(params[proj_norm_name])
+
+        save_projection(layer_name, "self_attn.q_proj")
+        save_projection(layer_name, "self_attn.k_proj")
+        save_projection(layer_name, "self_attn.v_proj")
+        k_proj_norm = f"{layer_name}self_attn.k_norm.weight"
+        q_proj_norm = f"{layer_name}self_attn.q_norm.weight"
+        if k_proj_norm in params:
+            save_weight(params[k_proj_norm])
+        if q_proj_norm in params:
+            save_weight(params[q_proj_norm])
+        save_projection(layer_name, "self_attn.o_proj")
 
     def save_feed_forward(layer_name):  
         """Save feed forward layer weights"""  
