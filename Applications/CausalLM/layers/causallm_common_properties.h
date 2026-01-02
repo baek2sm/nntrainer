@@ -31,6 +31,7 @@
 #endif
 
 #include <base_properties.h>
+#include <common_properties.h>
 #include <tensor.h>
 #include <utility>
 
@@ -94,6 +95,24 @@ public:
 
   using prop_tag = nntrainer::enum_class_prop_tag;
   static constexpr const char *key = "gamma_initializer";
+};
+
+/**
+ * @brief LoraEnable property
+ */
+class LoraEnable : public nntrainer::Property<bool> {
+public:
+  static constexpr const char *key = "lora_enable";
+  using prop_tag = nntrainer::bool_prop_tag;
+};
+
+/**
+ * @brief SkipPrefill property
+ */
+class SkipPrefill : public nntrainer::Property<bool> {
+public:
+  static constexpr const char *key = "skip_prefill";
+  using prop_tag = nntrainer::bool_prop_tag;
 };
 }; // namespace props
 
