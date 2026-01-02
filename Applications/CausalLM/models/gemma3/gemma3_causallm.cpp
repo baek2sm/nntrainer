@@ -208,54 +208,6 @@ std::vector<LayerHandle> Gemma3Transformer::createAttention(
   return layers;
 }
 
-std::vector<LayerHandle> Gemma3Transformer::createMlp(const int layer_id,
-                                                      int dim, int hidden_dim,
-                                                      std::string input_name) {
-  std::vector<LayerHandle> layers;
-
-  // Gate projection
-  layers.push_back(createLayer(
-    "fully_connected",
-    {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_gate"),
-     withKey("unit", hidden_dim), withKey("disable_bias", "true"),
-     withKey("input_layers", input_name),
-     withKey("weight_initializer", "ones")}));
-
-  // GeLU
-  layers.push_back(createLayer(
-    "activation",
-    {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_gate_gelu"),
-     withKey("activation", "tanh_gelu"),
-     withKey("input_layers",
-             "layer" + std::to_string(layer_id) + "_ffn_gate")}));
-
-  // Up projection
-  layers.push_back(createLayer(
-    "fully_connected",
-    {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_up"),
-     withKey("unit", hidden_dim), withKey("disable_bias", "true"),
-     withKey("input_layers", input_name),
-     withKey("weight_initializer", "ones")}));
-
-  // Multiply
-  layers.push_back(createLayer(
-    "multiply",
-    {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_geglu"),
-     withKey("input_layers", "layer" + std::to_string(layer_id) +
-                               "_ffn_gate_gelu,layer" +
-                               std::to_string(layer_id) + "_ffn_up")}));
-
-  // Down projection
-  layers.push_back(createLayer(
-    "fully_connected",
-    {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_down"),
-     withKey("unit", dim), withKey("disable_bias", "true"),
-     withKey("input_layers", "layer" + std::to_string(layer_id) + "_ffn_geglu"),
-     withKey("weight_initializer", "ones")}));
-
-  return layers;
-}
-
 void Gemma3Transformer::registerCustomLayers() {
   auto &ct_engine = nntrainer::Engine::Global();
   auto app_context =

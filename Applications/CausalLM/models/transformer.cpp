@@ -21,6 +21,7 @@
 #include <transformer.h>
 
 #include <embedding_layer.h>
+#include <ffn_layer.h>
 #include <mha_core.h>
 #include <rms_norm.h>
 #include <swiglu.h>
@@ -365,25 +366,20 @@ std::vector<LayerHandle> Transformer::createMlp(const int layer_id, int dim,
 
   std::vector<LayerHandle> layers;
 
+  auto FFN = "layer" + std::to_string(layer_id) + "_ffn";
+  auto FFN0 = FFN + "(0)";
+  auto FFN1 = FFN + "(1)";
+
   layers.push_back(createLayer(
-    "fully_connected",
-    {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_up"),
-     withKey("unit", hidden_dim), withKey("disable_bias", "true"),
-     withKey("input_layers", input_name),
-     withKey("weight_initializer", "ones")}));
-  layers.push_back(createLayer(
-    "fully_connected",
-    {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_gate"),
-     withKey("unit", hidden_dim), withKey("disable_bias", "true"),
-     withKey("input_layers", input_name),
+    "custom_ffn",
+    {withKey("name", FFN), withKey("unit", hidden_dim),
+     withKey("disable_bias", "true"), withKey("input_layers", input_name),
      withKey("weight_initializer", "ones")}));
 
   layers.push_back(createLayer(
     "swiglu",
     {withKey("name", "layer" + std::to_string(layer_id) + "_ffn_swiglu"),
-     withKey("input_layers", "layer" + std::to_string(layer_id) + "_ffn_up," +
-                               "layer" + std::to_string(layer_id) +
-                               "_ffn_gate")}));
+     withKey("input_layers", {FFN1, FFN0})}));
 
   layers.push_back(createLayer(
     "fully_connected",
@@ -412,6 +408,7 @@ void Transformer::registerCustomLayers() {
       nntrainer::createLayer<causallm::TieWordEmbedding>);
     app_context->registerFactory(
       nntrainer::createLayer<causallm::EmbeddingLayer>);
+    app_context->registerFactory(nntrainer::createLayer<causallm::FFNLayer>);
 
   } catch (std::invalid_argument &e) {
     std::cerr << "failed to register factory, reason: " << e.what()
