@@ -9,8 +9,11 @@
  * @bug No known bugs except for NYI items
  * @brief This file defines Embedding's basic actions
  */
-
+#include <app_context.h>
 #include <embedding.h>
+#include <embedding_normalize_layer.h>
+#include <embedding_pooling_layer.h>
+#include <engine.h>
 
 #include <filesystem>
 #include <iostream>
@@ -23,10 +26,8 @@ Embedding::Embedding(json &cfg, json &generation_cfg, json &nntr_cfg) :
 }
 
 std::map<std::string, std::string> Embedding::layer_map = {
-  ///@note NYI
-  // {"Pooling", "sentence_transformer_pooling"},
-  // {"Normalization", "sentence_transformer_normalization"},
-  // {"Normalize", "sentence_transformer_normalization"}
+  {"Pooling", "embedding_pooling"},
+  {"Normalize", "embedding_normalize"}
 };
 
 void Embedding::setupParameters(json &cfg, json &generation_cfg,
@@ -35,7 +36,7 @@ void Embedding::setupParameters(json &cfg, json &generation_cfg,
 
   std::string modules_config_path = "modules.json";
   if (nntr_cfg.contains("module_config_path")) {
-    modules_config_path = nntr_cfg["modules_config_path"].get<std::string>();
+    modules_config_path = nntr_cfg["module_config_path"].get<std::string>();
   } else {
     std::cout << "modules_config_path is not set. Using default: "
               << modules_config_path << std::endl;
@@ -246,6 +247,24 @@ std::string Embedding::getLastComponent(const std::string &type) {
     last_component = type.substr(last_dot_pos + 1);
   }
   return last_component;
+}
+
+void Embedding::registerCustomLayers() {
+  Transformer::registerCustomLayers();
+
+  const auto &ct_engine = nntrainer::Engine::Global();
+  const auto app_context =
+    static_cast<nntrainer::AppContext *>(ct_engine.getRegisteredContext("cpu"));
+
+  try {
+    app_context->registerFactory(
+      nntrainer::createLayer<causallm::EmbeddingPoolingLayer>);
+    app_context->registerFactory(
+      nntrainer::createLayer<causallm::EmbeddingNormalizeLayer>);
+  } catch (std::invalid_argument &e) {
+    std::cerr << "failed to register factory, reason: " << e.what()
+              << std::endl;
+  }
 }
 
 } // namespace causallm
