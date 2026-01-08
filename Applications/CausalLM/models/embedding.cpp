@@ -197,16 +197,12 @@ std::vector<float *> Embedding::encode(const WSTR prompt,
   auto _input = tokenizer->Encode(converter.to_bytes(prompt_));
 #else
   std::string prompt_ = system_prompt + prompt + tail_prompt;
-  auto _input = tokenizer->Encode(prompt_);
+  auto _input = tokenizer->Encode(prompt_, true);
 #endif
 
   std::vector<int64_t> init_input;
-  unsigned int _len = _input.size();
-  unsigned int input_len = _len;
-
-  if (_len > MAX_SEQ_LEN) {
-    input_len = MAX_SEQ_LEN;
-  }
+  unsigned int input_len =
+    std::min((unsigned int)_input.size(), (unsigned int)MAX_SEQ_LEN);
 
   // feed only available length
   for (unsigned int i = 0; i < input_len; ++i)
