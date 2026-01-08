@@ -227,8 +227,8 @@ std::vector<float *> Embedding::encode(const WSTR prompt,
   // start: 0, end: input_len (process all tokens at once)
   // This performs a single forward pass for the entire prompt sequence to get
   // embeddings.
-  auto output = model->incremental_inference(BATCH_SIZE, input, label,
-                                             input_len, 0, input_len, false);
+  std::vector<float *> output = model->incremental_inference(
+    BATCH_SIZE, input, label, input_len, 0, input_len, false);
 
   free(input_sample);
 
