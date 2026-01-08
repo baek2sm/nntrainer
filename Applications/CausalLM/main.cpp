@@ -36,6 +36,7 @@
 #include "qwen2_causallm.h"
 #include "qwen3_cached_slim_moe_causallm.h"
 #include "qwen3_causallm.h"
+#include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
 #include <sys/resource.h>
@@ -139,6 +140,11 @@ int main(int argc, char *argv[]) {
         cfg, generation_cfg, nntr_cfg);
     });
   causallm::Factory::Instance().registerModel(
+    "Qwen3Embedding", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::Qwen3Embedding>(cfg, generation_cfg,
+                                                        nntr_cfg);
+    });
+  causallm::Factory::Instance().registerModel(
     "GptOssForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::GptOssForCausalLM>(cfg, generation_cfg,
                                                            nntr_cfg);
@@ -199,21 +205,36 @@ int main(int argc, char *argv[]) {
     std::cout << weight_file << std::endl;
 
     // Initialize and run model
-    auto model = causallm::Factory::Instance().create(
-      cfg["architectures"].get<std::vector<std::string>>()[0], cfg,
-      generation_cfg, nntr_cfg);
+    std::string architecture =
+      cfg["architectures"].get<std::vector<std::string>>()[0];
+
+    if (nntr_cfg.contains("model_type")) {
+      std::string model_type = nntr_cfg["model_type"].get<std::string>();
+      std::transform(model_type.begin(), model_type.end(), model_type.begin(),
+                     [](unsigned char c) { return std::tolower(c); });
+
+      if (model_type == "embedding") {
+        if (architecture == "Qwen3ForCausalLM") {
+          architecture = "Qwen3Embedding";
+        }
+      }
+    }
+
+    auto model = causallm::Factory::Instance().create(architecture, cfg,
+                                                      generation_cfg, nntr_cfg);
     model->initialize();
     model->load_weight(weight_file);
+
+    bool do_sample = generation_cfg.value("do_sample", false);
 
 #ifdef PROFILE
     start_peak_tracker();
 #endif
 #if defined(_WIN32)
-    model->run(input_text.c_str(), generation_cfg["do_sample"],
-               system_head_prompt.c_str(), system_tail_prompt.c_str());
+    model->run(input_text.c_str(), do_sample, system_head_prompt.c_str(),
+               system_tail_prompt.c_str());
 #else
-    model->run(input_text, generation_cfg["do_sample"], system_head_prompt,
-               system_tail_prompt);
+    model->run(input_text, do_sample, system_head_prompt, system_tail_prompt);
 #endif
 #ifdef PROFILE
     stop_and_print_peak();

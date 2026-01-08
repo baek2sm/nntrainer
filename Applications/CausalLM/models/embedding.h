@@ -24,7 +24,7 @@ namespace causallm {
 /**
  * @brief Embedding Class
  */
-WIN_EXPORT class Embedding : public Transformer {
+WIN_EXPORT class Embedding : virtual public Transformer {
 
 public:
   /**
