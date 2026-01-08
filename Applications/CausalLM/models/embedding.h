@@ -86,6 +86,11 @@ protected:
    */
   void addModule(const std::string &type, int idx);
 
+  /**
+   * @brief register CustomLayers
+   */
+  void registerCustomLayers() override;
+
 private:
   /**
    * @brief Module metadata list (from modules.json)
