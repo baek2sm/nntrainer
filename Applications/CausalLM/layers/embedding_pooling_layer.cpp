@@ -60,11 +60,11 @@ void EmbeddingPoolingLayer::finalize(nntrainer::InitLayerContext &context) {
   bool mode_weighted_mean =
     std::get<props::PoolingModeWeightedMeanTokens>(pooling_props);
 
-  if (mode_cls || mode_mean || mode_max || mode_mean_sqrt ||
+  if (mode_cls || mode_max || mode_mean_sqrt ||
       mode_weighted_mean) {
     throw nntrainer::exception::not_supported(
-      "Only pooling_mode_lasttoken is currently supported in "
-      "EmbeddingPoolingLayer");
+      "Only pooling_mode_lasttoken and pooling_mode_mean_tokens are currently "
+      "supported in EmbeddingPoolingLayer");
   }
 }
 
@@ -95,6 +95,22 @@ void EmbeddingPoolingLayer::forwarding(nntrainer::RunLayerContext &context,
         output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
       dest.copyData(source);
     }
+  } else if (std::get<props::PoolingModeMeanTokens>(pooling_props)) {
+    for (unsigned int b = 0; b < batch; ++b) {
+      nntrainer::Tensor dest =
+        output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
+      dest.setZero();
+
+      // Mean pooling: Sum all tokens and divide by seq_len
+      // TODO: Handle padding mask if necessary. Currently assumes all tokens
+      // are valid or handled by upstream.
+      for (unsigned int s = 0; s < seq_len; ++s) {
+        nntrainer::Tensor source =
+          input.getSharedDataTensor({1, 1, 1, dim}, b * seq_len * dim + s * dim);
+        dest.add_i(source);
+      }
+      dest.divide_i(static_cast<float>(seq_len));
+    }
   } else {
     output.setZero();
   }
@@ -124,6 +140,35 @@ void EmbeddingPoolingLayer::incremental_forwarding(
         output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
 
       dest.copyData(source);
+    }
+  } else if (std::get<props::PoolingModeMeanTokens>(pooling_props)) {
+    for (unsigned int b = 0; b < batch; ++b) {
+      nntrainer::Tensor dest =
+        output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
+        
+      // For incremental, we might be processing chunk by chunk.
+      // However, usually incremental_inference in embedding context processes full prompt at start.
+      // If `from` to `to` covers the full sequence, we can average.
+      // If it's partial, we need accumulation state which is not standard in this layer yet.
+      // Assuming naive implementation locally for standard prompt encoding usage where from=0, to=seq_len.
+      
+      // Reset dest if starting from 0, otherwise we might be accumulating (if supported)
+      // But `dest` is output buffer, typically fresh.
+      
+      // Current logic: calculate mean over [from, to) and if that's the whole sequence, it's correct.
+      // If it's a sliding window or token-by-token, 'mean' pooling semantics are usually "mean of whole sequence so far" or "mean of whole context".
+      // Given `embedding.cpp` passes range [0, input_len), this loop works for full prompt.
+      
+      dest.setZero();
+      unsigned int count = to - from;
+      if (count == 0) continue;
+
+      for (unsigned int i = from; i < to; ++i) {
+         size_t offset = static_cast<size_t>(b) * feature_len + i * dim;
+         nntrainer::Tensor source = input.getSharedDataTensor({1, 1, 1, dim}, offset);
+         dest.add_i(source);
+      }
+      dest.divide_i(static_cast<float>(count));
     }
   } else {
     output.setZero();
