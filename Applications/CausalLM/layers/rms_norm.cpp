@@ -75,10 +75,11 @@ void RMSNormLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
     }
     out_step.multiply_i(gamma);
 
-#ifdef DEBUG
-    std::cout << context.getName() << " \n input:" << in_step
-              << "output:" << out_step << "gamma:" << gamma << std::endl;
-#endif
+
+    // #ifdef DEBUG
+    // std::cout << context.getName() << " \n input:" << in_step
+    //           << "output:" << out_step << "gamma:" << gamma << std::endl;
+    // #endif
   }
 }
 

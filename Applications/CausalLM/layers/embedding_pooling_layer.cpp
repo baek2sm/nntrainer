@@ -60,11 +60,11 @@ void EmbeddingPoolingLayer::finalize(nntrainer::InitLayerContext &context) {
   bool mode_weighted_mean =
     std::get<props::PoolingModeWeightedMeanTokens>(pooling_props);
 
-  if (mode_cls || mode_mean || mode_max || mode_mean_sqrt ||
+  if (mode_cls || mode_max || mode_mean_sqrt ||
       mode_weighted_mean) {
     throw nntrainer::exception::not_supported(
-      "Only pooling_mode_lasttoken is currently supported in "
-      "EmbeddingPoolingLayer");
+      "Only pooling_mode_lasttoken and pooling_mode_mean_tokens are currently "
+      "supported in EmbeddingPoolingLayer");
   }
 }
 
@@ -95,6 +95,27 @@ void EmbeddingPoolingLayer::forwarding(nntrainer::RunLayerContext &context,
         output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
       dest.copyData(source);
     }
+  } else if (std::get<props::PoolingModeMeanTokens>(pooling_props)) {
+    float *in_data = input.getData<float>();
+    float *out_data = output.getData<float>();
+    output.setZero();
+
+    // Mean pooling: Sum all tokens and divide by seq_len
+    for (unsigned int b = 0; b < batch; ++b) {
+      float *out_batch_ptr = out_data + b * dim;
+
+      for (unsigned int s = 0; s < seq_len; ++s) {
+        float *in_token_ptr = in_data + b * seq_len * dim + s * dim;
+        for (unsigned int d = 0; d < dim; ++d) {
+          out_batch_ptr[d] += in_token_ptr[d];
+        }
+      }
+
+      float scale = 1.0f / seq_len;
+      for (unsigned int d = 0; d < dim; ++d) {
+        out_batch_ptr[d] *= scale;
+      }
+    }
   } else {
     output.setZero();
   }
@@ -122,9 +143,32 @@ void EmbeddingPoolingLayer::incremental_forwarding(
         input.getSharedDataTensor({1, 1, 1, dim}, offset);
       nntrainer::Tensor dest =
         output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
-
       dest.copyData(source);
     }
+  } else if (std::get<props::PoolingModeMeanTokens>(pooling_props)) {
+    float *in_data = input.getData<float>();
+    float *out_data = output.getData<float>();
+    output.setZero();
+
+    size_t batch_stride = feature_len; // dim * seq_len
+
+    for (unsigned int b = 0; b < batch; ++b) {
+      float *out_batch_ptr = out_data + b * dim;
+
+      unsigned int count = to - from;
+      for (unsigned int i = from; i < to; ++i) {
+        float *in_token_ptr = in_data + b * batch_stride + i * dim;
+        for (unsigned int d = 0; d < dim; ++d) {
+          out_batch_ptr[d] += in_token_ptr[d];
+        }
+      }
+
+      float scale = 1.0f / count;
+      for (unsigned int d = 0; d < dim; ++d) {
+        out_batch_ptr[d] *= scale;
+      }
+    }
+
   } else {
     output.setZero();
   }

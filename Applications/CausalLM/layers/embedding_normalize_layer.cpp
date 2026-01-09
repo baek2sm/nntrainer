@@ -56,9 +56,7 @@ void EmbeddingNormalizeLayer::incremental_forwarding(
   // seq_len. BUT, EmbeddingNormalizeLayer usually comes AFTER Pooling, so
   // seq_len is likely 1. In that case, incremental_forwarding might not even be
   // called or acts same as forwarding. If we assume this layer is generic, we
-  // should process 'from' to 'to'. But strictly, this layer is designed for
   // pooled output [batch, 1, 1, dim]. So 'from' and 'to' are likely 0 and 1.
-
   forwarding(context, training);
 }
 

@@ -196,6 +196,7 @@ void TieWordEmbedding::incremental_forwarding_embedding(
     std::get<nntrainer::props::Scale>(tieword_embedding_props).empty()
       ? 1.0f
       : std::get<nntrainer::props::Scale>(tieword_embedding_props).get();
+
   unsigned int _from = from;
 
   nntrainer::Tensor &weight =
@@ -246,6 +247,7 @@ void TieWordEmbedding::incremental_forwarding_embedding(
       if (scale != 1.0f) {
         out_tensor.multiply_i(scale);
       }
+
     }
 
 #ifdef DEBUG

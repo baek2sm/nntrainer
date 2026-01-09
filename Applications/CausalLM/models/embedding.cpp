@@ -132,6 +132,12 @@ void Embedding::addModule(const std::string &type, int idx) {
   // "sentence_transformers.models.Pooling")
   std::string component = getLastComponent(type);
   std::string layer_name;
+  
+  // Add mapping for Dense layer
+  if (component == "Dense") {
+    layer_map["Dense"] = "fully_connected";
+  }
+
   auto it = layer_map.find(component);
   if (it != layer_map.end()) {
     layer_name = it->second;
@@ -146,12 +152,32 @@ void Embedding::addModule(const std::string &type, int idx) {
   // Convert JSON config to nntrainer property format (key=value strings)
   std::vector<std::string> props;
   for (auto &el : config.items()) {
+    std::string key = el.key();
     std::string val_str;
+
+    // Handle property mapping for Dense (fully_connected) layer
+    if (layer_name == "fully_connected") {
+      if (key == "out_features") {
+        key = "unit";
+      } else if (key == "bias") {
+        bool bias_val = el.value().get<bool>();
+        key = "disable_bias";
+        val_str = bias_val ? "false" : "true"; // bias: true -> disable_bias: false
+        props.push_back(key + "=" + val_str);
+        continue; // Handled manually, skip default push_back
+      } else if (key == "in_features" || key == "activation_function") {
+        continue;
+      }
+    }
+
+    if (key == "bias" && layer_name == "fully_connected") continue; // redundancy check, already handled
+
     if (el.value().is_string())
       val_str = el.value().get<std::string>();
     else
       val_str = el.value().dump(); // convert to string
-    props.push_back(el.key() + "=" + val_str);
+
+    props.push_back(key + "=" + val_str);
   }
 
   LayerHandle layer = ml::train::createLayer(layer_name, props);
@@ -203,6 +229,10 @@ std::vector<float *> Embedding::encode(const WSTR prompt,
   std::vector<int64_t> init_input;
   unsigned int input_len =
     std::min((unsigned int)_input.size(), (unsigned int)MAX_SEQ_LEN);
+
+  std::cout << "[DEBUG] Tokens: ";
+  for(auto t : _input) std::cout << t << ", ";
+  std::cout << std::endl;
 
   // feed only available length
   for (unsigned int i = 0; i < input_len; ++i)

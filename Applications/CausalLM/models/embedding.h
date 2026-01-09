@@ -53,6 +53,13 @@ public:
    * @param tail_prompt Tail prompt
    * @return Embedding output from the model
    */
+  /**
+   * @brief Encode the prompt and return the embedding
+   * @param prompt User prompt
+   * @param system_prompt System prompt
+   * @param tail_prompt Tail prompt
+   * @return Embedding output from the model
+   */
   std::vector<float *> encode(const WSTR prompt, const WSTR system_prompt = "",
                               const WSTR tail_prompt = "");
 

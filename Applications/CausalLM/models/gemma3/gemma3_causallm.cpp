@@ -56,6 +56,9 @@ void Gemma3Transformer::setupParameters(json &cfg, json &generation_cfg,
   if (cfg.contains("layer_types")) {
     layer_types = cfg["layer_types"].get<std::vector<std::string>>();
   }
+  
+  // Gemma models scale embeddings by sqrt(dim)
+  EMBEDDING_SCALE = std::sqrt(DIM);
 }
 
 std::vector<LayerHandle>
