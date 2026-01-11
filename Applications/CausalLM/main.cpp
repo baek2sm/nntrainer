@@ -37,6 +37,7 @@
 #include "qwen3_cached_slim_moe_causallm.h"
 #include "qwen3_causallm.h"
 #include "qwen3_embedding.h"
+#include "embedding_gemma.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
 #include <sys/resource.h>
@@ -160,6 +161,11 @@ int main(int argc, char *argv[]) {
       return std::make_unique<causallm::Gemma3CausalLM>(cfg, generation_cfg,
                                                         nntr_cfg);
     });
+  causallm::Factory::Instance().registerModel(
+    "EmbeddingGemma", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::EmbeddingGemma>(cfg, generation_cfg,
+                                                        nntr_cfg);
+    });
 
   // Validate arguments
   if (argc < 2) {
@@ -216,6 +222,9 @@ int main(int argc, char *argv[]) {
       if (model_type == "embedding") {
         if (architecture == "Qwen3ForCausalLM") {
           architecture = "Qwen3Embedding";
+        } else if (architecture == "Gemma3ForCausalLM" ||
+                   architecture == "Gemma3TextModel") {
+          architecture = "EmbeddingGemma";
         }
       }
     }
