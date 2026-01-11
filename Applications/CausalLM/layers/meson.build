@@ -130,4 +130,3 @@ causallm_qkv_layer_dep = declare_dependency(
     link_with: causallm_qkv_layer,
     include_directories: causallm_layer_inc
 )
-

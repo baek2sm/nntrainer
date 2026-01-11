@@ -1,5 +1,6 @@
 gemma3_src = [
     meson.current_source_dir() / 'gemma3_causallm.cpp',
+    meson.current_source_dir() / 'embedding_gemma.cpp',
 ]
 
 gemma3_inc = include_directories('.')
