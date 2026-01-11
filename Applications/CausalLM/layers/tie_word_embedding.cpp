@@ -19,6 +19,8 @@
 #include <tensor.h>
 #include <tensor_dim.h>
 #include <tie_word_embedding.h>
+
+#include "../llm_util.hpp"
 #include <util_func.h>
 
 namespace causallm {
@@ -253,6 +255,9 @@ void TieWordEmbedding::incremental_forwarding_embedding(
               << "\n input:" << input_ << "\n weight: " << weight
               << "\n hidden: " << hidden_ << std::endl;
 #endif
+  }
+  if (context.getName().find("embedding0") != std::string::npos) {
+    print_compare("Embedding Output", hidden_);
   }
 }
 

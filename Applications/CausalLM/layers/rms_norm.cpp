@@ -15,6 +15,7 @@
 #include <iostream>
 
 #include "rms_norm.h"
+#include "../llm_util.hpp"
 
 namespace causallm {
 
@@ -75,10 +76,11 @@ void RMSNormLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
     }
     out_step.multiply_i(gamma);
 
-#ifdef DEBUG
-    std::cout << context.getName() << " \n input:" << in_step
-              << "output:" << out_step << "gamma:" << gamma << std::endl;
-#endif
+    print_compare(context.getName(), out_step);
+    if (!context.getName().empty() && context.getName().find("attention_norm") != std::string::npos) { // Example condition, or print all
+         print_compare(context.getName() + " input", in_step);
+         print_compare(context.getName() + "_weight", gamma);
+    }
   }
 }
 

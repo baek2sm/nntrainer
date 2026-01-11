@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cpu_backend.h>
 #include <reshaped_rms_norm.h>
+#include "../llm_util.hpp"
 
 namespace causallm {
 
@@ -106,6 +107,7 @@ void ReshapedRMSNormLayer::incremental_forwarding(
     std::cout << context.getName() << " \n input:" << in_step
               << "output:" << out_step << "gamma:" << gamma << std::endl;
 #endif
+    print_compare(context.getName(), out_step);
   }
 }
 

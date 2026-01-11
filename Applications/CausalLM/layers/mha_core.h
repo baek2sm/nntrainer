@@ -221,7 +221,8 @@ public:
     nntrainer::Tensor &cache_value, ml::train::TensorDim &cache_key_dim,
     ml::train::TensorDim &cache_key_step_dim,
     ml::train::TensorDim &cache_value_dim,
-    ml::train::TensorDim &cache_value_step_dim, nntrainer::Tensor &sink_step);
+    ml::train::TensorDim &cache_value_step_dim, nntrainer::Tensor &sink_step,
+    nntrainer::RunLayerContext &context);
   /**
    * @copydoc Layer::calcDerivative(RunLayerContext &context)
    */

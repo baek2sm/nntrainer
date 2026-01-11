@@ -39,6 +39,40 @@ static constexpr size_t SINGLE_INOUT_IDX = 0;
 enum FCParams { weight, bias };
 enum LORAParams { loraA, loraB, loraTmp, loraOut };
 
+static void print_compare_local(const std::string &name, nntrainer::Tensor &tensor) {
+  std::cout << "[" << name << "] Shape: " << tensor.getDim() << std::endl;
+  size_t len = tensor.size();
+  if (tensor.getDataType() == ml::train::TensorDim::DataType::FP32) {
+    float *data = tensor.getData<float>();
+    std::cout << "[" << name << "] First 3: [";
+    for (size_t i = 0; i < std::min((size_t)3, len); ++i)
+      std::cout << data[i] << " ";
+    std::cout << "]" << std::endl;
+    std::cout << "[" << name << "] Last 3: [";
+    if (len >= 3) {
+      for (size_t i = 0; i < 3; ++i)
+        std::cout << data[len - 3 + i] << " ";
+    }
+    std::cout << "]" << std::endl;
+  }
+#ifdef ENABLE_FP16
+  else if (tensor.getDataType() == ml::train::TensorDim::DataType::FP16) {
+    _FP16 *data = tensor.getData<_FP16>();
+    std::cout << "[" << name << "] First 3: [";
+    for (size_t i = 0; i < std::min((size_t)3, len); ++i)
+      std::cout << (float)data[i] << " ";
+    std::cout << "]" << std::endl;
+    std::cout << "[" << name << "] Last 3: [";
+    if (len >= 3) {
+      for (size_t i = 0; i < 3; ++i)
+        std::cout << (float)data[len - 3 + i] << " ";
+    }
+    std::cout << "]" << std::endl;
+  }
+#endif
+  std::cout << "--------------------" << std::endl;
+}
+
 FullyConnectedLayer::FullyConnectedLayer() :
   LayerImpl(),
   lora_scaling(1.0f),
@@ -272,7 +306,10 @@ void FullyConnectedLayer::incremental_forwarding(RunLayerContext &context,
     Tensor hidden_step = hidden_.getSharedDataTensor(
       hidden_step_dim, b * hidden_dim.getFeatureLen(), true);
 
+    print_compare_local(context.getName() + " input", input_step);
+    print_compare_local(context.getName() + "_weight", weight);
     input_step.dot(weight, hidden_step, false, false);
+    print_compare_local(context.getName(), hidden_step);
 
     if (!std::get<props::LoraRank>(fc_props).empty()) {
       nntrainer::TensorDim hidden_tmp_lora_step_dim = hidden_tmp_lora.getDim();
@@ -304,6 +341,11 @@ void FullyConnectedLayer::incremental_forwarding(RunLayerContext &context,
         disable_bias.empty() || disable_bias.get() == false) {
       Tensor &bias = context.getWeight(weight_idx[FCParams::bias]);
       hidden_step.add_i(bias);
+    }
+
+    if (!context.getName().empty() && context.getName().find("proj") != std::string::npos) {
+         print_compare_local(context.getName() + " input", input_step);
+         print_compare_local(context.getName(), hidden_step);
     }
   }
 }

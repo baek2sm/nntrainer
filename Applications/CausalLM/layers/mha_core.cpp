@@ -20,6 +20,7 @@
 #include <fp16.h>
 #include <layer_context.h>
 #include <mha_core.h>
+#include "../llm_util.hpp"
 #include <nntrainer_error.h>
 #include <node_exporter.h>
 
@@ -306,12 +307,13 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
         one_batch_incremental_forwarding(
           batch, _from, from, to, Q_step, K_step, V_step, O_step, cache_key,
           cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
-          cache_value_step_dim, sink);
+          cache_value_step_dim, sink, context);
       } else {
         one_batch_incremental_forwarding(batch, _from, from, to, Q_step, K_step,
                                          V_step, O_step, cache_key, cache_value,
                                          cache_key_dim, cache_key_step_dim,
-                                         cache_value_dim, cache_value_step_dim);
+                                         cache_value_dim, cache_value_step_dim,
+                                         sink, context);
       }
       output_step.copyData(O_step);
 #else
@@ -319,19 +321,19 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
         one_batch_incremental_forwarding(
           batch, _from, from, to, query_step, key_step, value_step, output_step,
           cache_key, cache_value, cache_key_dim, cache_key_step_dim,
-          cache_value_dim, cache_value_step_dim, sink);
+          cache_value_dim, cache_value_step_dim, sink, context);
       } else {
         one_batch_incremental_forwarding(
           batch, _from, from, to, query_step, key_step, value_step, output_step,
           cache_key, cache_value, cache_key_dim, cache_key_step_dim,
-          cache_value_dim, cache_value_step_dim);
+          cache_value_dim, cache_value_step_dim, sink, context);
       }
 #endif
     } else {
       one_batch_incremental_forwarding(
         batch, _from, from, to, query_step, key_step, value_step, output_step,
         cache_key, cache_value, cache_key_dim, cache_key_step_dim,
-        cache_value_dim, cache_value_step_dim);
+        cache_value_dim, cache_value_step_dim, sink, context);
     }
   }
 
@@ -542,7 +544,7 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   nntrainer::Tensor &cache_value, ml::train::TensorDim &cache_key_dim,
   ml::train::TensorDim &cache_key_step_dim,
   ml::train::TensorDim &cache_value_dim,
-  ml::train::TensorDim &cache_value_step_dim, nntrainer::Tensor &sink_step) {
+  ml::train::TensorDim &cache_value_step_dim, nntrainer::Tensor &sink_step, nntrainer::RunLayerContext &context) {
 
   /**
    *  cache_key
@@ -585,6 +587,10 @@ void MHACoreLayer::one_batch_incremental_forwarding(
 #endif
   }
 
+  print_compare(context.getName() + "_query_rope", query_step);
+  print_compare(context.getName() + "_key_rope", b_cache_key_step);
+  print_compare(context.getName() + "_value_rope", b_cache_value_step);
+
   ml::train::TensorDim cached_key_dim = cache_key_dim;
   ml::train::TensorDim cached_value_dim = cache_value_dim;
   cached_key_dim.height(to);
@@ -605,10 +611,13 @@ void MHACoreLayer::one_batch_incremental_forwarding(
                   gqa_size, head_dim, pool);
 
   softmax_triangle(out_, to - from, num_heads_Q, from, pool, sink_step);
+  print_compare(context.getName() + "_attn_probs", out_);
 
   compute_fp16vcache_transposed(out_, b_cached_value, attention_output_step,
                                 from, num_heads_KV, gqa_size, head_dim, to,
                                 pool);
+
+  print_compare(context.getName() + "_attention_out_core", attention_output_step);
 }
 
 /************************************************************** */

@@ -84,3 +84,4 @@ float applyTKP(float *logits, int len, float temperature, unsigned int top_k,
 
   return top_indices_and_logits[0].second;
 }
+// print_compare moved to hpp as inline
