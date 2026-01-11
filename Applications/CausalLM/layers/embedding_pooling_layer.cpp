@@ -60,11 +60,10 @@ void EmbeddingPoolingLayer::finalize(nntrainer::InitLayerContext &context) {
   bool mode_weighted_mean =
     std::get<props::PoolingModeWeightedMeanTokens>(pooling_props);
 
-  if (mode_cls || mode_mean || mode_max || mode_mean_sqrt ||
-      mode_weighted_mean) {
+  if (mode_cls || mode_max || mode_mean_sqrt || mode_weighted_mean) {
     throw nntrainer::exception::not_supported(
-      "Only pooling_mode_lasttoken is currently supported in "
-      "EmbeddingPoolingLayer");
+      "Only pooling_mode_lasttoken and pooling_mode_mean_tokens are currently "
+      "supported in EmbeddingPoolingLayer");
   }
 }
 
@@ -84,6 +83,7 @@ void EmbeddingPoolingLayer::forwarding(nntrainer::RunLayerContext &context,
   unsigned int dim = input.width();
 
   bool mode_lasttoken = std::get<props::PoolingModeLastToken>(pooling_props);
+  bool mode_mean = std::get<props::PoolingModeMeanTokens>(pooling_props);
 
   if (mode_lasttoken) {
     for (unsigned int b = 0; b < batch; ++b) {
@@ -94,6 +94,16 @@ void EmbeddingPoolingLayer::forwarding(nntrainer::RunLayerContext &context,
       nntrainer::Tensor dest =
         output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
       dest.copyData(source);
+    }
+  } else if (mode_mean) {
+    for (unsigned int b = 0; b < batch; ++b) {
+      nntrainer::Tensor source =
+        input.getSharedDataTensor({1, 1, seq_len, dim}, b * seq_len * dim);
+      nntrainer::Tensor dest =
+        output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
+
+      // Calculate mean along average dim (height/seq_len)
+      dest.copyData(source.average(2));
     }
   } else {
     output.setZero();
@@ -124,6 +134,16 @@ void EmbeddingPoolingLayer::incremental_forwarding(
         output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
 
       dest.copyData(source);
+    }
+  } else if (std::get<props::PoolingModeMeanTokens>(pooling_props)) {
+    for (unsigned int b = 0; b < batch; ++b) {
+      unsigned int len = to - from;
+      size_t offset = static_cast<size_t>(b) * feature_len + from * dim;
+
+      nntrainer::Tensor source = input.getSharedDataTensor({1, 1, len, dim}, offset);
+      nntrainer::Tensor dest = output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
+
+      dest.copyData(source.average(2));
     }
   } else {
     output.setZero();
