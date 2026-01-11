@@ -27,7 +27,9 @@ Embedding::Embedding(json &cfg, json &generation_cfg, json &nntr_cfg) :
 }
 
 std::map<std::string, std::string> Embedding::layer_map = {
-  {"Pooling", "embedding_pooling"}, {"Normalize", "embedding_normalize"}};
+  {"Pooling", "embedding_pooling"},
+  {"Normalize", "embedding_normalize"},
+  {"Dense", "fully_connected"}};
 
 void Embedding::setupParameters(json &cfg, json &generation_cfg,
                                 json &nntr_cfg) {
@@ -151,7 +153,24 @@ void Embedding::addModule(const std::string &type, int idx) {
       val_str = el.value().get<std::string>();
     else
       val_str = el.value().dump(); // convert to string
-    props.push_back(el.key() + "=" + val_str);
+
+    if (el.key() == "out_features") {
+      props.push_back("unit=" + val_str);
+    } else if (el.key() == "bias") {
+      if (val_str == "false") {
+        props.push_back("disable_bias=true");
+      }
+    } else if (el.key() == "activation_function") {
+      if (val_str.find("Identity") == std::string::npos) {
+        props.push_back("activation=" + val_str);
+      } else {
+        // need to support other activations later on
+      }
+    } else if (el.key() == "in_features") {
+      // Ignore in_features as nntrainer infers it
+    } else {
+      props.push_back(el.key() + "=" + val_str);
+    }
   }
 
   LayerHandle layer = ml::train::createLayer(layer_name, props);
