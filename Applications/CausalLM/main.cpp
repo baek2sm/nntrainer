@@ -30,6 +30,7 @@
 #include <factory.h>
 
 #include "causal_lm.h"
+#include "embedding_gemma.h"
 #include "gemma3_causallm.h"
 #include "gptoss_cached_slim_causallm.h"
 #include "gptoss_causallm.h"
@@ -112,6 +113,9 @@ std::string resolve_architecture(std::string model_type,
   if (model_type == "embedding") {
     if (architecture == "Qwen3ForCausalLM") {
       return "Qwen3Embedding";
+    } else if (architecture == "Gemma3ForCausalLM" ||
+               architecture == "Gemma3TextModel") {
+      return "EmbeddingGemma";
     }
   }
 
@@ -172,6 +176,11 @@ int main(int argc, char *argv[]) {
   causallm::Factory::Instance().registerModel(
     "Gemma3ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::Gemma3CausalLM>(cfg, generation_cfg,
+                                                        nntr_cfg);
+    });
+  causallm::Factory::Instance().registerModel(
+    "EmbeddingGemma", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::EmbeddingGemma>(cfg, generation_cfg,
                                                         nntr_cfg);
     });
 
