@@ -16,11 +16,11 @@
 #include <thread>
 #include <vector>
 
+#include "../llm_util.hpp"
 #include <engine.h>
 #include <fp16.h>
 #include <layer_context.h>
 #include <mha_core.h>
-#include "../llm_util.hpp"
 #include <nntrainer_error.h>
 #include <node_exporter.h>
 
@@ -45,7 +45,8 @@ MHACoreLayer::MHACoreLayer() :
     nntrainer::props::ReturnAttentionWeight(),
     nntrainer::props::AverageAttentionWeight(), nntrainer::props::MaxTimestep(),
     props::SlidingWindow(), props::MaxNewTokens(), props::RopeTheta(),
-    props::MaxPositionEmbeddings(), props::UseSink(), props::RopeScalingType(),
+    props::MaxPositionEmbeddings(), props::UseSink(),
+    props::UseBidirectionalAttention(), props::RopeScalingType(),
     props::RopeScalingFactor(), props::RopeScalingMaxPositionEmbeddings()),
   sm(nntrainer::ActivationType::ACT_SOFTMAX),
   epsilon(1e-3),
@@ -120,6 +121,8 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
 
   /** Weight for Sink */
   use_sink = std::get<props::UseSink>(mha_core_props).get();
+  use_bidirectional =
+    std::get<props::UseBidirectionalAttention>(mha_core_props).get();
   if (use_sink) {
 #if ENABLE_FP16 && defined(__ANDROID__)
     nntrainer::TensorDim sink_dim(
@@ -309,11 +312,10 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
           cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
           cache_value_step_dim, sink, context);
       } else {
-        one_batch_incremental_forwarding(batch, _from, from, to, Q_step, K_step,
-                                         V_step, O_step, cache_key, cache_value,
-                                         cache_key_dim, cache_key_step_dim,
-                                         cache_value_dim, cache_value_step_dim,
-                                         sink, context);
+        one_batch_incremental_forwarding(
+          batch, _from, from, to, Q_step, K_step, V_step, O_step, cache_key,
+          cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
+          cache_value_step_dim, sink, context);
       }
       output_step.copyData(O_step);
 #else
@@ -544,7 +546,8 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   nntrainer::Tensor &cache_value, ml::train::TensorDim &cache_key_dim,
   ml::train::TensorDim &cache_key_step_dim,
   ml::train::TensorDim &cache_value_dim,
-  ml::train::TensorDim &cache_value_step_dim, nntrainer::Tensor &sink_step, nntrainer::RunLayerContext &context) {
+  ml::train::TensorDim &cache_value_step_dim, nntrainer::Tensor &sink_step,
+  nntrainer::RunLayerContext &context) {
 
   /**
    *  cache_key
@@ -617,7 +620,8 @@ void MHACoreLayer::one_batch_incremental_forwarding(
                                 from, num_heads_KV, gqa_size, head_dim, to,
                                 pool);
 
-  print_compare(context.getName() + "_attention_out_core", attention_output_step);
+  print_compare(context.getName() + "_attention_out_core",
+                attention_output_step);
 }
 
 /************************************************************** */
@@ -877,15 +881,33 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
 
     if (row == 1) {
       size_t start_row = 0;
-      size_t end_row = from < local_window_size ? from + 1 : local_window_size;
+      size_t end_row;
+      if (use_bidirectional) {
+        // Bidirectional: attend to all tokens in cache
+        end_row = from < local_window_size ? from + 1 : local_window_size;
+      } else {
+        // Causal: triangular masking
+        end_row = from < local_window_size ? from + 1 : local_window_size;
+      }
       nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head);
     } else {
       std::vector<std::future<void>> futures;
       int seq = row < local_window_size ? row : local_window_size;
 
       for (int i = 0; i < seq; ++i) {
-        size_t start_row = calc_attn_index(from + i) - calc_attn_index(from);
-        size_t end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
+        size_t start_row, end_row;
+        if (use_bidirectional) {
+          // Bidirectional: each row attends to all tokens up to current
+          // position
+          start_row = calc_attn_index(from + i) - calc_attn_index(from);
+          // For bidirectional, all rows should attend to the same number of
+          // tokens Use the full cache size available
+          end_row = calc_attn_index(from + row) - calc_attn_index(from);
+        } else {
+          // Causal: triangular masking
+          start_row = calc_attn_index(from + i) - calc_attn_index(from);
+          end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
+        }
         futures.push_back(pool.submit_task([=]() {
           nntrainer::softmax_row(qk_out_, start_row, end_row, num_head);
         }));
@@ -900,14 +922,30 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
 
     if (row == 1) {
       size_t start_row = 0;
-      size_t end_row = from < local_window_size ? from + 1 : local_window_size;
+      size_t end_row;
+      if (use_bidirectional) {
+        // Bidirectional: attend to all tokens in cache
+        end_row = from < local_window_size ? from + 1 : local_window_size;
+      } else {
+        // Causal: triangular masking
+        end_row = from < local_window_size ? from + 1 : local_window_size;
+      }
       nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head);
     } else {
       std::vector<std::future<void>> futures;
       int seq = row < local_window_size ? row : local_window_size;
       for (int i = 0; i < seq; ++i) {
-        size_t start_row = calc_attn_index(from + i) - calc_attn_index(from);
-        size_t end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
+        size_t start_row, end_row;
+        if (use_bidirectional) {
+          // Bidirectional: each row attends to all tokens up to current
+          // position
+          start_row = calc_attn_index(from + i) - calc_attn_index(from);
+          end_row = calc_attn_index(from + row) - calc_attn_index(from);
+        } else {
+          // Causal: triangular masking
+          start_row = calc_attn_index(from + i) - calc_attn_index(from);
+          end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
+        }
         futures.push_back(pool.submit_task([=]() {
           nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head);
         }));
@@ -931,7 +969,14 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
 
     if (row == 1) {
       size_t start_row = 0;
-      size_t end_row = from < local_window_size ? from + 1 : local_window_size;
+      size_t end_row;
+      if (use_bidirectional) {
+        // Bidirectional: attend to all tokens in cache
+        end_row = from < local_window_size ? from + 1 : local_window_size;
+      } else {
+        // Causal: triangular masking
+        end_row = from < local_window_size ? from + 1 : local_window_size;
+      }
       nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head,
                                      sink_step.getData());
     } else {
@@ -939,8 +984,17 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
       int min_row = row < local_window_size ? 0 : row - local_window_size;
       // for (int i = row - 1; i >= min_row; --i) {
       for (int i = 0; i < row; ++i) {
-        size_t start_row = calc_attn_index(i + from) - calc_attn_index(from);
-        size_t end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
+        size_t start_row, end_row;
+        if (use_bidirectional) {
+          // Bidirectional: each row attends to all tokens up to current
+          // position
+          start_row = calc_attn_index(i + from) - calc_attn_index(from);
+          end_row = calc_attn_index(from + row) - calc_attn_index(from);
+        } else {
+          // Causal: triangular masking
+          start_row = calc_attn_index(i + from) - calc_attn_index(from);
+          end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
+        }
         futures.push_back(pool.submit_task([=]() {
           nntrainer::softmax_row(qk_out_, start_row, end_row, num_head,
                                  sink_step.getData());
@@ -957,7 +1011,14 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
 
     if (row == 1) {
       size_t start_row = 0;
-      size_t end_row = from < local_window_size ? from + 1 : local_window_size;
+      size_t end_row;
+      if (use_bidirectional) {
+        // Bidirectional: attend to all tokens in cache
+        end_row = from < local_window_size ? from + 1 : local_window_size;
+      } else {
+        // Causal: triangular masking
+        end_row = from < local_window_size ? from + 1 : local_window_size;
+      }
       nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head,
                                      sink_step_);
     } else {
@@ -965,8 +1026,17 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
       int min_row = row < local_window_size ? 0 : row - local_window_size;
       // for (int i = row - 1; i >= min_row; --i) {
       for (int i = 0; i < row; ++i) {
-        size_t start_row = calc_attn_index(i + from) - calc_attn_index(from);
-        size_t end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
+        size_t start_row, end_row;
+        if (use_bidirectional) {
+          // Bidirectional: each row attends to all tokens up to current
+          // position
+          start_row = calc_attn_index(i + from) - calc_attn_index(from);
+          end_row = calc_attn_index(from + row) - calc_attn_index(from);
+        } else {
+          // Causal: triangular masking
+          start_row = calc_attn_index(i + from) - calc_attn_index(from);
+          end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
+        }
         futures.push_back(pool.submit_task([=]() {
           nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head,
                                          sink_step_);

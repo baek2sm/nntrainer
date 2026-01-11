@@ -40,6 +40,7 @@ protected:
   static json &sanitizeGenerationConfig(json &gen_cfg, const json &cfg);
 
   std::vector<std::string> layer_types;
+  bool use_bidirectional_attention = false;
 
 public:
   std::vector<LayerHandle> createAttention(const int layer_id, int seq_len,

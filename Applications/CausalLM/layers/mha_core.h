@@ -116,6 +116,17 @@ public:
 };
 
 /**
+ * @brief UseBidirectionalAttention property
+ */
+class UseBidirectionalAttention : public nntrainer::Property<bool> {
+public:
+  UseBidirectionalAttention(bool value = false) { set(value); };
+  static constexpr const char *key =
+    "use_bidirectional_attention";           /**< unique key to access */
+  using prop_tag = nntrainer::bool_prop_tag; /**< property type */
+};
+
+/**
  * @brief RopeScalingType
  * - default
  * - yarn
@@ -286,7 +297,8 @@ private:
     nntrainer::props::ReturnAttentionWeight,
     nntrainer::props::AverageAttentionWeight, nntrainer::props::MaxTimestep,
     props::SlidingWindow, props::MaxNewTokens, props::RopeTheta,
-    props::MaxPositionEmbeddings, props::UseSink, props::RopeScalingType,
+    props::MaxPositionEmbeddings, props::UseSink,
+    props::UseBidirectionalAttention, props::RopeScalingType,
     props::RopeScalingFactor, props::RopeScalingMaxPositionEmbeddings>
     mha_core_props; /**< mha_core layer properties */
 
@@ -304,6 +316,7 @@ private:
   float theta;
   size_t local_window_size;
   bool use_sink = false;
+  bool use_bidirectional = false;
 
   enum INOUT_INDEX {
     /** input index */
