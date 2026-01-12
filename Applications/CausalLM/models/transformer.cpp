@@ -104,7 +104,11 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
   EMBEDDING_DTYPE = nntr_cfg["embedding_dtype"];
   FC_LAYER_DTYPE = nntr_cfg["fc_layer_dtype"];
 
-  /** Initialize model parameters */
+  if (cfg.contains("attn_logit_softcapping") &&
+      !cfg["attn_logit_softcapping"].is_null()) {
+    ATTN_LOGIT_SOFTCAPPING = cfg["attn_logit_softcapping"].get<float>();
+  }
+
   NUM_VOCAB = cfg["vocab_size"];
   DIM = cfg["hidden_size"];
   INTERMEDIATE_SIZE = cfg["intermediate_size"];
