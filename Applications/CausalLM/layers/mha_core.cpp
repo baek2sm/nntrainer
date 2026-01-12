@@ -45,7 +45,8 @@ MHACoreLayer::MHACoreLayer() :
     nntrainer::props::AverageAttentionWeight(), nntrainer::props::MaxTimestep(),
     props::SlidingWindow(), props::MaxNewTokens(), props::RopeTheta(),
     props::MaxPositionEmbeddings(), props::UseSink(), props::RopeScalingType(),
-    props::RopeScalingFactor(), props::RopeScalingMaxPositionEmbeddings()),
+    props::RopeScalingFactor(), props::RopeScalingMaxPositionEmbeddings(),
+    props::AttnLogitSoftcapping()),
   sm(nntrainer::ActivationType::ACT_SOFTMAX),
   epsilon(1e-3),
   cache_index(0),
@@ -135,6 +136,9 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
                                      nntrainer::WeightRegularizer::NONE, 0.0f,
                                      0.0f, "sink");
   }
+
+  attn_logit_softcapping =
+    std::get<props::AttnLogitSoftcapping>(mha_core_props).get();
 
   /** Tensor for KV-Cache */
 #ifdef ENABLE_FP16
@@ -866,6 +870,16 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
   if (qk_out.getDataType() == ml::train::TensorDim::DataType::FP32) {
     float *qk_out_ = qk_out.getData<float>();
 
+    if (attn_logit_softcapping > 0.0f) {
+      size_t len =
+        qk_out.batch() * qk_out.height() * qk_out.width() * qk_out.channel();
+      float inv_softcapping = 1.0f / attn_logit_softcapping;
+      for (size_t i = 0; i < len; ++i) {
+        qk_out_[i] =
+          std::tanh(qk_out_[i] * inv_softcapping) * attn_logit_softcapping;
+      }
+    }
+
     if (row == 1) {
       size_t start_row = 0;
       size_t end_row = from < local_window_size ? from + 1 : local_window_size;
@@ -888,6 +902,16 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
   } else if (qk_out.getDataType() == ml::train::TensorDim::DataType::FP16) {
 #ifdef ENABLE_FP16
     _FP16 *qk_out_ = qk_out.getData<_FP16>();
+
+    if (attn_logit_softcapping > 0.0f) {
+      size_t len =
+        qk_out.batch() * qk_out.height() * qk_out.width() * qk_out.channel();
+      float inv_softcapping = 1.0f / attn_logit_softcapping;
+      for (size_t i = 0; i < len; ++i) {
+        qk_out_[i] = (_FP16)(std::tanh((float)qk_out_[i] * inv_softcapping) *
+                             attn_logit_softcapping);
+      }
+    }
 
     if (row == 1) {
       size_t start_row = 0;
@@ -920,6 +944,16 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
   if (qk_out.getDataType() == ml::train::TensorDim::DataType::FP32) {
     float *qk_out_ = qk_out.getData<float>();
 
+    if (attn_logit_softcapping > 0.0f) {
+      size_t len =
+        qk_out.batch() * qk_out.height() * qk_out.width() * qk_out.channel();
+      float inv_softcapping = 1.0f / attn_logit_softcapping;
+      for (size_t i = 0; i < len; ++i) {
+        qk_out_[i] =
+          std::tanh(qk_out_[i] * inv_softcapping) * attn_logit_softcapping;
+      }
+    }
+
     if (row == 1) {
       size_t start_row = 0;
       size_t end_row = from < local_window_size ? from + 1 : local_window_size;
@@ -945,6 +979,16 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
 #ifdef ENABLE_FP16
     _FP16 *qk_out_ = qk_out.getData<_FP16>();
     _FP16 *sink_step_ = sink_step.getData<_FP16>();
+
+    if (attn_logit_softcapping > 0.0f) {
+      size_t len =
+        qk_out.batch() * qk_out.height() * qk_out.width() * qk_out.channel();
+      float inv_softcapping = 1.0f / attn_logit_softcapping;
+      for (size_t i = 0; i < len; ++i) {
+        qk_out_[i] = (_FP16)(std::tanh((float)qk_out_[i] * inv_softcapping) *
+                             attn_logit_softcapping);
+      }
+    }
 
     if (row == 1) {
       size_t start_row = 0;
