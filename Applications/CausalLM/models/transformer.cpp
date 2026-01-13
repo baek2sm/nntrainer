@@ -103,11 +103,16 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
                     : 1;
   EMBEDDING_DTYPE = nntr_cfg["embedding_dtype"];
   FC_LAYER_DTYPE = nntr_cfg["fc_layer_dtype"];
-  IS_CAUSAL = cfg.contains("is_causal") ? cfg["is_causal"].get<bool>() : true;
 
   if (cfg.contains("attn_logit_softcapping") &&
       !cfg["attn_logit_softcapping"].is_null()) {
     ATTN_LOGIT_SOFTCAPPING = cfg["attn_logit_softcapping"].get<float>();
+  }
+
+  if (cfg.contains("is_causal")) {
+    IS_CAUSAL = cfg["is_causal"].get<bool>();
+  } else if (cfg.contains("use_bidirectional_attention")) {
+    IS_CAUSAL = !cfg["use_bidirectional_attention"].get<bool>();
   }
 
   NUM_VOCAB = cfg["vocab_size"];

@@ -193,6 +193,7 @@ std::vector<LayerHandle> Gemma3Transformer::createAttention(
     withKey("rope_theta", std::to_string(rope_theta)),
     withKey("max_new_tokens", std::to_string(NUM_TO_GENERATE)),
     withKey("attn_logit_softcapping", std::to_string(ATTN_LOGIT_SOFTCAPPING)),
+    withKey("is_causal", IS_CAUSAL ? "true" : "false"),
     withKey("input_layers", {Q_norm, K_norm, V})};
   layers.push_back(createLayer("mha_core", a_params));
 
