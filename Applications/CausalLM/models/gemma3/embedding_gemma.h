@@ -34,9 +34,10 @@ public:
    * @param nntr_cfg Configuration for nntrainer
    */
   EmbeddingGemma(json &cfg, json &generation_cfg, json &nntr_cfg) :
-    Transformer(Gemma3Transformer::sanitizeConfig(cfg),
-                Gemma3Transformer::sanitizeGenerationConfig(generation_cfg, cfg),
-                nntr_cfg, ModelType::EMBEDDING),
+    Transformer(
+      Gemma3Transformer::sanitizeConfig(cfg),
+      Gemma3Transformer::sanitizeGenerationConfig(generation_cfg, cfg),
+      nntr_cfg, ModelType::EMBEDDING),
     Embedding(cfg, generation_cfg, nntr_cfg),
     Gemma3Transformer(cfg, generation_cfg, nntr_cfg) {}
 

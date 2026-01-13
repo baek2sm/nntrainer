@@ -140,8 +140,10 @@ void EmbeddingPoolingLayer::incremental_forwarding(
       unsigned int len = to - from;
       size_t offset = static_cast<size_t>(b) * feature_len + from * dim;
 
-      nntrainer::Tensor source = input.getSharedDataTensor({1, 1, len, dim}, offset);
-      nntrainer::Tensor dest = output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
+      nntrainer::Tensor source =
+        input.getSharedDataTensor({1, 1, len, dim}, offset);
+      nntrainer::Tensor dest =
+        output.getSharedDataTensor({1, 1, 1, dim}, b * dim);
 
       dest.copyData(source.average(2));
     }
