@@ -174,6 +174,7 @@ protected:
   bool MEMORY_SWAP;                     /**< memory swap option */
   unsigned int FSU_LOOKAHEAD;
   float ATTN_LOGIT_SOFTCAPPING = 0.0f; /**< attention logit softcapping */
+  bool IS_CAUSAL = true;
 };
 /**
  * Loads JSON data from a file with detailed error handling
