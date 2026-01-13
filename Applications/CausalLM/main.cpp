@@ -104,6 +104,20 @@ void stop_and_print_peak() {
             << std::endl;
 }
 
+std::string resolve_architecture(std::string model_type,
+                                 const std::string &architecture) {
+  std::transform(model_type.begin(), model_type.end(), model_type.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+
+  if (model_type == "embedding") {
+    if (architecture == "Qwen3ForCausalLM") {
+      return "Qwen3Embedding";
+    }
+  }
+
+  return architecture;
+}
+
 int main(int argc, char *argv[]) {
 
   /** Register all runnable causallm models to factory */
@@ -210,14 +224,7 @@ int main(int argc, char *argv[]) {
 
     if (nntr_cfg.contains("model_type")) {
       std::string model_type = nntr_cfg["model_type"].get<std::string>();
-      std::transform(model_type.begin(), model_type.end(), model_type.begin(),
-                     [](unsigned char c) { return std::tolower(c); });
-
-      if (model_type == "embedding") {
-        if (architecture == "Qwen3ForCausalLM") {
-          architecture = "Qwen3Embedding";
-        }
-      }
+      architecture = resolve_architecture(model_type, architecture);
     }
 
     auto model = causallm::Factory::Instance().create(architecture, cfg,
