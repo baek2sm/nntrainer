@@ -194,7 +194,7 @@ std::vector<float *> Embedding::encode(const WSTR prompt,
 #if defined(_WIN32)
   std::wstring prompt_ = system_prompt + prompt + tail_prompt;
   std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-  auto _input = tokenizer->Encode(converter.to_bytes(prompt_));
+  auto _input = tokenizer->Encode(converter.to_bytes(prompt_), true);
 #else
   std::string prompt_ = system_prompt + prompt + tail_prompt;
   auto _input = tokenizer->Encode(prompt_, true);
