@@ -52,6 +52,13 @@ json &Gemma3Transformer::sanitizeGenerationConfig(json &gen_cfg,
 void Gemma3Transformer::setupParameters(json &cfg, json &generation_cfg,
                                         json &nntr_cfg) {
   Transformer::setupParameters(cfg, generation_cfg, nntr_cfg);
+  if (cfg.contains("layer_types")) {
+    layer_types = cfg["layer_types"].get<std::vector<std::string>>();
+  }
+  if (cfg.contains("attn_logit_softcapping") &&
+      !cfg["attn_logit_softcapping"].is_null()) {
+    ATTN_LOGIT_SOFTCAPPING = cfg["attn_logit_softcapping"].get<float>();
+  }
 }
 
 std::vector<LayerHandle>
@@ -193,6 +200,7 @@ std::vector<LayerHandle> Gemma3Transformer::createAttention(
     withKey("rope_theta", std::to_string(rope_theta)),
     withKey("max_new_tokens", std::to_string(NUM_TO_GENERATE)),
     withKey("attn_logit_softcapping", std::to_string(ATTN_LOGIT_SOFTCAPPING)),
+    withKey("is_causal", IS_CAUSAL ? "true" : "false"),
     withKey("input_layers", {Q_norm, K_norm, V})};
   layers.push_back(createLayer("mha_core", a_params));
 
