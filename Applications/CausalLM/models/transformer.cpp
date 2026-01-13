@@ -110,6 +110,12 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
     IS_CAUSAL = !cfg["use_bidirectional_attention"].get<bool>();
   }
 
+  if (cfg.contains("is_causal")) {
+    IS_CAUSAL = cfg["is_causal"].get<bool>();
+  } else if (cfg.contains("use_bidirectional_attention")) {
+    IS_CAUSAL = !cfg["use_bidirectional_attention"].get<bool>();
+  }
+
   NUM_VOCAB = cfg["vocab_size"];
   DIM = cfg["hidden_size"];
   INTERMEDIATE_SIZE = cfg["intermediate_size"];
