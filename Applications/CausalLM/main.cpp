@@ -31,6 +31,7 @@
 
 #include "causal_lm.h"
 #include "chat_template.h"
+#include "deberta_v2.h"
 #include "embedding_gemma.h"
 #include "gemma3_causallm.h"
 #if !defined(_WIN32)
@@ -145,6 +146,8 @@ std::string resolve_architecture(std::string model_type,
       return "Qwen2Embedding";
     } else if (architecture == "BertForMaskedLM") {
       return "MultilingualTinyBert";
+    } else if (architecture == "deberta-v2") {
+      return "DebertaV2";
     } else {
       throw std::invalid_argument(
         "Unsupported architecture for embedding model: " + architecture);
@@ -233,6 +236,11 @@ int main(int argc, char *argv[]) {
         cfg, generation_cfg, nntr_cfg);
     });
 #endif
+  causallm::Factory::Instance().registerModel(
+    "DebertaV2", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::DebertaV2>(cfg, generation_cfg,
+                                                   nntr_cfg);
+    });
 
   // Validate arguments
   if (argc < 2) {
@@ -271,8 +279,13 @@ int main(int argc, char *argv[]) {
     std::cout << weight_file << std::endl;
 
     // Initialize and run model
-    std::string architecture =
-      cfg["architectures"].get<std::vector<std::string>>()[0];
+    std::string architecture;
+
+    if (cfg.contains("architectures")) {
+      architecture = cfg["architectures"].get<std::vector<std::string>>()[0];
+    } else if (cfg.contains("model_type")) {
+      architecture = cfg["model_type"].get<std::string>();
+    }
 
     if (nntr_cfg.contains("model_type")) {
       std::string model_type = nntr_cfg["model_type"].get<std::string>();
