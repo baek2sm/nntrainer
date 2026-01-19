@@ -52,6 +52,7 @@ LOCAL_SRC_FILES := ../main.cpp \
     ../models/embedding.cpp \
     ../models/qwen2/qwen2_causallm.cpp \
     ../models/qwen3/qwen3_causallm.cpp \
+    ../models/qwen3/qwen3_embedding.cpp \
     ../models/qwen3_moe/qwen3_moe_causallm.cpp \
     ../models/qwen3_slim_moe/qwen3_slim_moe_causallm.cpp \
     ../models/qwen3_cached_slim_moe/qwen3_cached_slim_moe_causallm.cpp \
@@ -60,6 +61,8 @@ LOCAL_SRC_FILES := ../main.cpp \
     ../huggingface_tokenizer.cpp \
     ../llm_util.cpp \
     ../layers/embedding_layer.cpp \
+    ../layers/embedding_pooling_layer.cpp \
+    ../layers/embedding_normalize_layer.cpp \
     ../layers/mha_core.cpp \
     ../models/qwen3_moe/qwen_moe_layer.cpp \
     ../layers/reshaped_rms_norm.cpp \
