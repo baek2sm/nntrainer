@@ -75,6 +75,7 @@ LOCAL_SRC_FILES := ../main.cpp \
     ../models/gpt_oss/gpt_oss_moe_layer.cpp \
     ../models/gpt_oss_cached_slim/gpt_oss_moe_layer_cached.cpp \
     ../models/gemma3/gemma3_causallm.cpp \
+    ../models/gemma3/function.cpp \
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_STATIC_LIBRARIES := tokenizers_c
