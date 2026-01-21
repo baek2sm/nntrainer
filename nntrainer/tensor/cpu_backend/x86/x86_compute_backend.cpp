@@ -12,6 +12,7 @@
  */
 
 #include <assert.h>
+#include <cmath>
 
 #include <avx2_impl.h>
 #ifdef USE_BLAS
@@ -28,7 +29,8 @@
 
 namespace nntrainer {
 
-void init_backend() { __ggml_init();
+void init_backend() {
+  __ggml_init();
   // Do not repeatedly call set_num_threads. It's a global config.
   __openblas_set_num_threads(-1); // -1 = BLAS_NUM_THREADS if defined.
 }
@@ -292,6 +294,14 @@ void swiglu(const unsigned int N, float *X, float *Y, float *Z) {
 
 void swiglu(const unsigned int N, float *X, float *Y, float *Z, float alpha) {
   nntrainer::avx2::swiglu(N, X, Y, Z, alpha);
+}
+
+void tanh_gelu(const unsigned int N, const float *X, float *Y) {
+  for (unsigned int i = 0; i < N; ++i) {
+    float x = X[i];
+    Y[i] = 0.5f * x *
+           (1.0f + std::tanh(0.7978845608f * (x + 0.044715f * x * x * x)));
+  }
 }
 
 float max_val(const unsigned int N, float *X) { return __fallback_max(N, X); }
