@@ -7,8 +7,8 @@ executable_src = [
     meson.current_source_dir() / 'main.cpp',
 ]
 
-causallm_inc_abs = [meson.current_source_dir()]
-causallm_inc = [include_directories('.')]
+causallm_inc_abs = [meson.current_source_dir(), meson.current_source_dir() / 'lib']
+causallm_inc = [include_directories('.'), include_directories('lib')]
 
 # Build layer dependency
 causallm_layer_dependencies = []
