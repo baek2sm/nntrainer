@@ -19,9 +19,13 @@
 #include <optional>
 
 #include <base_properties.h>
+#include <cmath>
 #include <common.h>
 #include <layer.h>
 #include <model.h>
+#include <stdexcept>
+#include <vector>
+
 /***************** ALAIS *******************/
 using LayerHandle = std::shared_ptr<ml::train::Layer>;
 using ModelHandle = std::unique_ptr<ml::train::Model>;
@@ -112,5 +116,18 @@ void applyBadWordsPenalty(float *logits, unsigned int *bad_words_ids,
  */
 float applyTKP(float *logits, int len, float temperature, unsigned int top_k,
                float top_p);
+
+/**
+ * @brief Load and preprocess PNG image file
+ *
+ * @param filepath Path to PNG image file
+ * @param target_width Target width (image will be resized if needed)
+ * @param target_height Target height (image will be resized if needed)
+ * @param normalize If true, normalize pixel values from [0,255] to [0,1]
+ * @return std::vector<float> Flattened image data in format (C, H, W)
+ */
+std::vector<float> loadAndPreprocessImage(const std::string &filepath,
+                                          int target_width, int target_height,
+                                          bool normalize = true);
 
 #endif // __LLM_UTIL_HPP__
