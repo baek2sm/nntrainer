@@ -60,3 +60,7 @@ An example to train Alexnet(Fused) network with CIFAR100 Dataset
 #### [Layers Example](https://github.com/nntrainer/nntrainer/tree/main/Applications/Layers)
 
 An example to train Single Layers with Dummy Dataset
+
+#### [SimpleConv2D Example](https://github.com/nntrainer/nntrainer/tree/main/Applications/SimpleConv2D)
+
+An example demonstrating PyTorch to NNTrainer weight conversion with a single Conv2D layer
