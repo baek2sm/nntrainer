@@ -21,18 +21,19 @@ std::vector<LayerHandle> createModel() {
 
   std::vector<LayerHandle> layers;
 
-  // Input layer: 3x32x32
+  // Input layer: 3x224x224 (same as timm_vit)
   layers.push_back(
     createLayer("input", {nntrainer::withKey("name", "input0"),
-                          nntrainer::withKey("input_shape", "3:32:32")}));
+                          nntrainer::withKey("input_shape", "3:224:224")}));
 
-  // Single Conv2D layer: 3 in, 3 out, 16x16 kernel
+  // Single Conv2D layer: 3 in, 768 out, 16x16 kernel (same as timm_vit)
+  // With kernel=16, stride=16, and padding=0, 224x224 input -> 14x14 output
   layers.push_back(
     createLayer("conv2d", {nntrainer::withKey("name", "conv1"),
-                           nntrainer::withKey("filters", 3),
+                           nntrainer::withKey("filters", 768),
                            nntrainer::withKey("kernel_size", {16, 16}),
-                           nntrainer::withKey("stride", {1, 1}),
-                           nntrainer::withKey("padding", "same"),
+                           nntrainer::withKey("stride", {16, 16}),
+                           nntrainer::withKey("padding", "0,0"),
                            nntrainer::withKey("input_layers", "input0")}));
 
   return layers;
@@ -56,6 +57,7 @@ int main(int argc, char *argv[]) {
     model->setProperty({nntrainer::withKey("batch_size", 1)});
     model->compile(ml::train::ExecutionMode::INFERENCE);
     model->initialize(ml::train::ExecutionMode::INFERENCE);
+    model->summarize(std::cout, ML_TRAIN_SUMMARY_MODEL);
 
     std::cout << "Model created successfully" << std::endl;
 
@@ -65,12 +67,12 @@ int main(int argc, char *argv[]) {
     model->load(weight_file, ml::train::ModelFormat::MODEL_FORMAT_BIN);
     std::cout << "Weights loaded successfully" << std::endl;
 
-    // Create all-ones input (NCHW format: 1, 3, 32, 32)
+    // Create all-ones input (NCHW format: 1, 3, 224, 224) - same as timm_vit
     std::cout << "\n[Step 3] Creating all-ones input..." << std::endl;
     const int batch_size = 1;
     const int channels = 3;
-    const int height = 32;
-    const int width = 32;
+    const int height = 224;
+    const int width = 224;
     const int input_size = batch_size * channels * height * width;
 
     std::vector<float> input(input_size, 1.0f); // All ones
@@ -86,9 +88,13 @@ int main(int argc, char *argv[]) {
     auto outputs = model->inference(batch_size, inputs);
 
     auto output = outputs[0];
-    const int output_size = batch_size * channels * height * width;
-    std::cout << "Output shape: [" << batch_size << ", " << channels << ", "
-              << height << ", " << width << "]" << std::endl;
+    // Output shape with kernel=16, stride=16: ((224-16)//16)+1 = 14x14
+    const int out_channels = 768; // Output channels (filters)
+    const int out_height = 14;
+    const int out_width = 14;
+    const int output_size = batch_size * out_channels * out_height * out_width;
+    std::cout << "Output shape: [" << batch_size << ", " << out_channels << ", "
+              << out_height << ", " << out_width << "]" << std::endl;
 
     // Print comparison values
     std::cout << "\n[Step 5] Comparison values:" << std::endl;

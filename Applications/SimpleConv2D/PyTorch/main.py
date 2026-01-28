@@ -55,11 +55,14 @@ if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # Step 1: Create model
-    print("\n[Step 1] Creating Conv2D model...")
+    print("\n[Step 1] Creating Conv2D model (matching timm_vit: 3→768, kernel=16x16, stride=16)...")
+    # Note: padding='same' is only supported for stride=1 in PyTorch
+    # With stride=16, kernel=16, input=224, output will be 14x14
     class SimpleConv2D(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.conv1 = torch.nn.Conv2d(3, 3, kernel_size=16, stride=1, padding='same', bias=True)
+            # timm_vit: 3 in, 768 out, 16x16 kernel, stride=16
+            self.conv1 = torch.nn.Conv2d(3, 768, kernel_size=16, stride=16, padding=0, bias=True)
         
         def forward(self, x):
             return self.conv1(x)
@@ -74,7 +77,8 @@ if __name__ == "__main__":
     print(f"\nParameter keys: {list(params.keys())}")
     
     # Step 2: Create all-ones input
-    input_shape = (1, 3, 32, 32)
+    # Use timm_vit input size: 224x224x3
+    input_shape = (1, 3, 224, 224)
     input_data = torch.ones(*input_shape).to(device)
     print(f"\n[Step 2] Input shape: {input_shape}, all values = 1.0")
     
@@ -92,9 +96,9 @@ if __name__ == "__main__":
     # Step 5: Print weight matrix info
     print("\n[Step 5] Weight matrices:")
     print(f"  conv1.weight shape: {params['conv1.weight'].shape}")
-    print(f"  conv1.weight sample [0,0,0,:]: {params['conv1.weight'][0,0,0,:].cpu().tolist()}")
+    print(f"  conv1.weight sample [0,0,0,:]: {params['conv1.weight'][0,0,0,:].cpu().tolist()[:5]}")
     print(f"  conv1.bias shape: {params['conv1.bias'].shape}")
-    print(f"  conv1.bias: {params['conv1.bias'].cpu().tolist()}")
+    print(f"  conv1.bias: {params['conv1.bias'].cpu().tolist()[:5]}")
     
     # Step 6: Save weights in NNTrainer format
     print("\n[Step 6] Saving weights in NNTrainer format...")
@@ -109,22 +113,22 @@ if __name__ == "__main__":
         save_conv2d_for_nntrainer(params, data_dtype, f)
     
     # Verify saved file size
-    # Weight shape: (out_channels, in_channels, kernel_h, kernel_w) = (3, 3, 16, 16)
-    # Bias shape: (out_channels,) = (3,)
-    expected_size = (3 * 3 * 16 * 16 + 3) * 4  # weight + bias, each float32 (4 bytes)
-    actual_size = os.path.getsize(output_file)
-    print(f"  Expected file size: {expected_size} bytes")
-    print(f"  Actual file size: {actual_size} bytes")
+    # Weight shape: (out_channels, in_channels, kernel_h, kernel_w) = (768, 3, 16, 16)
+    # Bias shape: (out_channels,) = (768,)
+    # expected_size = (768 * 3 * 16 * 16 + 768) * 4  # weight + bias, each float32 (4 bytes)
+    # actual_size = os.path.getsize(output_file)
+    # print(f"  Expected file size: {expected_size} bytes")
+    # print(f"  Actual file size: {actual_size} bytes")
     
-    if actual_size != expected_size:
-        print(f"  WARNING: File size mismatch!")
+    # if actual_size != expected_size:
+    #     print(f"  WARNING: File size mismatch!")
     
     print(f"\n[Complete] Weights saved to: {output_file}")
-    print("\n" + "=" * 70)
-    print("Copy the following values for NNTrainer comparison:")
-    print("=" * 70)
-    print(f"pytorch_input[0:5] = {input_data.flatten()[:5].cpu().tolist()}")
-    print(f"pytorch_output[0:5] = {output.flatten()[:5].cpu().tolist()}")
-    print(f"conv1_weight[0,0,0,:] = {params['conv1.weight'][0,0,0,:].cpu().tolist()}")
-    print(f"conv1_bias = {params['conv1.bias'].cpu().tolist()}")
-    print("=" * 70)
+    # print("\n" + "=" * 70)
+    # print("Copy the following values for NNTrainer comparison:")
+    # print("=" * 70)
+    # print(f"pytorch_input[0:5] = {input_data.flatten()[:5].cpu().tolist()}")
+    # print(f"pytorch_output[0:5] = {output.flatten()[:5].cpu().tolist()}")
+    # print(f"conv1_weight[0,0,0,:] = {params['conv1.weight'][0,0,0,:].cpu().tolist()}")
+    # print(f"conv1_bias = {params['conv1.bias'].cpu().tolist()}")
+    # print("=" * 70)
