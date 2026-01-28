@@ -1,0 +1,19 @@
+{
+  "model_tensor_type": "FP32-FP32",
+  "model_file_name": "nntr_vit_patch_embed_fp32.bin",
+  "model_type": "embedding",
+  "skip_tokenizer": true,
+  "embedding_dtype": "FP32",
+  "fc_layer_dtype": "FP32",
+  "batch_size": 1,
+  "patch_size": 16,
+  "img_size": 224,
+  "num_patches": 196,
+  "num_classes": 0,
+  "sample_input": "/home/seungbaek/Downloads/test.png",
+  "init_seq_len": 196,
+  "max_seq_len": 1000,
+  "num_to_generate": 0,
+  "fsu": false,
+  "tokenizer_file": "/dev/null"
+}

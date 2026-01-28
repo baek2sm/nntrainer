@@ -63,7 +63,7 @@ ModelType strToModelType(std::string model_type) {
 }
 
 Transformer::Transformer(json &cfg, json &generation_cfg, json &nntr_cfg,
-                         ModelType model_type) {
+                         ModelType model_type, bool skip_tokenizer) {
 
   std::string config_model_type_str = "Model";
   if (nntr_cfg.contains("model_type")) {
@@ -82,9 +82,17 @@ Transformer::Transformer(json &cfg, json &generation_cfg, json &nntr_cfg,
   // This is where you would set up the model layers, parameters, etc.
   setupParameters(cfg, generation_cfg, nntr_cfg);
 
-  // prep tokenizer
-  tokenizer = tokenizers::Tokenizer::FromBlobJSON(
-    LoadBytesFromFile(nntr_cfg["tokenizer_file"]));
+  // Skip tokenizer if specified (e.g., for vision encoder models)
+  bool should_skip_tokenizer =
+    skip_tokenizer || (nntr_cfg.contains("skip_tokenizer") &&
+                       nntr_cfg["skip_tokenizer"].get<bool>());
+
+  if (!should_skip_tokenizer) {
+    tokenizer = tokenizers::Tokenizer::FromBlobJSON(
+      LoadBytesFromFile(nntr_cfg["tokenizer_file"]));
+  } else {
+    tokenizer = nullptr; // No tokenizer for this model
+  }
 };
 
 void Transformer::setupParameters(json &cfg, json &generation_cfg,
