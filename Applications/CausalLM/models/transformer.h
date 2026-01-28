@@ -70,9 +70,12 @@ public:
    * @param generation_cfg Configuration for the generation (generation.json)
    * @param nntr_cfg Configuration for nntrainer (nntrainer_config.json)
    * @param model_type Type of the model (default: ModelType::MODEL)
+   * @param skip_tokenizer Whether to skip tokenizer initialization (default:
+   * false)
    */
   Transformer(json &cfg, json &generation_cfg, json &nntr_cfg,
-              ModelType model_type = ModelType::MODEL);
+              ModelType model_type = ModelType::MODEL,
+              bool skip_tokenizer = false);
 
   /**
    * @brief Destroy the Transformer object

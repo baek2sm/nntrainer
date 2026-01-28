@@ -213,9 +213,21 @@ std::vector<float *> Embedding::encode(const WSTR prompt,
 #if defined(_WIN32)
   std::wstring prompt_ = system_prompt + prompt + tail_prompt;
   std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+  if (!tokenizer) {
+    throw std::runtime_error(
+      "Tokenizer is not initialized. This embedding model requires a "
+      "tokenizer. "
+      "Please set skip_tokenizer to false in nntr_config.json.");
+  }
   auto _input = tokenizer->Encode(converter.to_bytes(prompt_), true);
 #else
   std::string prompt_ = system_prompt + prompt + tail_prompt;
+  if (!tokenizer) {
+    throw std::runtime_error(
+      "Tokenizer is not initialized. This embedding model requires a "
+      "tokenizer. "
+      "Please set skip_tokenizer to false in nntr_config.json.");
+  }
   auto _input = tokenizer->Encode(prompt_, true);
 #endif
 
