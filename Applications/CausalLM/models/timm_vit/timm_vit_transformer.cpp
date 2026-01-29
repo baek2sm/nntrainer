@@ -167,16 +167,15 @@ void TimmViTTransformer::run(const WSTR prompt, bool do_sample,
 
   std::vector<float *> input;
   input.push_back(input_sample);
-  std::vector<float *> label;
 
-  std::vector<float *> output = model->incremental_inference(
-    BATCH_SIZE, input, label, patch_count, 0, patch_count, false);
+  auto outputs = model->inference(BATCH_SIZE, input);
+  auto output = outputs[0];
 
   std::cout << "\n=================================\n";
   std::cout << "Output" << std::endl;
   std::cout << "First 10 values: ";
   for (int i = 0; i < std::min(10, DIM); ++i) {
-    std::cout << "[" << i << "]=" << output[0][i] << " ";
+    std::cout << "[" << i << "]=" << output[i] << " ";
   }
   std::cout << std::endl;
 
