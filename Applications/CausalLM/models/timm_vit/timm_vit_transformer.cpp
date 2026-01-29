@@ -168,7 +168,10 @@ void TimmViTTransformer::run(const WSTR prompt, bool do_sample,
   std::vector<float *> input;
   input.push_back(input_sample);
 
-  auto outputs = model->inference(BATCH_SIZE, input);
+  std::vector<float *> label;
+  // auto outputs = model->inference(BATCH_SIZE, input);
+  std::vector<float *> outputs = model->incremental_inference(
+    BATCH_SIZE, input, label, patch_count, 0, patch_count, false);
   auto output = outputs[0];
 
   std::cout << "\n=================================\n";
