@@ -2,7 +2,7 @@
 /**
  * Copyright (C) 2026 Eunju Yang <ej.yang@samsung.com>
  *
- * @file   lmhead_layer.h
+ * @file   lm_head.h
  * @date   16 Jan 2026
  * @brief  This is LM_Head Layer Class of Neural Network
  * @see    https://github.com/nntrainer/nntrainer
@@ -11,8 +11,8 @@
  *
  */
 
-#ifndef __LMHEAD_LAYER_H__
-#define __LMHEAD_LAYER_H__
+#ifndef __LM_HEAD_H__
+#define __LM_HEAD_H__
 #ifdef __cplusplus
 
 #pragma once
