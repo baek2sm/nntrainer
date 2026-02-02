@@ -26,7 +26,7 @@
 namespace nntrainer {
 
 static constexpr size_t SINGLE_INOUT_IDX = 0;
-WeightLayer::WeightLayer() : LayerImpl(), weight_props({}, {}, {}) {}
+WeightLayer::WeightLayer() : LayerImpl(), weight_props({}, {}) {}
 
 void WeightLayer::finalize(InitLayerContext &context) {
   auto &weight_regularizer =
@@ -37,7 +37,7 @@ void WeightLayer::finalize(InitLayerContext &context) {
     std::get<props::WeightInitializer>(*layer_impl_props);
   auto &weight_decay = std::get<props::WeightDecay>(*layer_impl_props);
 
-  const auto &weight_dim = std::get<props::TensorDimension>(weight_props).get();
+  TensorDim weight_dim = context.getInputDimensions()[0];
   const auto &weight_dtype = std::get<props::TensorDataType>(weight_props);
   const auto &weight_name = std::get<props::WeightName>(weight_props);
 
