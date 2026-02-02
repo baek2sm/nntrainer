@@ -82,6 +82,18 @@ std::vector<LayerHandle> TimmViTTransformer::createPatchEmbed() {
                             withKey("direction", {1, 3, 2}),
                             withKey("input_layers", "patch_embed/flatten")}));
 
+  layers.push_back(createLayer(
+    "weight",
+    {withKey("name", "pos_embed/weights"),
+     withKey("weight_dim", "1:1:" + std::to_string(patch_count) + ":" +
+                             std::to_string(embed_dim)),
+     withKey("tensor_dtype", "FP32"), withKey("weight_name", "pos_embed")}));
+
+  layers.push_back(createLayer(
+    "addition",
+    {withKey("name", "pos_embed/add"),
+     withKey("input_layers", {"patch_embed/transpose", "pos_embed/weights"})}));
+
   return layers;
 }
 
