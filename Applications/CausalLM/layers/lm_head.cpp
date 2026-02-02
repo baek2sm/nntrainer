@@ -66,7 +66,10 @@ void LmHeadLayer::finalize(nntrainer::InitLayerContext &context) {
   ///@note lm_head's output dimension (height is always 1 !)
   auto const &in_dim = context.getInputDimensions()[0];
   output_dims[0] = in_dim;
-  is_nchw ? output_dims[0].width(unit) : output_dims[0].channel(unit);
+  if (is_nchw)
+    output_dims[0].width(unit);
+  else
+    output_dims[0].channel(unit);
   output_dims[0].height(1);
 
   output_dims[0].setTensorType(
@@ -108,7 +111,10 @@ void LmHeadLayer::setProperty(const std::vector<std::string> &values) {
 }
 
 void LmHeadLayer::forwarding(nntrainer::RunLayerContext &context,
-                             bool training) {}
+                             bool training) {
+  throw nntrainer::exception::not_supported(
+    "Forwarding for LMHead layer is not supported");
+}
 
 void LmHeadLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
                                          unsigned int from, unsigned int to,
@@ -155,10 +161,13 @@ void LmHeadLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
 
 void LmHeadLayer::calcDerivative(nntrainer::RunLayerContext &context) {
   throw nntrainer::exception::not_supported(
-    "calcDerivative for Embedding layer is not supported");
+    "calcDerivative for LMHead layer is not supported");
 }
 
-void LmHeadLayer::calcGradient(nntrainer::RunLayerContext &context) {}
+void LmHeadLayer::calcGradient(nntrainer::RunLayerContext &context) {
+  throw nntrainer::exception::not_supported(
+    "calcGradient for LMHead layer is not supported");
+}
 
 void LmHeadLayer::exportTo(nntrainer::Exporter &exporter,
                            const ml::train::ExportMethods &method) const {
