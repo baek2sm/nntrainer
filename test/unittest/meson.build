@@ -75,7 +75,6 @@ test_target = [
   ['unittest_nntrainer_tensor_pool', []],
   ['unittest_nntrainer_lr_scheduler', []],
   ['unittest_nntrainer_save_with_dtype', []]
-  #['unittest_nntrainer_task', []],
 ]
 
 if host_machine.system() != 'windows'
