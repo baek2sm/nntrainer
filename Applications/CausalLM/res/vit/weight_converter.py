@@ -39,7 +39,13 @@ def convert_timm_vit_to_nntrainer(model_path, output_path, dtype=np.float32):
     print(f"Converting weights to: {output_path}")
 
     with open(output_path, 'wb') as f:
-        # 1. Patch embedding (Conv2D)
+        # 1. Position embedding (must come before patch embed due to nntrainer weight order)
+        # PyTorch: [1, 196, 768] -> reshape to [1, 1, 196, 768] for nntrainer
+        print("  Processing position embedding...")
+        pos_embed_reshaped = state_dict['pos_embed'].unsqueeze(1)  # [1, 1, 196, 768]
+        save_weight(pos_embed_reshaped, dtype, f, transpose=False)
+
+        # 2. Patch embedding (Conv2D)
         # PyTorch: [out_channels, in_channels, H, W] = [768, 3, 16, 16]
         print("  Processing patch embedding...")
         patch_weight = state_dict['patch_embed.proj.weight']
@@ -47,11 +53,6 @@ def convert_timm_vit_to_nntrainer(model_path, output_path, dtype=np.float32):
 
         if 'patch_embed.proj.bias' in state_dict:
             save_weight(state_dict['patch_embed.proj.bias'], dtype, f)
-
-        # 2. Position embedding (NO class token for SIGLIP)
-        # Shape: [1, 196, 768] -> use as-is
-        print("  Processing position embedding...")
-        save_weight(state_dict['pos_embed'], dtype, f, transpose=False)
 
         # 3. Transformer blocks
         num_layers = 12  # vit_base
