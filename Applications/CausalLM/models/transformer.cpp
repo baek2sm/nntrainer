@@ -82,9 +82,14 @@ Transformer::Transformer(json &cfg, json &generation_cfg, json &nntr_cfg,
   // This is where you would set up the model layers, parameters, etc.
   setupParameters(cfg, generation_cfg, nntr_cfg);
 
-  // prep tokenizer
-  tokenizer = tokenizers::Tokenizer::FromBlobJSON(
-    LoadBytesFromFile(nntr_cfg["tokenizer_file"]));
+  // Skip tokenizer if specified (e.g., for vision encoder models)
+  if ((nntr_cfg.contains("skip_tokenizer") &&
+       nntr_cfg["skip_tokenizer"].get<bool>())) {
+    tokenizer = nullptr; // No tokenizer for this model
+  } else {
+    tokenizer = tokenizers::Tokenizer::FromBlobJSON(
+      LoadBytesFromFile(nntr_cfg["tokenizer_file"]));
+  }
 };
 
 void Transformer::setupParameters(json &cfg, json &generation_cfg,

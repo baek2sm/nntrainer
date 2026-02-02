@@ -40,6 +40,7 @@
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
+#include "timm_vit/timm_vit_transformer.h"
 #include <sys/resource.h>
 
 #include <atomic>
@@ -182,6 +183,11 @@ int main(int argc, char *argv[]) {
     "EmbeddingGemma", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::EmbeddingGemma>(cfg, generation_cfg,
                                                         nntr_cfg);
+    });
+  causallm::Factory::Instance().registerModel(
+    "TimmViT", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::TimmViTTransformer>(cfg, generation_cfg,
+                                                            nntr_cfg);
     });
 
   // Validate arguments
