@@ -527,19 +527,6 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     b_cache_value_step.copyData(value_step);
   }
 
-  // Debug: Print shapes and first few values
-  if (batch == 0 && _from == 0) {
-    std::cout << "=== MHA Core Debug (Step 1: Inputs) ===" << std::endl;
-    std::cout << "query_step shape: (B=" << query_step.getDim().batch()
-              << ", C=" << query_step.getDim().channel()
-              << ", H=" << query_step.getDim().height()
-              << ", W=" << query_step.getDim().width() << ")" << std::endl;
-    std::cout << "query_step first 5: ";
-    for (int i = 0; i < 5; ++i)
-      std::cout << query_step.getData<float>()[i] << " ";
-    std::cout << std::endl;
-  }
-
   ml::train::TensorDim cached_key_dim = cache_key_dim;
   ml::train::TensorDim cached_value_dim = cache_value_dim;
   cached_key_dim.height(to);
@@ -562,30 +549,7 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   compute_kcaches(query_step, b_cached_key, out_, _from, to - from, num_heads_Q,
                   gqa_size, head_dim, pool);
 
-  // Debug: After compute_kcaches (QK^T)
-  if (batch == 0 && _from == 0) {
-    std::cout << "=== MHA Core Debug (Step 2: After compute_kcaches) ==="
-              << std::endl;
-    std::cout << "out_ shape: (B=" << out_.getDim().batch()
-              << ", C=" << out_.getDim().channel()
-              << ", H=" << out_.getDim().height()
-              << ", W=" << out_.getDim().width() << ")" << std::endl;
-    std::cout << "out_ first 5 (QK^T before softmax): ";
-    for (int i = 0; i < 5; ++i)
-      std::cout << out_.getData<float>()[i] << " ";
-    std::cout << std::endl;
-  }
-
   softmax_triangle(out_, to - from, num_heads_Q, from, pool);
-
-  // Debug: After softmax
-  if (batch == 0 && _from == 0) {
-    std::cout << "=== MHA Core Debug (Step 3: After softmax) ===" << std::endl;
-    std::cout << "out_ first 5 (after softmax): ";
-    for (int i = 0; i < 5; ++i)
-      std::cout << out_.getData<float>()[i] << " ";
-    std::cout << std::endl;
-  }
 
   compute_fp16vcache_transposed(out_, b_cached_value, attention_output_step,
                                 from, num_heads_KV, gqa_size, head_dim, to,
@@ -638,15 +602,12 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     b_cache_key_step.copyData(key_step);
   }
 
-  if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
+  if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32 &&
+      use_rope) {
     apply_rotary_emb_tensor_v2(value_step, b_cache_value_step, head_dim, _from,
                                true);
-  } else if (query_step.getDataType() == ml::train::TensorDim::DataType::FP16) {
-#ifdef ENABLE_FP16
+  } else {
     b_cache_value_step.copyData(value_step);
-#else
-    NNTR_THROW_IF(true, std::invalid_argument) << "enable-fp16 is not set!";
-#endif
   }
 
   ml::train::TensorDim cached_key_dim = cache_key_dim;
