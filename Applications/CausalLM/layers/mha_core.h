@@ -137,6 +137,16 @@ public:
 };
 
 /**
+ * @brief UseRoPE property
+ */
+class UseRoPE : public nntrainer::Property<bool> {
+public:
+  UseRoPE(bool value = true) { set(value); };
+  static constexpr const char *key = "use_rope"; /**< unique key to access */
+  using prop_tag = nntrainer::bool_prop_tag;     /**< property type */
+};
+
+/**
  * @brief RopeScalingType
  * - default
  * - yarn
@@ -308,7 +318,7 @@ private:
     props::SlidingWindow, props::MaxNewTokens, props::RopeTheta,
     props::MaxPositionEmbeddings, props::UseSink, props::RopeScalingType,
     props::RopeScalingFactor, props::RopeScalingMaxPositionEmbeddings,
-    props::AttnLogitSoftcapping, props::IsCausal>
+    props::AttnLogitSoftcapping, props::IsCausal, props::UseRoPE>
     mha_core_props; /**< mha_core layer properties */
 
   /** softmax activation operation */
@@ -327,6 +337,7 @@ private:
   bool use_sink = false;
   float attn_logit_softcapping = 0.0f;
   bool is_causal;
+  bool use_rope;
 
   enum INOUT_INDEX {
     /** input index */

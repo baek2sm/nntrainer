@@ -52,7 +52,7 @@ MHACoreLayer::MHACoreLayer() :
     props::SlidingWindow(), props::MaxNewTokens(), props::RopeTheta(),
     props::MaxPositionEmbeddings(), props::UseSink(), props::RopeScalingType(),
     props::RopeScalingFactor(), props::RopeScalingMaxPositionEmbeddings(),
-    props::AttnLogitSoftcapping(), props::IsCausal()),
+    props::AttnLogitSoftcapping(), props::IsCausal(), props::UseRoPE()),
   sm(nntrainer::ActivationType::ACT_SOFTMAX),
   epsilon(1e-3),
   cache_index(0),
@@ -148,6 +148,8 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
 
   /** Is Causal */
   is_causal = std::get<props::IsCausal>(mha_core_props).get();
+  /** Use RoPE */
+  use_rope = std::get<props::UseRoPE>(mha_core_props).get();
 
   /** Tensor for KV-Cache */
 #ifdef ENABLE_FP16
@@ -516,20 +518,36 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     batch * cache_value_dim.getFeatureLen() + from * cache_value_dim.width(),
     true);
 
-  apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, false);
+  if (use_rope) {
+    apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, false);
+  }
 
-  apply_rotary_emb_tensor_v2(key_step, b_cache_key_step, head_dim, _from,
-                             false);
+  if (use_rope) {
+    apply_rotary_emb_tensor_v2(key_step, b_cache_key_step, head_dim, _from,
+                               false);
+  } else {
+    b_cache_key_step.copyData(key_step);
+  }
 
-  if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
+  if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32 &&
+      use_rope) {
     apply_rotary_emb_tensor_v2(value_step, b_cache_value_step, head_dim, _from,
                                true);
-  } else if (query_step.getDataType() == ml::train::TensorDim::DataType::FP16) {
-#ifdef ENABLE_FP16
+  } else {
     b_cache_value_step.copyData(value_step);
-#else
-    NNTR_THROW_IF(true, std::invalid_argument) << "enable-fp16 is not set!";
-#endif
+  }
+
+  // Debug: Print shapes and first few values
+  if (batch == 0 && _from == 0) {
+    std::cout << "=== MHA Core Debug (Step 1: Inputs) ===" << std::endl;
+    std::cout << "query_step shape: (B=" << query_step.getDim().batch()
+              << ", C=" << query_step.getDim().channel()
+              << ", H=" << query_step.getDim().height()
+              << ", W=" << query_step.getDim().width() << ")" << std::endl;
+    std::cout << "query_step first 5: ";
+    for (int i = 0; i < 5; ++i)
+      std::cout << query_step.getData<float>()[i] << " ";
+    std::cout << std::endl;
   }
 
   ml::train::TensorDim cached_key_dim = cache_key_dim;
@@ -554,7 +572,30 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   compute_kcaches(query_step, b_cached_key, out_, _from, to - from, num_heads_Q,
                   gqa_size, head_dim, pool);
 
+  // Debug: After compute_kcaches (QK^T)
+  if (batch == 0 && _from == 0) {
+    std::cout << "=== MHA Core Debug (Step 2: After compute_kcaches) ==="
+              << std::endl;
+    std::cout << "out_ shape: (B=" << out_.getDim().batch()
+              << ", C=" << out_.getDim().channel()
+              << ", H=" << out_.getDim().height()
+              << ", W=" << out_.getDim().width() << ")" << std::endl;
+    std::cout << "out_ first 5 (QK^T before softmax): ";
+    for (int i = 0; i < 5; ++i)
+      std::cout << out_.getData<float>()[i] << " ";
+    std::cout << std::endl;
+  }
+
   softmax_triangle(out_, to - from, num_heads_Q, from, pool);
+
+  // Debug: After softmax
+  if (batch == 0 && _from == 0) {
+    std::cout << "=== MHA Core Debug (Step 3: After softmax) ===" << std::endl;
+    std::cout << "out_ first 5 (after softmax): ";
+    for (int i = 0; i < 5; ++i)
+      std::cout << out_.getData<float>()[i] << " ";
+    std::cout << std::endl;
+  }
 
   compute_fp16vcache_transposed(out_, b_cached_value, attention_output_step,
                                 from, num_heads_KV, gqa_size, head_dim, to,
@@ -596,10 +637,16 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     batch * cache_value_dim.getFeatureLen() + from * cache_value_dim.width(),
     true);
 
-  apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, false);
+  if (use_rope) {
+    apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, false);
+  }
 
-  apply_rotary_emb_tensor_v2(key_step, b_cache_key_step, head_dim, _from,
-                             false);
+  if (use_rope) {
+    apply_rotary_emb_tensor_v2(key_step, b_cache_key_step, head_dim, _from,
+                               false);
+  } else {
+    b_cache_key_step.copyData(key_step);
+  }
 
   if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
     apply_rotary_emb_tensor_v2(value_step, b_cache_value_step, head_dim, _from,
