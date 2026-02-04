@@ -64,10 +64,27 @@ def convert_timm_vit_to_nntrainer(model_path, output_path, dtype=np.float32):
             save_weight(state_dict[layer_prefix + 'norm1.weight'], dtype, f)
             save_weight(state_dict[layer_prefix + 'norm1.bias'], dtype, f)
 
-            # Attention QKV (fused)
-            # PyTorch: [3*768, 768] -> nntrainer: [768, 3*768]
-            save_weight(state_dict[layer_prefix + 'attn.qkv.weight'], dtype, f, transpose=True)
-            save_weight(state_dict[layer_prefix + 'attn.qkv.bias'], dtype, f)
+            # Attention QKV (split for nntrainer V->K->Q order)
+            # PyTorch: [3*768, 768] -> split into V, K, Q
+            qkv_weight = state_dict[layer_prefix + 'attn.qkv.weight']
+            qkv_bias = state_dict[layer_prefix + 'attn.qkv.bias']
+            
+            dim = 768  # DIM
+            Q_weight = qkv_weight[:dim, :]      # [768, 768]
+            K_weight = qkv_weight[dim:2*dim, :] # [768, 768]
+            V_weight = qkv_weight[2*dim:, :]    # [768, 768]
+            
+            Q_bias = qkv_bias[:dim]
+            K_bias = qkv_bias[dim:2*dim]
+            V_bias = qkv_bias[2*dim:]
+            
+            # nntrainer order: V -> K -> Q
+            save_weight(V_weight, dtype, f, transpose=True)  # attn.v
+            save_weight(V_bias, dtype, f)
+            save_weight(K_weight, dtype, f, transpose=True)  # attn.k
+            save_weight(K_bias, dtype, f)
+            save_weight(Q_weight, dtype, f, transpose=True)  # attn.q
+            save_weight(Q_bias, dtype, f)
 
             # Attention Output
             save_weight(state_dict[layer_prefix + 'attn.proj.weight'], dtype, f, transpose=True)
@@ -132,7 +149,7 @@ if __name__ == "__main__":
                        default="model.safetensors",
                        help="Input model path (safetensors)")
     parser.add_argument("--output", type=str,
-                       default="nntr_vit_base_patch16_siglip_224_fp32.bin",
+                       default="nntr_vit_base_fp32.bin",
                        help="Output nntrainer weight file")
     parser.add_argument("--dtype", type=str, default="float32",
                        help="Data type (float32 or float16)")

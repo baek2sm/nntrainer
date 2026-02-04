@@ -97,6 +97,114 @@ std::vector<LayerHandle> TimmViTTransformer::createPatchEmbed() {
   return layers;
 }
 
+std::vector<LayerHandle>
+TimmViTTransformer::createAttention(const int layer_id,
+                                    const std::string &input_name) {
+  std::vector<LayerHandle> layers;
+
+  std::string prefix = "layer" + std::to_string(layer_id) + "_";
+
+  layers.push_back(
+    createLayer("layer_normalization",
+                {withKey("name", prefix + "attention_norm"),
+                 withKey("axis", "3"), withKey("epsilon", std::to_string(1e-6)),
+                 withKey("input_layers", input_name)}));
+
+  auto Q = prefix + "qkv_q", K = prefix + "qkv_k", V = prefix + "qkv_v",
+       A = prefix + "attention", O = prefix + "attention_out";
+
+  layers.push_back(
+    createLayer("fully_connected",
+                {withKey("name", Q), withKey("unit", std::to_string(DIM)),
+                 withKey("disable_bias", "false"),
+                 withKey("input_layers", prefix + "attention_norm")}));
+
+  layers.push_back(
+    createLayer("fully_connected",
+                {withKey("name", K), withKey("unit", std::to_string(DIM)),
+                 withKey("disable_bias", "false"),
+                 withKey("input_layers", prefix + "attention_norm")}));
+
+  layers.push_back(
+    createLayer("fully_connected",
+                {withKey("name", V), withKey("unit", std::to_string(DIM)),
+                 withKey("disable_bias", "false"),
+                 withKey("input_layers", prefix + "attention_norm")}));
+
+  layers.push_back(createLayer(
+    "mha_core",
+    {withKey("name", A), withKey("num_heads", std::to_string(NUM_HEADS)),
+     withKey("num_heads_kv", std::to_string(NUM_HEADS)),
+     withKey("max_timestep", "224"), withKey("is_causal", "false"),
+     withKey("use_rope", "false"), withKey("input_layers", {Q, K, V})}));
+
+  layers.push_back(createLayer(
+    "fully_connected",
+    {withKey("name", O), withKey("unit", std::to_string(DIM)),
+     withKey("disable_bias", "false"), withKey("input_layers", A)}));
+
+  return layers;
+}
+
+std::vector<LayerHandle>
+TimmViTTransformer::createMlp(const int layer_id,
+                              const std::string &input_name) {
+  std::vector<LayerHandle> layers;
+
+  std::string prefix = "layer" + std::to_string(layer_id) + "_";
+
+  layers.push_back(
+    createLayer("layer_normalization",
+                {withKey("name", prefix + "ffn_norm"), withKey("axis", "3"),
+                 withKey("epsilon", std::to_string(1e-6)),
+                 withKey("input_layers", input_name)}));
+
+  layers.push_back(createLayer(
+    "fully_connected", {withKey("name", prefix + "ffn_up"),
+                        withKey("unit", std::to_string(INTERMEDIATE_SIZE)),
+                        withKey("disable_bias", "false"),
+                        withKey("input_layers", prefix + "ffn_norm")}));
+
+  layers.push_back(
+    createLayer("activation", {withKey("name", prefix + "ffn_gelu"),
+                               withKey("activation", "gelu"),
+                               withKey("input_layers", prefix + "ffn_up")}));
+
+  layers.push_back(createLayer("fully_connected",
+                               {withKey("name", prefix + "ffn_down"),
+                                withKey("unit", std::to_string(DIM)),
+                                withKey("disable_bias", "false"),
+                                withKey("input_layers", prefix + "ffn_gelu")}));
+
+  return layers;
+}
+
+std::vector<LayerHandle>
+TimmViTTransformer::createTransformerBlock(const int layer_id,
+                                           const std::string &input_name) {
+  std::vector<LayerHandle> layers;
+
+  std::string prefix = "layer" + std::to_string(layer_id) + "_";
+
+  auto attention = createAttention(layer_id, input_name);
+  layers.insert(layers.end(), attention.begin(), attention.end());
+
+  layers.push_back(createLayer(
+    "addition",
+    {withKey("name", prefix + "attention_residual"),
+     withKey("input_layers", {input_name, prefix + "attention_out"})}));
+
+  auto mlp = createMlp(layer_id, prefix + "attention_residual");
+  layers.insert(layers.end(), mlp.begin(), mlp.end());
+
+  layers.push_back(createLayer(
+    "addition", {withKey("name", prefix + "ffn_residual"),
+                 withKey("input_layers", {prefix + "attention_residual",
+                                          prefix + "ffn_down"})}));
+
+  return layers;
+}
+
 void TimmViTTransformer::constructModel() {
   std::vector<LayerHandle> layers;
 
@@ -105,6 +213,20 @@ void TimmViTTransformer::constructModel() {
   auto patch_embed_layers = createPatchEmbed();
   layers.insert(layers.end(), patch_embed_layers.begin(),
                 patch_embed_layers.end());
+
+  std::string last_output = "pos_embed/add";
+  for (int i = 0; i < NUM_LAYERS; i++) {
+    auto block_layers = createTransformerBlock(i, last_output);
+    layers.insert(layers.end(), block_layers.begin(), block_layers.end());
+    last_output = "layer" + std::to_string(i) + "_ffn_residual";
+  }
+
+  layers.push_back(createLayer(
+    "layer_normalization",
+    {withKey("name", "output_norm"), withKey("axis", "3"),
+     withKey("epsilon", std::to_string(1e-6)),
+     withKey("input_layers",
+             "layer" + std::to_string(NUM_LAYERS - 1) + "_ffn_residual")}));
 
   for (auto &layer : layers) {
     model->addLayer(layer);
@@ -173,7 +295,6 @@ void TimmViTTransformer::run(const WSTR prompt, bool do_sample,
   std::vector<float *> output = model->incremental_inference(
     BATCH_SIZE, input, label, patch_count, 0, patch_count, false);
 
-  std::cout << "Output" << std::endl;
   std::cout << "First 10 values: ";
   for (int i = 0; i < std::min(10, DIM); ++i) {
     std::cout << "[" << i << "]=" << output[0][i] << " ";

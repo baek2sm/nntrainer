@@ -34,6 +34,12 @@ public:
 
 public:
   std::vector<LayerHandle> createPatchEmbed();
+  std::vector<LayerHandle> createAttention(const int layer_id,
+                                           const std::string &input_name);
+  std::vector<LayerHandle> createMlp(const int layer_id,
+                                     const std::string &input_name);
+  std::vector<LayerHandle>
+  createTransformerBlock(const int layer_id, const std::string &input_name);
 
 protected:
   void constructModel() override;

@@ -1,6 +1,6 @@
 {
   "model_tensor_type": "FP32-FP32",
-  "model_file_name": "nntr_vit_patch_embed_fp32.bin",
+  "model_file_name": "nntr_vit_base_fp32.bin",
   "model_type": "embedding",
   "embedding_dtype": "FP32",
   "fc_layer_dtype": "FP32",
