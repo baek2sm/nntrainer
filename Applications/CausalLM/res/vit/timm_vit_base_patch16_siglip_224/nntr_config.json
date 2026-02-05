@@ -9,10 +9,11 @@
   "img_size": 224,
   "num_patches": 196,
   "num_classes": 0,
-  "sample_input": "./test.png",
+  "sample_input": "/home/seungbaek/Downloads/test.png",
   "init_seq_len": 196,
   "max_seq_len": 1000,
   "num_to_generate": 0,
   "fsu": false,
   "skip_tokenizer": true
 }
+

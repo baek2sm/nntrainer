@@ -112,7 +112,11 @@ std::string resolve_architecture(std::string model_type,
   std::transform(model_type.begin(), model_type.end(), model_type.begin(),
                  [](unsigned char c) { return std::tolower(c); });
 
-  if (model_type == "embedding") {
+  if (model_type == "model") {
+    if (architecture == "TimmViT") {
+      return "TimmViT";
+    }
+  } else if (model_type == "embedding") {
     if (architecture == "Qwen3ForCausalLM") {
       return "Qwen3Embedding";
     } else if (architecture == "Gemma3ForCausalLM" ||
@@ -120,8 +124,6 @@ std::string resolve_architecture(std::string model_type,
       return "EmbeddingGemma";
     } else if (architecture == "Qwen2Model") {
       return "Qwen2Embedding";
-    } else if (architecture == "TimmViT") {
-      return "TimmViT";
     } else {
       throw std::invalid_argument(
         "Unsupported architecture for embedding model: " + architecture);
