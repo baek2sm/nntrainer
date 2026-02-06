@@ -650,11 +650,10 @@ void MHACoreLayer::one_batch_incremental_forwarding(
 void MHACoreLayer::precompute_freqs(int head_dim, unsigned int seq_len,
                                     float theta, bool is_fp16) {
   // compute the freqs only when it is the first time to call this function
-#ifdef ENABLE_FP16
-  if (freqs_cos_fp16 != nullptr && freqs_cos_fp16->size() == seq_len)
+  if (!is_fp16 && freqs_cos != nullptr && freqs_cos->size() == seq_len)
     return;
-#else
-  if (freqs_cos != nullptr && freqs_cos->size() == seq_len)
+#ifdef ENABLE_FP16
+  if (is_fp16 && freqs_cos_fp16 != nullptr && freqs_cos_fp16->size() == seq_len)
     return;
 #endif
 
