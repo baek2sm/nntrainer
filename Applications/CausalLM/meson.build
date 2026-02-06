@@ -32,7 +32,7 @@ subdir('models')
 
 if (get_option('platform') == 'windows') and (build_machine.system() == 'windows')
     run_command(powershell_prog, '-ExecutionPolicy', 'Bypass', '-File', join_paths(meson.source_root(), 'jni', 'prepare_encoder.ps1'), meson.build_root(), '0.2', check: true)
-elif get_option('platform') != 'tizen'
+else
     run_command([meson.source_root() / 'jni' / 'prepare_encoder.sh', meson.build_root(), '0.2'], check: true)
 endif
 
@@ -70,4 +70,6 @@ e = executable('nntr_causallm',
     executable_src,
     include_directories: causallm_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_layer_dependencies, causallm_dep],
+    install: get_option('install-app'),
+    install_dir: application_install_dir
 )
