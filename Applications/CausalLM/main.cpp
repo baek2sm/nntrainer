@@ -34,6 +34,7 @@
 #include "gemma3_causallm.h"
 #include "gptoss_cached_slim_causallm.h"
 #include "gptoss_causallm.h"
+#include "mt5_causallm.h"
 #include "qwen2_causallm.h"
 #include "qwen2_embedding.h"
 #include "qwen3_cached_slim_moe_causallm.h"
@@ -125,6 +126,11 @@ std::string resolve_architecture(std::string model_type,
     }
   }
 
+  // Handle MT5 architecture mapping
+  if (architecture == "MT5ForConditionalGeneration") {
+    return "MT5ForCausalLM";
+  }
+
   return architecture;
 }
 
@@ -196,6 +202,15 @@ int main(int argc, char *argv[]) {
       return std::make_unique<causallm::EmbeddingGemma>(cfg, generation_cfg,
                                                         nntr_cfg);
     });
+  causallm::Factory::Instance().registerModel(
+    "MT5ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+      std::cout << "Creating MT5CausalLM in factory" << std::endl;
+      // Sanitize MT5 configuration before creating the model
+      causallm::MT5Transformer::sanitizeConfig(cfg);
+      causallm::MT5Transformer::sanitizeGenerationConfig(generation_cfg, cfg);
+      return std::make_unique<causallm::MT5CausalLM>(cfg, generation_cfg,
+                                                     nntr_cfg);
+    });
 
   // Validate arguments
   if (argc < 2) {
@@ -249,10 +264,28 @@ int main(int argc, char *argv[]) {
       architecture = resolve_architecture(model_type, architecture);
     }
 
+    std::cout << "Creating model with architecture: " << architecture
+              << std::endl;
+    std::cout << "Before factory creation" << std::endl;
     auto model = causallm::Factory::Instance().create(architecture, cfg,
                                                       generation_cfg, nntr_cfg);
-    model->initialize();
-    model->load_weight(weight_file);
+    std::cout << "Model created successfully" << std::endl;
+    try {
+      model->initialize();
+      std::cout << "Model initialized successfully" << std::endl;
+    } catch (const std::exception &e) {
+      std::cerr << "[!] FATAL ERROR during initialization: " << e.what()
+                << std::endl;
+      return EXIT_FAILURE;
+    }
+    try {
+      model->load_weight(weight_file);
+      std::cout << "Weights loaded successfully" << std::endl;
+    } catch (const std::exception &e) {
+      std::cerr << "[!] FATAL ERROR during weight loading: " << e.what()
+                << std::endl;
+      return EXIT_FAILURE;
+    }
 
     bool do_sample = generation_cfg.value("do_sample", false);
 
