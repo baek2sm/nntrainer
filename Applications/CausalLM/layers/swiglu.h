@@ -26,6 +26,8 @@
 #define WIN_EXPORT
 #endif
 
+#include "causallm_common_properties.h"
+
 namespace causallm {
 
 /**
@@ -92,14 +94,17 @@ public:
   /**
    * @copydoc Layer::setProperty(const std::vector<std::string> &values)
    */
-  WIN_EXPORT void
-  setProperty(const std::vector<std::string> &values) override{};
+  WIN_EXPORT void setProperty(const std::vector<std::string> &values) override;
 
   WIN_EXPORT void updateTensorsByInputDimensions(
-    nntrainer::RunLayerContext &context,
-    std::vector<nntrainer::TensorDim> input_dimensions) override;
+      nntrainer::RunLayerContext &context,
+      std::vector<nntrainer::TensorDim> input_dimensions) override;
 
   inline static const std::string type = "swiglu";
+
+private:
+  std::tuple<props::SmartReply, props::SkipPrefill> swiglu_props;
+  bool skip_prefill = false;
 };
 
 } // namespace causallm

@@ -30,7 +30,16 @@ namespace ActivationOp {
 float swiglu(float x) { return x / (1 + nntrainer::exp_util(-x)); }
 } // namespace ActivationOp
 
+void SwiGLULayer::setProperty(const std::vector<std::string> &values) {
+  auto remain_props = loadProperties(values, swiglu_props);
+  Layer::setProperty(remain_props);
+}
+
 void SwiGLULayer::finalize(nntrainer::InitLayerContext &context) {
+  if (!std::get<props::SkipPrefill>(swiglu_props).empty()) {
+    skip_prefill = std::get<props::SkipPrefill>(swiglu_props).get();
+  }
+
   context.setOutputDimensions({context.getInputDimensions()[0]});
 }
 
@@ -45,7 +54,17 @@ void SwiGLULayer::incremental_forwarding(nntrainer::RunLayerContext &context,
   nntrainer::Tensor &out = context.getOutput(OUT_IDX);
 
   unsigned int _from = from;
+  bool is_prefill = !from;
 
+  if (from) {
+    NNTR_THROW_IF(to - from != 1, std::invalid_argument)
+        << "incremental step size is not 1";
+    from = 0;
+    to = 1;
+  } else if (skip_prefill && is_prefill)
+    return;
+
+  bool smart_reply = std::get<props::SmartReply>(swiglu_props).get();
   int iter = to - from;
 
   if (in1.getDataType() == ml::train::TensorDim::DataType::FP32) {
@@ -57,6 +76,9 @@ void SwiGLULayer::incremental_forwarding(nntrainer::RunLayerContext &context,
                             in1.getData<float>() + in1.getIndex(b, c, h, 0),
                             in2.getData<float>() + in2.getIndex(b, c, h, 0));
         }
+      }
+      if (smart_reply && !_from) {
+        break;
       }
     }
   } else if (in1.getDataType() == ml::train::TensorDim::DataType::FP16) {
@@ -70,6 +92,9 @@ void SwiGLULayer::incremental_forwarding(nntrainer::RunLayerContext &context,
                             in2.getData<_FP16>() + in2.getIndex(b, c, h, 0));
         }
       }
+      if (smart_reply && !_from) {
+        break;
+      }
     }
 #else
     NNTR_THROW_IF(true, std::invalid_argument) << "enable-fp16 is not set!";
@@ -78,8 +103,8 @@ void SwiGLULayer::incremental_forwarding(nntrainer::RunLayerContext &context,
 }
 
 void SwiGLULayer::updateTensorsByInputDimensions(
-  nntrainer::RunLayerContext &context,
-  std::vector<nntrainer::TensorDim> input_dimensions) {
+    nntrainer::RunLayerContext &context,
+    std::vector<nntrainer::TensorDim> input_dimensions) {
   ml::train::TensorDim input_dim1 = context.getInput(INPUT_IDX_1).getDim();
   ml::train::TensorDim input_dim2 = context.getInput(INPUT_IDX_2).getDim();
   ml::train::TensorDim output_dim = context.getOutput(OUT_IDX).getDim();
