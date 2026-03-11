@@ -126,6 +126,21 @@ public:
 };
 
 /**
+ * @brief Whether the layer should skip prefill or not
+ *
+ */
+class SkipPrefill : public nntrainer::Property<bool> {
+public:
+  /**
+   * @brief Construct a new SkipPrefill object
+   *
+   */
+  SkipPrefill(bool value = false) : nntrainer::Property<bool>(value) {}
+  static constexpr const char *key = "skip_prefill";
+  using prop_tag = bool_prop_tag;
+};
+
+/**
  * @brief Inplace operation property
  *
  */
@@ -142,7 +157,7 @@ public:
 class InPlaceDirectionProp : public nntrainer::Property<std::string> {
 public:
   static constexpr const char *key =
-    "inplace_direction";         /**< unique key to access */
+      "inplace_direction";       /**< unique key to access */
   using prop_tag = str_prop_tag; /**< property type */
 };
 
@@ -252,7 +267,7 @@ public:
    */
   InputConnection(const Connection &value);
   static constexpr const char *key =
-    "input_layers";                     /**< unique key to access */
+      "input_layers";                   /**< unique key to access */
   using prop_tag = connection_prop_tag; /**< property type */
 };
 
@@ -331,7 +346,7 @@ public:
 class SplitNumber : public PositiveIntegerProperty {
 public:
   static constexpr const char *key =
-    "split_number";               /**< unique key to access */
+      "split_number";             /**< unique key to access */
   using prop_tag = uint_prop_tag; /**< property type */
 };
 
@@ -543,8 +558,8 @@ public:
    * @brief Construct a new Padding2D object
    *
    */
-  Padding2D(const std::string &value = "valid") :
-    nntrainer::Property<std::string>(value) {} /**< default value if any */
+  Padding2D(const std::string &value = "valid")
+      : nntrainer::Property<std::string>(value) {} /**< default value if any */
   bool isValid(const std::string &v) const override;
   static constexpr const char *key = "padding"; /**< unique key to access */
   using prop_tag = str_prop_tag;                /**< property type */
@@ -581,8 +596,8 @@ public:
    * @brief Construct a new Padding1D object
    *
    */
-  Padding1D(const std::string &value = "valid") :
-    nntrainer::Property<std::string>(value) {} /**< default value if any */
+  Padding1D(const std::string &value = "valid")
+      : nntrainer::Property<std::string>(value) {} /**< default value if any */
   bool isValid(const std::string &v) const override;
   static constexpr const char *key = "padding"; /**< unique key to access */
   using prop_tag = str_prop_tag;                /**< property type */
@@ -630,7 +645,7 @@ public:
 class ZeroIdxMask : public nntrainer::Property<unsigned int> {
 public:
   static constexpr const char *key =
-    "zero_idx_mask";              /**< unique key to access */
+      "zero_idx_mask";            /**< unique key to access */
   using prop_tag = uint_prop_tag; /**< property type */
 };
 
@@ -647,7 +662,7 @@ public:
    */
   DropOutRate(float value = 0.0) : nntrainer::Property<float>(value) {}
   static constexpr const char *key =
-    "dropout_rate";                /**< unique key to access */
+      "dropout_rate";              /**< unique key to access */
   using prop_tag = float_prop_tag; /**< property type */
 
   /**
@@ -669,7 +684,7 @@ class RandomTranslate : public nntrainer::Property<float> {
 
 public:
   static constexpr const char *key =
-    "random_translate";            /**< unique key to access */
+      "random_translate";          /**< unique key to access */
   using prop_tag = float_prop_tag; /**< property type */
 
   /**
@@ -862,8 +877,8 @@ public:
    */
   BasicRegularizerConstant(float value = 1.0f);
   static constexpr const char *key =
-    "basic_regularizer_constant";  /**< unique key to access */
-  using prop_tag = float_prop_tag; /**< property type */
+      "basic_regularizer_constant"; /**< unique key to access */
+  using prop_tag = float_prop_tag;  /**< property type */
 
   /**
    * @brief check if given value is valid
@@ -888,7 +903,7 @@ public:
    */
   WeightRegularizerConstant(float value = 1.0f);
   static constexpr const char *key =
-    "weight_regularizer_constant"; /**< unique key to access */
+      "weight_regularizer_constant"; /**< unique key to access */
 };
 
 /**
@@ -905,7 +920,7 @@ public:
    */
   WeightDecay(float value = 0.0f);
   static constexpr const char *key =
-    "weight_decay"; /**< unique key to access */
+      "weight_decay"; /**< unique key to access */
 };
 
 /**
@@ -977,16 +992,16 @@ public:
 struct ActivationTypeInfo {
   using Enum = nntrainer::ActivationType;
   static constexpr std::initializer_list<Enum> EnumList = {
-    Enum::ACT_TANH,         Enum::ACT_SIGMOID, Enum::ACT_RELU,
-    Enum::ACT_SWISH,        Enum::ACT_GELU,    Enum::ACT_TANH_GELU,
-    Enum::ACT_SIGMOID_GELU, Enum::ACT_SOFTMAX, Enum::ACT_SOFTPLUS,
-    Enum::ACT_LEAKY_RELU,   Enum::ACT_ELU,     Enum::ACT_SELU,
-    Enum::ACT_MISH,         Enum::ACT_NONE,    Enum::ACT_UNKNOWN};
+      Enum::ACT_TANH,         Enum::ACT_SIGMOID, Enum::ACT_RELU,
+      Enum::ACT_SWISH,        Enum::ACT_GELU,    Enum::ACT_TANH_GELU,
+      Enum::ACT_SIGMOID_GELU, Enum::ACT_SOFTMAX, Enum::ACT_SOFTPLUS,
+      Enum::ACT_LEAKY_RELU,   Enum::ACT_ELU,     Enum::ACT_SELU,
+      Enum::ACT_MISH,         Enum::ACT_NONE,    Enum::ACT_UNKNOWN};
 
   static constexpr const char *EnumStr[] = {
-    "tanh",      "sigmoid",      "relu",    "swish",    "gelu",
-    "tanh_gelu", "sigmoid_gelu", "softmax", "softplus", "leaky_relu",
-    "elu",       "selu",         "mish",    "none",     "unknown"};
+      "tanh",      "sigmoid",      "relu",    "swish",    "gelu",
+      "tanh_gelu", "sigmoid_gelu", "softmax", "softplus", "leaky_relu",
+      "elu",       "selu",         "mish",    "none",     "unknown"};
 };
 
 /**
@@ -994,7 +1009,7 @@ struct ActivationTypeInfo {
  *
  */
 class Activation final
-  : public EnumProperty<nntrainer::props::ActivationTypeInfo> {
+    : public EnumProperty<nntrainer::props::ActivationTypeInfo> {
 public:
   using prop_tag = enum_class_prop_tag;
   static constexpr const char *key = "activation";
@@ -1012,7 +1027,7 @@ public:
    *
    */
   HiddenStateActivation(
-    ActivationTypeInfo::Enum value = ActivationTypeInfo::Enum::ACT_NONE);
+      ActivationTypeInfo::Enum value = ActivationTypeInfo::Enum::ACT_NONE);
   using prop_tag = enum_class_prop_tag;
   static constexpr const char *key = "hidden_state_activation";
 };
@@ -1029,7 +1044,7 @@ public:
    *
    */
   RecurrentActivation(
-    ActivationTypeInfo::Enum value = ActivationTypeInfo::Enum::ACT_NONE);
+      ActivationTypeInfo::Enum value = ActivationTypeInfo::Enum::ACT_NONE);
   using prop_tag = enum_class_prop_tag;
   static constexpr const char *key = "recurrent_activation";
 };
@@ -1040,14 +1055,14 @@ public:
 struct InitializerInfo {
   using Enum = Initializer;
   static constexpr std::initializer_list<Enum> EnumList = {
-    Enum::ZEROS,         Enum::ONES,          Enum::LECUN_NORMAL,
-    Enum::LECUN_UNIFORM, Enum::XAVIER_NORMAL, Enum::XAVIER_UNIFORM,
-    Enum::HE_NORMAL,     Enum::HE_UNIFORM,    Enum::NONE};
+      Enum::ZEROS,         Enum::ONES,          Enum::LECUN_NORMAL,
+      Enum::LECUN_UNIFORM, Enum::XAVIER_NORMAL, Enum::XAVIER_UNIFORM,
+      Enum::HE_NORMAL,     Enum::HE_UNIFORM,    Enum::NONE};
 
   static constexpr const char *EnumStr[] = {
-    "zeros",         "ones",          "lecun_normal",
-    "lecun_uniform", "xavier_normal", "xavier_uniform",
-    "he_normal",     "he_uniform",    "none"};
+      "zeros",         "ones",          "lecun_normal",
+      "lecun_uniform", "xavier_normal", "xavier_uniform",
+      "he_normal",     "he_uniform",    "none"};
 };
 
 /**
@@ -1140,7 +1155,7 @@ public:
 struct RegularizerInfo {
   using Enum = nntrainer::WeightRegularizer;
   static constexpr std::initializer_list<Enum> EnumList = {
-    Enum::L2NORM, Enum::NONE, Enum::UNKNOWN};
+      Enum::L2NORM, Enum::NONE, Enum::UNKNOWN};
 
   static constexpr const char *EnumStr[] = {"l2norm", "none", "unknown"};
 };
@@ -1178,7 +1193,7 @@ public:
    * @brief Construct a WeightRegularizer object
    */
   WeightRegularizer(
-    nntrainer::WeightRegularizer value = nntrainer::WeightRegularizer::NONE);
+      nntrainer::WeightRegularizer value = nntrainer::WeightRegularizer::NONE);
   static constexpr const char *key = "weight_regularizer";
 };
 
@@ -1195,7 +1210,7 @@ struct UpsampleModeInfo {
   using Enum = Interpolation;
 
   static constexpr std::initializer_list<Interpolation> EnumList = {
-    Interpolation::nearest, Interpolation::bilinear};
+      Interpolation::nearest, Interpolation::bilinear};
 
   static constexpr const char *EnumStr[] = {"nearest", "bilinear"};
 };
@@ -1225,8 +1240,8 @@ struct PoolingTypeInfo {
     unknown = 4
   };
   static constexpr std::initializer_list<Enum> EnumList = {
-    Enum::max, Enum::average, Enum::global_max, Enum::global_average,
-    Enum::unknown};
+      Enum::max, Enum::average, Enum::global_max, Enum::global_average,
+      Enum::unknown};
 
   static constexpr const char *EnumStr[] = {"max", "average", "global_max",
                                             "global_average", "unknown"};
@@ -1248,7 +1263,7 @@ public:
 struct FlipDirectionInfo {
   enum class Enum { horizontal, vertical, horizontal_and_vertical };
   static constexpr std::initializer_list<Enum> EnumList = {
-    Enum::horizontal, Enum::vertical, Enum::horizontal_and_vertical};
+      Enum::horizontal, Enum::vertical, Enum::horizontal_and_vertical};
 
   static constexpr const char *EnumStr[] = {"horizontal", "vertical",
                                             "horizontal_and_vertical"};
@@ -1261,7 +1276,7 @@ struct FlipDirectionInfo {
 class FlipDirection final : public EnumProperty<FlipDirectionInfo> {
 public:
   FlipDirection(FlipDirectionInfo::Enum value =
-                  FlipDirectionInfo::Enum::horizontal_and_vertical);
+                    FlipDirectionInfo::Enum::horizontal_and_vertical);
   using prop_tag = enum_class_prop_tag;
   static constexpr const char *key = "flip_direction";
 };
@@ -1285,7 +1300,7 @@ public:
 class MaxTimestep : public PositiveIntegerProperty {
 public:
   static constexpr const char *key =
-    "max_timestep";               /**< unique key to access */
+      "max_timestep";             /**< unique key to access */
   using prop_tag = uint_prop_tag; /**< property type */
 };
 
@@ -1301,7 +1316,7 @@ class GenericShape : public Property<TensorDim> {
 
 public:
   static constexpr const char *key =
-    "generic_shape";                   /**< unique key to access */
+      "generic_shape";                 /**< unique key to access */
   using prop_tag = dimension_prop_tag; /**< property type */
 
   /**
@@ -1321,7 +1336,7 @@ class TargetShape : public GenericShape {
 
 public:
   static constexpr const char *key =
-    "target_shape";                    /**< unique key to access */
+      "target_shape";                  /**< unique key to access */
   using prop_tag = dimension_prop_tag; /**< property type */
 };
 
@@ -1414,7 +1429,7 @@ public:
 class ProjectedKeyDim : public PositiveIntegerProperty {
 public:
   static constexpr const char *key =
-    "projected_key_dim";          /**< unique key to access */
+      "projected_key_dim";        /**< unique key to access */
   using prop_tag = uint_prop_tag; /**< property type */
 };
 
@@ -1427,7 +1442,7 @@ public:
 class ProjectedValueDim : public PositiveIntegerProperty {
 public:
   static constexpr const char *key =
-    "projected_value_dim";        /**< unique key to access */
+      "projected_value_dim";      /**< unique key to access */
   using prop_tag = uint_prop_tag; /**< property type */
 };
 
@@ -1440,7 +1455,7 @@ public:
 class OutputShape : public PositiveIntegerProperty {
 public:
   static constexpr const char *key =
-    "output_shape";               /**< unique key to access */
+      "output_shape";             /**< unique key to access */
   using prop_tag = uint_prop_tag; /**< property type */
 };
 
@@ -1450,7 +1465,7 @@ public:
 struct ReturnAttentionWeightInfo {
   enum class Enum { none, before, after };
   static constexpr std::initializer_list<Enum> EnumList = {
-    Enum::none, Enum::before, Enum::after};
+      Enum::none, Enum::before, Enum::after};
 
   static constexpr const char *EnumStr[] = {"none", "before", "after"};
 };
@@ -1467,7 +1482,7 @@ struct ReturnAttentionWeightInfo {
 class ReturnAttentionWeight : public EnumProperty<ReturnAttentionWeightInfo> {
 public:
   static constexpr const char *key =
-    "return_attention_weight";          /**< unique key to access */
+      "return_attention_weight";        /**< unique key to access */
   using prop_tag = enum_class_prop_tag; /**< property type */
 
   /**
@@ -1475,7 +1490,7 @@ public:
    *
    */
   ReturnAttentionWeight(ReturnAttentionWeightInfo::Enum value =
-                          ReturnAttentionWeightInfo::Enum::none);
+                            ReturnAttentionWeightInfo::Enum::none);
 };
 
 /**
@@ -1486,7 +1501,7 @@ public:
 class AverageAttentionWeight : public Property<bool> {
 public:
   static constexpr const char *key =
-    "average_attention_weight";   /**< unique key to access */
+      "average_attention_weight"; /**< unique key to access */
   using prop_tag = bool_prop_tag; /**< property type */
 };
 
@@ -1518,7 +1533,7 @@ public:
 class ClipGradByGlobalNorm : public Property<float> {
 public:
   static constexpr const char *key =
-    "clip_grad_by_norm";           /**< unique key to access */
+      "clip_grad_by_norm";         /**< unique key to access */
   using prop_tag = float_prop_tag; /**< property type */
 };
 
@@ -1548,7 +1563,7 @@ public:
 class LearningRate : public Property<float> {
 public:
   static constexpr const char *key =
-    "learning_rate";               /**< unique key to access */
+      "learning_rate";             /**< unique key to access */
   using prop_tag = float_prop_tag; /**< property type */
 };
 
@@ -1559,7 +1574,7 @@ public:
 class MaxLearningRate : public Property<float> {
 public:
   static constexpr const char *key =
-    "max_learning_rate";           /**< unique key to access */
+      "max_learning_rate";         /**< unique key to access */
   using prop_tag = float_prop_tag; /**< property type */
 };
 
@@ -1570,7 +1585,7 @@ public:
 class MinLearningRate : public Property<float> {
 public:
   static constexpr const char *key =
-    "min_learning_rate";           /**< unique key to access */
+      "min_learning_rate";         /**< unique key to access */
   using prop_tag = float_prop_tag; /**< property type */
 };
 
@@ -1621,22 +1636,22 @@ public:
 struct TensorLifeInfo {
   using Enum = nntrainer::TensorLifespan;
   static constexpr std::initializer_list<Enum> EnumList = {
-    Enum::UNMANAGED,
-    Enum::FORWARD_FUNC_LIFESPAN,
-    Enum::CALC_DERIV_LIFESPAN,
-    Enum::CALC_GRAD_LIFESPAN,
-    Enum::CALC_AGRAD_LIFESPAN,
-    Enum::CALC_GRAD_DERIV_LIFESPAN,
-    Enum::CALC_GRAD_DERIV_AGRAD_LIFESPAN,
-    Enum::FORWARD_GRAD_LIFESPAN,
-    Enum::FORWARD_GRAD_AGRAD_LIFESPAN,
-    Enum::FORWARD_DERIV_LIFESPAN,
-    Enum::BACKWARD_FUNC_LIFESPAN,
-    Enum::CALC_GRAD_DERIV_AGRAD_LIFESPAN,
-    Enum::ITERATION_LIFESPAN,
-    Enum::EPOCH_LIFESPAN,
-    Enum::FORWARD_INFER_LIFESPAN,
-    Enum::MAX_LIFESPAN};
+      Enum::UNMANAGED,
+      Enum::FORWARD_FUNC_LIFESPAN,
+      Enum::CALC_DERIV_LIFESPAN,
+      Enum::CALC_GRAD_LIFESPAN,
+      Enum::CALC_AGRAD_LIFESPAN,
+      Enum::CALC_GRAD_DERIV_LIFESPAN,
+      Enum::CALC_GRAD_DERIV_AGRAD_LIFESPAN,
+      Enum::FORWARD_GRAD_LIFESPAN,
+      Enum::FORWARD_GRAD_AGRAD_LIFESPAN,
+      Enum::FORWARD_DERIV_LIFESPAN,
+      Enum::BACKWARD_FUNC_LIFESPAN,
+      Enum::CALC_GRAD_DERIV_AGRAD_LIFESPAN,
+      Enum::ITERATION_LIFESPAN,
+      Enum::EPOCH_LIFESPAN,
+      Enum::FORWARD_INFER_LIFESPAN,
+      Enum::MAX_LIFESPAN};
 
   static constexpr const char *EnumStr[] = {"unmanaged",
                                             "forward",

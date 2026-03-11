@@ -11,6 +11,12 @@ causallm_reshaped_rms_norm_src_abs = [meson.current_source_dir() / 'reshaped_rms
 causallm_qkv_layer_src_abs = [meson.current_source_dir() / 'qkv_layer.cpp']
 causallm_embedding_pooling_src_abs = [meson.current_source_dir() / 'embedding_pooling_layer.cpp']
 causallm_embedding_normalize_src_abs = [meson.current_source_dir() / 'embedding_normalize_layer.cpp']
+causallm_dot_wrapper_src_abs = [meson.current_source_dir() / 'dot_wrapper.cpp']
+causallm_vocab_selection_src_abs = [meson.current_source_dir() / 'vocab_selection.cpp']
+causallm_fc_src_abs = [meson.current_source_dir() / 'fc_layer.cpp']
+causallm_fc_lora_src_abs = [meson.current_source_dir() / 'fc_lora_layer.cpp']
+causallm_ffn_src_abs = [meson.current_source_dir() / 'ffn_layer.cpp']
+
 
 openmp_dep = dependency('openmp')
 causallm_rms_norm = shared_library(
@@ -142,5 +148,70 @@ causallm_qkv_layer = shared_library(
 
 causallm_qkv_layer_dep = declare_dependency(
     link_with: causallm_qkv_layer,
+    include_directories: causallm_layer_inc
+)
+
+causallm_dot_wrapper = shared_library(
+    'dot_wrapper',
+    causallm_dot_wrapper_src_abs,
+    include_directories: causallm_layer_inc,
+    dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    install: true,
+    install_dir: application_install_dir
+)
+causallm_dot_wrapper_dep = declare_dependency(
+    link_with: causallm_dot_wrapper,
+    include_directories: causallm_layer_inc
+)
+
+causallm_vocab_selection = shared_library(
+    'vocab_selection',
+    causallm_vocab_selection_src_abs,
+    include_directories: causallm_layer_inc,
+    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, openmp_dep],
+    install: true,
+    install_dir: application_install_dir
+)
+causallm_vocab_selection_dep = declare_dependency(
+    link_with: causallm_vocab_selection,
+    include_directories: causallm_layer_inc
+)
+
+causallm_fc_layer = shared_library(
+    'fc_layer',
+    causallm_fc_src_abs,
+    include_directories: causallm_layer_inc,
+    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_dot_wrapper_dep, openmp_dep],
+    install: true,
+    install_dir: application_install_dir
+)
+causallm_fc_layer_dep = declare_dependency(
+    link_with: causallm_fc_layer,
+    include_directories: causallm_layer_inc
+)
+
+causallm_fc_lora_layer = shared_library(
+    'fc_lora_layer',
+    causallm_fc_lora_src_abs,
+    include_directories: causallm_layer_inc,
+    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_dot_wrapper_dep, openmp_dep],
+    install: true,
+    install_dir: application_install_dir
+)
+causallm_fc_lora_layer_dep = declare_dependency(
+    link_with: causallm_fc_lora_layer,
+    include_directories: causallm_layer_inc
+)
+
+causallm_ffn_layer = shared_library(
+    'ffn_layer',
+    causallm_ffn_src_abs,
+    include_directories: causallm_layer_inc,
+    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_dot_wrapper_dep, openmp_dep],
+    install: true,
+    install_dir: application_install_dir
+)
+causallm_ffn_layer_dep = declare_dependency(
+    link_with: causallm_ffn_layer,
     include_directories: causallm_layer_inc
 )

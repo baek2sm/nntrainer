@@ -31,6 +31,7 @@
 #endif
 
 #include <base_properties.h>
+#include <common_properties.h>
 #include <tensor.h>
 #include <utility>
 
@@ -42,7 +43,7 @@ namespace props {
  * @brief MoE activation type
  */
 class MoEActivation final
-  : public nntrainer::EnumProperty<nntrainer::props::ActivationTypeInfo> {
+    : public nntrainer::EnumProperty<nntrainer::props::ActivationTypeInfo> {
 public:
   using prop_tag = nntrainer::enum_class_prop_tag;
   static constexpr const char *key = "moe_activation";
@@ -62,7 +63,7 @@ public:
 class NumExpertsPerToken : public nntrainer::PositiveIntegerProperty {
 public:
   static constexpr const char *key =
-    "num_experts_per_token";                 /**< unique key to access */
+      "num_experts_per_token";               /**< unique key to access */
   using prop_tag = nntrainer::uint_prop_tag; /**< property type */
 };
 
@@ -73,7 +74,7 @@ public:
 class FeatureSize : public nntrainer::PositiveIntegerProperty {
 public:
   static constexpr const char *key =
-    "feature_size";                          /**< unique key to access */
+      "feature_size";                        /**< unique key to access */
   using prop_tag = nntrainer::uint_prop_tag; /**< property type */
 };
 
@@ -82,13 +83,13 @@ public:
  *
  */
 WIN_EXPORT class RMS_NORM_GAMMA_INIT final
-  : public nntrainer::EnumProperty<nntrainer::props::InitializerInfo> {
+    : public nntrainer::EnumProperty<nntrainer::props::InitializerInfo> {
 public:
   /**
    * @brief Construct a CUSTOM_RMS_NORM_GAMMA_INIT object
    */
   WIN_EXPORT RMS_NORM_GAMMA_INIT(
-    nntrainer::Initializer value = nntrainer::Initializer::ONES) {
+      nntrainer::Initializer value = nntrainer::Initializer::ONES) {
     set(value);
   };
 
@@ -112,17 +113,17 @@ public:
 };
 
 /**
- * @brief Whether the layer should skip prefill or not.
+ * @brief Whether the lora enable or not
  *
  */
-class SkipPrefill : public nntrainer::Property<bool> {
+class LoraEnable : public nntrainer::Property<bool> {
 public:
   /**
-   * @brief Construct a new SkipPrefill object
+   * @brief Construct a new LoraEnable object
    *
    */
-  SkipPrefill(bool value = false) { set(value); }
-  static constexpr const char *key = "skip_prefill";
+  LoraEnable(bool value = false) { set(value); }
+  static constexpr const char *key = "lora_enable";
   using prop_tag = nntrainer::bool_prop_tag;
 };
 
