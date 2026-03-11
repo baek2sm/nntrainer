@@ -1,0 +1,158 @@
+// SPDX-License-Identifier: Apache-2.0
+/**
+ * Copyright (C) 2023 Seungbaek Hong <sb92.hong@samsung.com>
+ *
+ * @file   custom_rms_norm.cpp
+ * @date   19 July 2023
+ * @brief  Implementation of custom RMS normalization function
+ * @see    https://github.com/nnstreamer/nntrainer
+ * @author Seungbaek Hong <sb92.hong@samsung.com>
+ * @bug    No known bugs except for NYI items
+ *
+ */
+
+#include <cmath>
+#include <iostream>
+
+#include "custom_rms_norm.h"
+
+namespace custom {
+
+static constexpr size_t SINGLE_INOUT_IDX = 0;
+
+void CustomRMSNormLayer::finalize(nntrainer::InitLayerContext &context) {
+  std::vector<nntrainer::TensorDim> dim = context.getInputDimensions();
+
+  context.setOutputDimensions(dim);
+
+  auto rmsparams_gamma = nntrainer::props::InitializerInfo::Enum::NONE;
+  // auto &rmsparams_gamma =
+  // std::get<props::CUSTOM_RMS_NORM_GAMMA_INIT>(rms_props);
+
+  if (!std::get<props::SkipPrefill>(rms_props).empty()) {
+    skip_prefill = std::get<props::SkipPrefill>(rms_props).get();
+  }
+
+  nntrainer::TensorDim gamma_dim(
+    1, 1, 1, dim[0].width(),
+    nntrainer::TensorDim::TensorType(context.getFormat(),
+                                     context.getWeightDataType()));
+  wt_idx[CustomRMSParams::gamma] = context.requestWeight(
+    gamma_dim, rmsparams_gamma, nntrainer::WeightRegularizer::NONE, 1.0f, 0.0f,
+    "gamma", false);
+}
+
+void CustomRMSNormLayer::forwarding(nntrainer::RunLayerContext &context,
+                                    bool training) {}
+
+void CustomRMSNormLayer::incremental_forwarding(
+  nntrainer::RunLayerContext &context, unsigned int from, unsigned int to,
+  bool training) {
+  auto &epsilon = std::get<nntrainer::props::Epsilon>(rms_props).get();
+
+  nntrainer::Tensor &in = context.getInput(SINGLE_INOUT_IDX);
+  nntrainer::Tensor &out = context.getOutput(SINGLE_INOUT_IDX);
+  nntrainer::Tensor &gamma = context.getWeight(wt_idx[CustomRMSParams::gamma]);
+
+  ml::train::TensorDim in_dim = in.getDim();
+  ml::train::TensorDim out_dim = out.getDim();
+
+  ml::train::TensorDim in_step_dim = in_dim;
+  ml::train::TensorDim out_step_dim = out_dim;
+
+  unsigned int _from = from;
+  bool is_prefill = !from;
+  if (from) {
+    NNTR_THROW_IF(to - from != 1, std::invalid_argument)
+      << "incremental step size is not 1";
+    from = 0;
+    to = 1;
+  } else if (skip_prefill && is_prefill)
+    return;
+
+  in_step_dim.batch(1);
+  in_step_dim.height(to - from);
+  out_step_dim.batch(1);
+  out_step_dim.height(to - from);
+
+  bool smart_reply = std::get<props::SmartReply>(rms_props).get();
+
+  unsigned int b_size = in_dim.batch();
+
+  if (smart_reply && !_from) {
+    b_size = 1;
+    //    omp_num = 1;
+  }
+
+  // #pragma omp parallel for num_threads(omp_num)
+  for (unsigned int b = 0; b < b_size; ++b) {
+    nntrainer::Tensor in_step =
+      in.getSharedDataTensor(in_step_dim, b * in_dim.getFeatureLen(), true);
+    nntrainer::Tensor out_step =
+      out.getSharedDataTensor(out_step_dim, b * out_dim.getFeatureLen(), true);
+
+    if (in_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
+      auto t = in_step.multiply(in_step).average(3).add(epsilon);
+      t.inv_sqrt_i();
+      in_step.multiply(t, out_step);
+    } else if (in_step.getDataType() == ml::train::TensorDim::DataType::FP16) {
+#ifdef ENABLE_FP16
+      ml::train::TensorDim instep_dim = in_step_dim;
+      ml::train::TensorDim outstep_dim = out_step_dim;
+
+      instep_dim.setDataType(ml::train::TensorDim::DataType::FP32);
+      outstep_dim.setDataType(ml::train::TensorDim::DataType::FP32);
+
+      nntrainer::Tensor in_step32(instep_dim, true);
+      nntrainer::Tensor out_step32(outstep_dim, true);
+
+      in_step32.copyData(in_step);
+      out_step32.copyData(out_step);
+
+      auto t = in_step32.multiply(in_step32).average(3).add(epsilon);
+      t.inv_sqrt_i();
+      in_step32.multiply(t, out_step32);
+
+      out_step.copyData(out_step32);
+#else
+      throw std::invalid_argument("Error: enable-fp16 is not set");
+#endif
+    }
+    out_step.multiply_i(gamma);
+
+#ifdef DEBUG
+    std::cout << context.getName() << " \n input:" << in_step
+              << "output:" << out_step << "gamma:" << gamma << std::endl;
+#endif
+  }
+}
+
+void CustomRMSNormLayer::updateTensorsByInputDimensions(
+  nntrainer::RunLayerContext &context,
+  std::vector<nntrainer::TensorDim> input_dimensions) {
+  context.updateInput(SINGLE_INOUT_IDX, input_dimensions[0]);
+  context.updateOutput(SINGLE_INOUT_IDX, input_dimensions[0]);
+}
+
+void CustomRMSNormLayer::calcDerivative(nntrainer::RunLayerContext &context) {
+  // std::throw_with_nested(std::runtime_error("Training is not supported
+  // yet."));
+}
+
+#ifdef PLUGGABLE
+
+nntrainer::Layer *create_rms_norm_layer() {
+  auto layer = new CustomRMSNormLayer();
+  return layer;
+}
+
+void destroy_rms_norm_layer(nntrainer::Layer *layer) { delete layer; }
+
+extern "C" {
+nntrainer::LayerPluggable ml_train_layer_pluggable{create_rms_norm_layer,
+                                                   destroy_rms_norm_layer};
+}
+
+#endif
+
+} // namespace custom
