@@ -58,7 +58,7 @@ public:
    */
   NumHeads_KV(unsigned int value = 1) { set(value); };
   static constexpr const char *key =
-    "num_heads_KV";                          /**< unique key to access */
+      "num_heads_KV";                        /**< unique key to access */
   using prop_tag = nntrainer::uint_prop_tag; /**< property type */
 };
 
@@ -69,7 +69,7 @@ class SlidingWindow : public nntrainer::Property<unsigned int> {
 public:
   SlidingWindow(unsigned int value = UINT_MAX) { set(value); };
   static constexpr const char *key =
-    "sliding_window";                        /**< unique key to access */
+      "sliding_window";                      /**< unique key to access */
   using prop_tag = nntrainer::uint_prop_tag; /**< property type */
 };
 
@@ -80,7 +80,7 @@ class MaxNewTokens : public nntrainer::Property<unsigned int> {
 public:
   MaxNewTokens(unsigned int value = 1) { set(value); };
   static constexpr const char *key =
-    "max_new_tokens";                        /**< unique key to access */
+      "max_new_tokens";                      /**< unique key to access */
   using prop_tag = nntrainer::uint_prop_tag; /**< property type */
 };
 
@@ -91,7 +91,7 @@ class MaxPositionEmbeddings : public nntrainer::Property<unsigned int> {
 public:
   MaxPositionEmbeddings(unsigned int value = 40960) { set(value); };
   static constexpr const char *key =
-    "max_position_embeddings";               /**< unique key to access */
+      "max_position_embeddings";             /**< unique key to access */
   using prop_tag = nntrainer::uint_prop_tag; /**< property type */
 };
 
@@ -122,7 +122,7 @@ class AttnLogitSoftcapping : public nntrainer::Property<float> {
 public:
   AttnLogitSoftcapping(float value = 0.0f) { set(value); };
   static constexpr const char *key =
-    "attn_logit_softcapping";                 /**< unique key to access */
+      "attn_logit_softcapping";               /**< unique key to access */
   using prop_tag = nntrainer::float_prop_tag; /**< property type */
 };
 
@@ -145,7 +145,7 @@ class RopeScalingType : public nntrainer::Property<std::string> {
 public:
   RopeScalingType(std::string value = "default") { set(value); };
   static constexpr const char *key =
-    "rope_scaling_type";                    /**< unique key to access */
+      "rope_scaling_type";                  /**< unique key to access */
   using prop_tag = nntrainer::str_prop_tag; /**< property type */
 };
 /**
@@ -155,7 +155,7 @@ class RopeScalingFactor : public nntrainer::Property<float> {
 public:
   RopeScalingFactor(float value = 1.0) { set(value); };
   static constexpr const char *key =
-    "rope_scaling_factor";                    /**< unique key to access */
+      "rope_scaling_factor";                  /**< unique key to access */
   using prop_tag = nntrainer::float_prop_tag; /**< property type */
 };
 
@@ -163,12 +163,12 @@ public:
  * @brief RopeScalingMaxPositionEmbeddings
  */
 class RopeScalingMaxPositionEmbeddings
-  : public nntrainer::Property<unsigned int> {
+    : public nntrainer::Property<unsigned int> {
 public:
   RopeScalingMaxPositionEmbeddings(unsigned int value = 4096) { set(value); };
   static constexpr const char *key =
-    "rope_scaling_max_position_embeddings";  /**< unique key to access */
-  using prop_tag = nntrainer::uint_prop_tag; /**< property type */
+      "rope_scaling_max_position_embeddings"; /**< unique key to access */
+  using prop_tag = nntrainer::uint_prop_tag;  /**< property type */
 };
 
 }; // namespace props
@@ -225,24 +225,26 @@ public:
                              bool training) override;
 
   void one_batch_incremental_forwarding(
-    const unsigned int batch, const unsigned int _from, const unsigned int from,
-    const unsigned int to, nntrainer::Tensor &query_step,
-    nntrainer::Tensor &key_step, nntrainer::Tensor &value_step,
-    nntrainer::Tensor &attention_output_step, nntrainer::Tensor &cache_key,
-    nntrainer::Tensor &cache_value, ml::train::TensorDim &cache_key_dim,
-    ml::train::TensorDim &cache_key_step_dim,
-    ml::train::TensorDim &cache_value_dim,
-    ml::train::TensorDim &cache_value_step_dim);
+      const unsigned int batch, const unsigned int _from,
+      const unsigned int from, const unsigned int to,
+      nntrainer::Tensor &query_step, nntrainer::Tensor &key_step,
+      nntrainer::Tensor &value_step, nntrainer::Tensor &attention_output_step,
+      nntrainer::Tensor &cache_key, nntrainer::Tensor &cache_value,
+      ml::train::TensorDim &cache_key_dim,
+      ml::train::TensorDim &cache_key_step_dim,
+      ml::train::TensorDim &cache_value_dim,
+      ml::train::TensorDim &cache_value_step_dim);
 
   void one_batch_incremental_forwarding(
-    const unsigned int batch, const unsigned int _from, const unsigned int from,
-    const unsigned int to, nntrainer::Tensor &query_step,
-    nntrainer::Tensor &key_step, nntrainer::Tensor &value_step,
-    nntrainer::Tensor &attention_output_step, nntrainer::Tensor &cache_key,
-    nntrainer::Tensor &cache_value, ml::train::TensorDim &cache_key_dim,
-    ml::train::TensorDim &cache_key_step_dim,
-    ml::train::TensorDim &cache_value_dim,
-    ml::train::TensorDim &cache_value_step_dim, nntrainer::Tensor &sink_step);
+      const unsigned int batch, const unsigned int _from,
+      const unsigned int from, const unsigned int to,
+      nntrainer::Tensor &query_step, nntrainer::Tensor &key_step,
+      nntrainer::Tensor &value_step, nntrainer::Tensor &attention_output_step,
+      nntrainer::Tensor &cache_key, nntrainer::Tensor &cache_value,
+      ml::train::TensorDim &cache_key_dim,
+      ml::train::TensorDim &cache_key_step_dim,
+      ml::train::TensorDim &cache_value_dim,
+      ml::train::TensorDim &cache_value_step_dim, nntrainer::Tensor &sink_step);
   /**
    * @copydoc Layer::calcDerivative(RunLayerContext &context)
    */
@@ -293,23 +295,24 @@ public:
                            unsigned int batch) override;
 
   WIN_EXPORT void updateTensorsByInputDimensions(
-    nntrainer::RunLayerContext &context,
-    std::vector<nntrainer::TensorDim> input_dimensions) override;
+      nntrainer::RunLayerContext &context,
+      std::vector<nntrainer::TensorDim> input_dimensions) override;
 
   inline static const std::string type = "mha_core";
 
 private:
   std::tuple<
-    nntrainer::props::NumHeads, props::NumHeads_KV,
-    nntrainer::props::ProjectedKeyDim, nntrainer::props::ProjectedValueDim,
-    nntrainer::props::OutputShape, nntrainer::props::DropOutRate,
-    nntrainer::props::ReturnAttentionWeight,
-    nntrainer::props::AverageAttentionWeight, nntrainer::props::MaxTimestep,
-    props::SlidingWindow, props::MaxNewTokens, props::RopeTheta,
-    props::MaxPositionEmbeddings, props::UseSink, props::RopeScalingType,
-    props::RopeScalingFactor, props::RopeScalingMaxPositionEmbeddings,
-    props::AttnLogitSoftcapping, props::IsCausal>
-    mha_core_props; /**< mha_core layer properties */
+      nntrainer::props::NumHeads, props::NumHeads_KV,
+      nntrainer::props::ProjectedKeyDim, nntrainer::props::ProjectedValueDim,
+      nntrainer::props::OutputShape, nntrainer::props::DropOutRate,
+      nntrainer::props::ReturnAttentionWeight,
+      nntrainer::props::AverageAttentionWeight, nntrainer::props::MaxTimestep,
+      props::SlidingWindow, props::MaxNewTokens, props::RopeTheta,
+      props::MaxPositionEmbeddings, props::UseSink, props::RopeScalingType,
+      props::RopeScalingFactor, props::RopeScalingMaxPositionEmbeddings,
+      props::AttnLogitSoftcapping, props::IsCausal, props::SmartReply,
+      props::SkipPrefill>
+      mha_core_props; /**< mha_core layer properties */
 
   /** softmax activation operation */
   nntrainer::ActiFunc sm;
@@ -327,6 +330,7 @@ private:
   bool use_sink = false;
   float attn_logit_softcapping = 0.0f;
   bool is_causal;
+  bool skip_prefill = false;
 
   enum INOUT_INDEX {
     /** input index */
