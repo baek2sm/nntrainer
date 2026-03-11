@@ -147,6 +147,17 @@ public:
 };
 
 /**
+ * @brief IsCrossAttention property
+ */
+class IsCrossAttention : public nntrainer::Property<bool> {
+public:
+  IsCrossAttention(bool value = false) { set(value); };
+  static constexpr const char *key =
+    "is_cross_attention";                     /**< unique key to access */
+  using prop_tag = nntrainer::bool_prop_tag; /**< property type */
+};
+
+/**
  * @brief RopeScalingType
  * - default
  * - yarn
@@ -253,6 +264,22 @@ public:
     ml::train::TensorDim &cache_key_step_dim,
     ml::train::TensorDim &cache_value_dim,
     ml::train::TensorDim &cache_value_step_dim, nntrainer::Tensor &sink_step);
+
+  void one_batch_incremental_forwarding(
+    const unsigned int batch, const unsigned int from,
+    nntrainer::Tensor &query_step, nntrainer::Tensor &attention_output_step,
+    nntrainer::Tensor &cache_key, nntrainer::Tensor &cache_value,
+    ml::train::TensorDim &cache_key_dim,
+    ml::train::TensorDim &cache_value_dim, unsigned int context_len);
+
+  void one_batch_incremental_forwarding(
+    const unsigned int batch, const unsigned int from,
+    nntrainer::Tensor &query_step, nntrainer::Tensor &attention_output_step,
+    nntrainer::Tensor &cache_key, nntrainer::Tensor &cache_value,
+    ml::train::TensorDim &cache_key_dim,
+    ml::train::TensorDim &cache_value_dim, unsigned int context_len,
+    nntrainer::Tensor &sink_step);
+
   /**
    * @copydoc Layer::calcDerivative(RunLayerContext &context)
    */
@@ -319,7 +346,7 @@ private:
     props::UseRope, props::MaxPositionEmbeddings, props::UseSink,
     props::RopeScalingType, props::RopeScalingFactor,
     props::RopeScalingMaxPositionEmbeddings, props::AttnLogitSoftcapping,
-    props::IsCausal>
+    props::IsCausal, props::IsCrossAttention>
     mha_core_props; /**< mha_core layer properties */
 
   /** softmax activation operation */
@@ -339,6 +366,9 @@ private:
   bool use_sink = false;
   float attn_logit_softcapping = 0.0f;
   bool is_causal;
+  bool is_cross_attention = false;
+  bool cross_kv_cache_initialized = false;
+  unsigned int cross_kv_cache_len = 0;
 
   enum INOUT_INDEX {
     /** input index */
@@ -428,14 +458,17 @@ private:
                        nntrainer::Tensor &out, unsigned int from,
                        size_t sequence_len, unsigned int num_heads,
                        unsigned int group_size, unsigned int head_dim,
-                       BS::thread_pool<> &pool);
-
-  void softmax_triangle(nntrainer::Tensor &qk_out, size_t row, size_t num_heads,
-                        unsigned int from, BS::thread_pool<> &pool);
+                       BS::thread_pool<> &pool,
+                       unsigned int non_causal_context_len = 0);
 
   void softmax_triangle(nntrainer::Tensor &qk_out, size_t row, size_t num_heads,
                         unsigned int from, BS::thread_pool<> &pool,
-                        nntrainer::Tensor &sink_step);
+                        unsigned int non_causal_context_len = 0);
+
+  void softmax_triangle(nntrainer::Tensor &qk_out, size_t row, size_t num_heads,
+                        unsigned int from, BS::thread_pool<> &pool,
+                        nntrainer::Tensor &sink_step,
+                        unsigned int non_causal_context_len = 0);
 
   void compute_vcaches(nntrainer::Tensor &in, nntrainer::Tensor &vcache,
                        nntrainer::Tensor &out, unsigned int from,
@@ -447,7 +480,8 @@ private:
                                      nntrainer::Tensor &output, int from,
                                      int num_cache_head, int gqa_size,
                                      int head_dim, int to,
-                                     BS::thread_pool<> &pool);
+                                     BS::thread_pool<> &pool,
+                                     int non_causal_context_len = 0);
 
   /************** END OF  ROTARY EMBEDDING *************/
 

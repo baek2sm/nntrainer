@@ -53,7 +53,7 @@ MHACoreLayer::MHACoreLayer() :
     props::UseRope(), props::MaxPositionEmbeddings(), props::UseSink(),
     props::RopeScalingType(), props::RopeScalingFactor(),
     props::RopeScalingMaxPositionEmbeddings(), props::AttnLogitSoftcapping(),
-    props::IsCausal()),
+    props::IsCausal(), props::IsCrossAttention()),
   sm(nntrainer::ActivationType::ACT_SOFTMAX),
   epsilon(1e-3),
   cache_index(0),
@@ -149,21 +149,33 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
 
   /** Is Causal */
   is_causal = std::get<props::IsCausal>(mha_core_props).get();
+  is_cross_attention =
+    std::get<props::IsCrossAttention>(mha_core_props).get();
+
+  if (is_cross_attention) {
+    const ml::train::TensorDim &value_dim = input_dims[INOUT_INDEX::VALUE];
+    NNTR_THROW_IF(key_dim.height() != value_dim.height(), std::invalid_argument)
+      << "cross attention requires key/value sequence lengths to match";
+    NNTR_THROW_IF(key_dim.width() != value_dim.width(), std::invalid_argument)
+      << "cross attention requires key/value hidden widths to match";
+  }
 
   /** Tensor for KV-Cache */
+  const unsigned int kv_cache_len =
+    is_cross_attention ? key_dim.height() : max_timestep;
 #ifdef ENABLE_FP16
   ml::train::TensorDim cache_key_dim(
-    {batch_size, 1, max_timestep, num_heads_KV * head_dim},
+    {batch_size, 1, kv_cache_len, num_heads_KV * head_dim},
     {context.getFormat(), ml::train::TensorDim::DataType::FP16});
   ml::train::TensorDim cache_value_dim(
-    {batch_size, 1, max_timestep, num_heads_KV * head_dim},
+    {batch_size, 1, kv_cache_len, num_heads_KV * head_dim},
     {context.getFormat(), ml::train::TensorDim::DataType::FP16});
 #else
   ml::train::TensorDim cache_key_dim(
-    {batch_size, 1, max_timestep, num_heads_KV * head_dim},
+    {batch_size, 1, kv_cache_len, num_heads_KV * head_dim},
     {context.getFormat(), ml::train::TensorDim::DataType::UINT16});
   ml::train::TensorDim cache_value_dim(
-    {batch_size, 1, max_timestep, num_heads_KV * head_dim},
+    {batch_size, 1, kv_cache_len, num_heads_KV * head_dim},
     {context.getFormat(), ml::train::TensorDim::DataType::UINT16});
 #endif
 
@@ -176,6 +188,8 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
 
   theta = (float)std::get<props::RopeTheta>(mha_core_props).get();
   use_rope = std::get<props::UseRope>(mha_core_props).get();
+  cross_kv_cache_initialized = false;
+  cross_kv_cache_len = 0;
 
   /** set Output dimension! - one output */
   std::vector<nntrainer::TensorDim> output_dims(1);
@@ -211,17 +225,19 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
   unsigned int from = _from;
   unsigned int to = _to;
 
-  if (to >= max_timestep) {
-    // initial forwarding
-    if (!_from) {
-      throw std::invalid_argument(
-        "to shouldn't greater than max_timestep for initial forwarding");
-    } else {
-      // exceeds the kv_cache size
-      // KV_cache is shifted!
-      cache_shift = true;
-      from = max_timestep - 1;
-      to = max_timestep;
+  if (!is_cross_attention) {
+    if (to >= max_timestep) {
+      // initial forwarding
+      if (!_from) {
+        throw std::invalid_argument(
+          "to shouldn't greater than max_timestep for initial forwarding");
+      } else {
+        // exceeds the kv_cache size
+        // KV_cache is shifted!
+        cache_shift = true;
+        from = max_timestep - 1;
+        to = max_timestep;
+      }
     }
   }
 
@@ -267,6 +283,146 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
     cache_key.getDim(); // (B, 1, max_seq_len, n_heads_KV * head_dim)
   ml::train::TensorDim cache_value_dim =
     cache_value.getDim(); // (B, 1, max_seq_len, n_heads_KV * head_dim)
+
+  NNTR_THROW_IF(to < from, std::invalid_argument)
+    << "to must be greater than or equal to from";
+  NNTR_THROW_IF((to - from) != query_dim.height(), std::invalid_argument)
+    << "query height must match incremental range";
+  NNTR_THROW_IF(query_dim.width() != num_heads_Q * head_dim, std::invalid_argument)
+    << "query width does not match layer head configuration";
+  NNTR_THROW_IF(query_dim.batch() > cache_key_dim.batch(), std::invalid_argument)
+    << "query batch cannot exceed cache batch size";
+
+  if (is_cross_attention) {
+    if (!cross_kv_cache_initialized) {
+      NNTR_THROW_IF(key_dim.height() != value_dim.height(), std::invalid_argument)
+        << "cross attention requires key/value sequence lengths to match";
+      NNTR_THROW_IF(key_dim.width() != value_dim.width(), std::invalid_argument)
+        << "cross attention requires key/value hidden widths to match";
+      NNTR_THROW_IF(key_dim.width() != num_heads_KV * head_dim, std::invalid_argument)
+        << "key/value width does not match layer head configuration";
+      NNTR_THROW_IF(key_dim.height() > cache_key_dim.height(), std::invalid_argument)
+        << "key/value sequence length exceeds cache capacity";
+      NNTR_THROW_IF(key_dim.batch() > cache_key_dim.batch(), std::invalid_argument)
+        << "key/value batch cannot exceed cache batch size";
+
+      ml::train::TensorDim key_batch_dim = key_dim;
+      key_batch_dim.batch(1);
+      ml::train::TensorDim value_batch_dim = value_dim;
+      value_batch_dim.batch(1);
+      ml::train::TensorDim cache_key_batch_dim = cache_key_dim;
+      cache_key_batch_dim.batch(1);
+      cache_key_batch_dim.height(key_dim.height());
+      ml::train::TensorDim cache_value_batch_dim = cache_value_dim;
+      cache_value_batch_dim.batch(1);
+      cache_value_batch_dim.height(value_dim.height());
+
+      for (unsigned int batch = 0; batch < key_dim.batch(); ++batch) {
+        nntrainer::Tensor key_batch = key.getSharedDataTensor(
+          key_batch_dim, batch * key_dim.getFeatureLen(), true);
+        nntrainer::Tensor value_batch = value.getSharedDataTensor(
+          value_batch_dim, batch * value_dim.getFeatureLen(), true);
+        nntrainer::Tensor cache_key_batch = cache_key.getSharedDataTensor(
+          cache_key_batch_dim, batch * cache_key_dim.getFeatureLen(), true);
+        nntrainer::Tensor cache_value_batch = cache_value.getSharedDataTensor(
+          cache_value_batch_dim, batch * cache_value_dim.getFeatureLen(), true);
+
+        if (use_rope) {
+          apply_rotary_emb_tensor_v2(key_batch, cache_key_batch, head_dim, 0,
+                                     false);
+          if (key_batch.getDataType() == ml::train::TensorDim::DataType::FP32) {
+            apply_rotary_emb_tensor_v2(value_batch, cache_value_batch, head_dim,
+                                       0, true);
+          } else if (key_batch.getDataType() ==
+                     ml::train::TensorDim::DataType::FP16) {
+#ifdef ENABLE_FP16
+            cache_value_batch.copyData(value_batch);
+#else
+            NNTR_THROW_IF(true, std::invalid_argument)
+              << "enable-fp16 is not set!";
+#endif
+          }
+        } else {
+          cache_key_batch.copyData(key_batch);
+          cache_value_batch.copyData(value_batch);
+        }
+      }
+
+      if (key_dim.batch() == 1 && cache_key_dim.batch() > 1) {
+        nntrainer::Tensor cache_key_0 =
+          cache_key.getSharedDataTensor(cache_key_batch_dim, 0, true);
+        nntrainer::Tensor cache_value_0 =
+          cache_value.getSharedDataTensor(cache_value_batch_dim, 0, true);
+        for (unsigned int batch = 1; batch < cache_key_dim.batch(); ++batch) {
+          nntrainer::Tensor cache_key_n = cache_key.getSharedDataTensor(
+            cache_key_batch_dim, batch * cache_key_dim.getFeatureLen(), true);
+          nntrainer::Tensor cache_value_n = cache_value.getSharedDataTensor(
+            cache_value_batch_dim, batch * cache_value_dim.getFeatureLen(),
+            true);
+          cache_key_n.copyData(cache_key_0);
+          cache_value_n.copyData(cache_value_0);
+        }
+      }
+
+      cross_kv_cache_initialized = true;
+      cross_kv_cache_len = key_dim.height();
+    }
+
+    NNTR_THROW_IF(!cross_kv_cache_initialized || cross_kv_cache_len == 0,
+                  std::invalid_argument)
+      << "cross-attention cache is not initialized";
+
+    ml::train::TensorDim query_step_dim = get_step_dim(query_dim);
+    ml::train::TensorDim output_step_dim = get_step_dim(output_dim);
+
+    unsigned int batch_size = (_from) ? 1 : query_dim.batch();
+    for (unsigned int batch = 0; batch < batch_size; ++batch) {
+      nntrainer::Tensor query_step = query.getSharedDataTensor(
+        query_step_dim, batch * query_dim.getFeatureLen(), true);
+      nntrainer::Tensor output_step = output.getSharedDataTensor(
+        output_step_dim, batch * output_dim.getFeatureLen(), true);
+
+      if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
+#if ENABLE_FP16 && defined(__ANDROID__)
+        nntrainer::TensorDim Q_step_dim = query_step_dim;
+        nntrainer::TensorDim O_step_dim = output_step_dim;
+        Q_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+        O_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+
+        nntrainer::Tensor Q_step = nntrainer::Tensor(Q_step_dim, true);
+        nntrainer::Tensor O_step = nntrainer::Tensor(O_step_dim, true);
+        Q_step.copyData(query_step);
+
+        if (use_sink) {
+          one_batch_incremental_forwarding(
+            batch, _from, Q_step, O_step, cache_key, cache_value, cache_key_dim,
+            cache_value_dim, cross_kv_cache_len, sink);
+        } else {
+          one_batch_incremental_forwarding(batch, _from, Q_step, O_step,
+                                           cache_key, cache_value,
+                                           cache_key_dim, cache_value_dim,
+                                           cross_kv_cache_len);
+        }
+        output_step.copyData(O_step);
+#else
+        if (use_sink) {
+          one_batch_incremental_forwarding(
+            batch, _from, query_step, output_step, cache_key, cache_value,
+            cache_key_dim, cache_value_dim, cross_kv_cache_len, sink);
+        } else {
+          one_batch_incremental_forwarding(
+            batch, _from, query_step, output_step, cache_key, cache_value,
+            cache_key_dim, cache_value_dim, cross_kv_cache_len);
+        }
+#endif
+      } else {
+        one_batch_incremental_forwarding(
+          batch, _from, query_step, output_step, cache_key, cache_value,
+          cache_key_dim, cache_value_dim, cross_kv_cache_len);
+      }
+    }
+    return;
+  }
 
   ml::train::TensorDim query_step_dim =
     get_step_dim(query_dim); // (B, 1, from-to, n_heads_Q * head_dim)
@@ -359,13 +515,13 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
         batch * cache_key_dim.getFeatureLen() + from * cache_key_dim.width(),
         true);
       nntrainer::Tensor cache_value_nth_step =
-        cache_key.getSharedDataTensor(cache_value_step_dim,
-                                      batch * cache_value_dim.getFeatureLen() +
-                                        from * cache_value_dim.width(),
-                                      true);
+        cache_value.getSharedDataTensor(cache_value_step_dim,
+                                        batch * cache_value_dim.getFeatureLen() +
+                                          from * cache_value_dim.width(),
+                                        true);
 
       cache_key_nth_step.copyData(cache_key_0_step);
-      cache_key_nth_step.copyData(cache_value_0_step);
+      cache_value_nth_step.copyData(cache_value_0_step);
     }
   }
 }
@@ -384,14 +540,24 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
 void MHACoreLayer::compute_kcaches(
   nntrainer::Tensor &in, nntrainer::Tensor &cache, nntrainer::Tensor &out,
   unsigned int from, size_t sequence_len, unsigned int num_head,
-  unsigned int group_size, unsigned int head_dim, BS::thread_pool<> &pool) {
+  unsigned int group_size, unsigned int head_dim, BS::thread_pool<> &pool,
+  unsigned int non_causal_context_len) {
+
+  const int context_len =
+    (!is_causal && non_causal_context_len > 0)
+      ? static_cast<int>(non_causal_context_len)
+      : static_cast<int>(from + sequence_len);
+  const int cache_window =
+    (!is_causal && non_causal_context_len > 0)
+      ? context_len
+      : static_cast<int>(local_window_size);
 
   // Dispatch based on data type (FP32 or FP16)
   if (in.getDataType() == ml::train::TensorDim::DataType::FP32) {
     if (sequence_len == 1) {
       // Single token processing (common during generation)
       // Parallelize over KV heads for decoding since Q direction is always 1
-      int row_to_compute = is_causal ? from + 1 : from + sequence_len;
+      int row_to_compute = is_causal ? from + 1 : context_len;
       unsigned int num_cache_head = num_head / group_size;
 
       // Use OpenMP for lower overhead parallelization during decoding
@@ -403,7 +569,7 @@ void MHACoreLayer::compute_kcaches(
       for (unsigned int head_kv = 0; head_kv < num_cache_head; ++head_kv) {
         nntrainer::compute_kcaches<uint16_t>(
           in_data, cache_data, out_data, row_to_compute, num_cache_head,
-          head_dim, group_size, tile_size, local_window_size, head_kv,
+          head_dim, group_size, tile_size, cache_window, head_kv,
           head_kv + 1);
       }
 
@@ -413,22 +579,24 @@ void MHACoreLayer::compute_kcaches(
       std::vector<std::future<void>> futures;
       int seq =
         sequence_len < local_window_size ? sequence_len : local_window_size;
+      if (!is_causal)
+        seq = sequence_len;
 
       for (int i = 0; i < seq; ++i) {
         float *input_addr = in.getData<float>() + num_head * head_dim * i;
         uint16_t *cache_addr = cache.getData<uint16_t>();
-        int row_to_compute = is_causal ? from + i + 1 : from + sequence_len;
+        int row_to_compute = is_causal ? from + i + 1 : context_len;
         // Calculate dynamic offset for the output (triangle optimization)
         size_t out_start_row =
           is_causal ? calc_attn_index(from + i) - calc_attn_index(from)
-                    : i * (from + sequence_len);
+                    : i * context_len;
         float *output_addr = out.getData<float>() + out_start_row * num_head;
 
         futures.emplace_back(pool.submit_task([=]() {
           nntrainer::compute_kcaches<uint16_t>(
             input_addr, cache_addr, output_addr, row_to_compute,
             num_head / group_size, head_dim, group_size, tile_size,
-            local_window_size);
+            cache_window);
         }));
       }
       for (auto &fut : futures)
@@ -439,7 +607,7 @@ void MHACoreLayer::compute_kcaches(
     if (sequence_len == 1) {
       // Single token processing (common during generation)
       // Parallelize over KV heads for decoding since Q direction is always 1
-      int num_rows = is_causal ? from + 1 : from + sequence_len;
+      int num_rows = is_causal ? from + 1 : context_len;
       unsigned int num_cache_head = num_head / group_size;
 
       // Use OpenMP for lower overhead parallelization during decoding
@@ -451,19 +619,21 @@ void MHACoreLayer::compute_kcaches(
       for (unsigned int head_kv = 0; head_kv < num_cache_head; ++head_kv) {
         nntrainer::compute_kcaches(
           in_data, cache_data, out_data, num_rows, num_cache_head, head_dim,
-          group_size, tile_size, local_window_size, head_kv, head_kv + 1);
+          group_size, tile_size, cache_window, head_kv, head_kv + 1);
       }
     } else {
       std::vector<std::future<void>> futures;
       unsigned int seq_start =
         sequence_len < local_window_size ? 0 : sequence_len - local_window_size;
+      if (!is_causal)
+        seq_start = 0;
       for (unsigned int i = seq_start; i < sequence_len; ++i) {
         _FP16 *input_addr = in.getData<_FP16>() + num_head * head_dim * i;
         _FP16 *cache_addr = cache.getData<_FP16>();
-        int row_to_compute = is_causal ? from + i + 1 : from + sequence_len;
+        int row_to_compute = is_causal ? from + i + 1 : context_len;
         size_t out_start_row =
           is_causal ? calc_attn_index(from + i) - calc_attn_index(from)
-                    : i * (from + sequence_len);
+                    : i * context_len;
 
         _FP16 *output_addr = out.getData<_FP16>() + out_start_row * num_head;
 
@@ -471,7 +641,7 @@ void MHACoreLayer::compute_kcaches(
           nntrainer::compute_kcaches(input_addr, cache_addr, output_addr,
                                      row_to_compute, num_head / group_size,
                                      head_dim, group_size, tile_size,
-                                     local_window_size);
+                                     cache_window);
         }));
       }
       for (auto &fut : futures)
@@ -651,6 +821,86 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   compute_fp16vcache_transposed(out_, b_cached_value, attention_output_step,
                                 from, num_heads_KV, gqa_size, head_dim, to,
                                 pool);
+}
+
+void MHACoreLayer::one_batch_incremental_forwarding(
+  const unsigned int batch, const unsigned int from, nntrainer::Tensor &query_step,
+  nntrainer::Tensor &attention_output_step, nntrainer::Tensor &cache_key,
+  nntrainer::Tensor &cache_value, ml::train::TensorDim &cache_key_dim,
+  ml::train::TensorDim &cache_value_dim, unsigned int context_len) {
+
+  auto &pool =
+    nntrainer::Engine::Global().getThreadPoolManager()->getThreadPool();
+
+  if (use_rope) {
+    apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, from, false);
+  }
+
+  ml::train::TensorDim cached_key_dim = cache_key_dim;
+  ml::train::TensorDim cached_value_dim = cache_value_dim;
+  cached_key_dim.height(context_len);
+  cached_value_dim.height(context_len);
+
+  nntrainer::Tensor b_cached_key = cache_key.getSharedDataTensor(
+    cached_key_dim, batch * cache_key_dim.getFeatureLen(), true);
+  nntrainer::Tensor b_cached_value = cache_value.getSharedDataTensor(
+    cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
+
+  unsigned int query_seq_len = query_step.height();
+  nntrainer::Tensor out_(1, 1, query_seq_len * context_len, num_heads_Q,
+                         query_step.getTensorType());
+
+  unsigned int gqa_size = num_heads_Q / num_heads_KV;
+
+  compute_kcaches(query_step, b_cached_key, out_, from, query_seq_len,
+                  num_heads_Q, gqa_size, head_dim, pool, context_len);
+
+  softmax_triangle(out_, query_seq_len, num_heads_Q, from, pool, context_len);
+
+  compute_fp16vcache_transposed(out_, b_cached_value, attention_output_step,
+                                from, num_heads_KV, gqa_size, head_dim,
+                                from + query_seq_len, pool, context_len);
+}
+
+void MHACoreLayer::one_batch_incremental_forwarding(
+  const unsigned int batch, const unsigned int from, nntrainer::Tensor &query_step,
+  nntrainer::Tensor &attention_output_step, nntrainer::Tensor &cache_key,
+  nntrainer::Tensor &cache_value, ml::train::TensorDim &cache_key_dim,
+  ml::train::TensorDim &cache_value_dim, unsigned int context_len,
+  nntrainer::Tensor &sink_step) {
+
+  auto &pool =
+    nntrainer::Engine::Global().getThreadPoolManager()->getThreadPool();
+
+  if (use_rope) {
+    apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, from, false);
+  }
+
+  ml::train::TensorDim cached_key_dim = cache_key_dim;
+  ml::train::TensorDim cached_value_dim = cache_value_dim;
+  cached_key_dim.height(context_len);
+  cached_value_dim.height(context_len);
+
+  nntrainer::Tensor b_cached_key = cache_key.getSharedDataTensor(
+    cached_key_dim, batch * cache_key_dim.getFeatureLen(), true);
+  nntrainer::Tensor b_cached_value = cache_value.getSharedDataTensor(
+    cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
+
+  unsigned int query_seq_len = query_step.height();
+  nntrainer::Tensor out_(1, 1, query_seq_len * context_len, num_heads_Q,
+                         query_step.getTensorType());
+
+  unsigned int gqa_size = num_heads_Q / num_heads_KV;
+
+  compute_kcaches(query_step, b_cached_key, out_, from, query_seq_len,
+                  num_heads_Q, gqa_size, head_dim, pool, context_len);
+
+  softmax_triangle(out_, query_seq_len, num_heads_Q, from, pool, sink_step,
+                   context_len);
+
+  compute_fp16vcache_transposed(out_, b_cached_value, attention_output_step,
+                                from, num_heads_KV, gqa_size, head_dim,
+                                from + query_seq_len, pool, context_len);
 }
 
 /************************************************************** */
@@ -949,7 +1199,13 @@ void MHACoreLayer::apply_rotary_emb_tensor_v2(nntrainer::Tensor &in,
 
 void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
                                     size_t num_head, unsigned int from,
-                                    BS::thread_pool<> &pool) {
+                                    BS::thread_pool<> &pool,
+                                    unsigned int non_causal_context_len) {
+  const size_t context_len =
+    (!is_causal && non_causal_context_len > 0)
+      ? static_cast<size_t>(non_causal_context_len)
+      : static_cast<size_t>(from + row);
+
   if (qk_out.getDataType() == ml::train::TensorDim::DataType::FP32) {
     float *qk_out_ = qk_out.getData<float>();
 
@@ -969,7 +1225,7 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
       if (is_causal) {
         end_row = from < local_window_size ? from + 1 : local_window_size;
       } else {
-        end_row = from + row; // end_row = to
+        end_row = context_len;
       }
       nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head);
     } else {
@@ -984,9 +1240,8 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
           start_row = calc_attn_index(from + i) - calc_attn_index(from);
           end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
         } else {
-          unsigned int to = from + row;
-          start_row = i * to;
-          end_row = (i + 1) * to;
+          start_row = i * context_len;
+          end_row = (i + 1) * context_len;
         }
         futures.push_back(pool.submit_task([=]() {
           nntrainer::softmax_row(qk_out_, start_row, end_row, num_head);
@@ -1016,7 +1271,7 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
       if (is_causal) {
         end_row = from < local_window_size ? from + 1 : local_window_size;
       } else {
-        end_row = from + row; // end_row = to
+        end_row = context_len;
       }
       nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head);
     } else {
@@ -1031,9 +1286,8 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
           start_row = calc_attn_index(from + i) - calc_attn_index(from);
           end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
         } else {
-          unsigned int to = from + row;
-          start_row = i * to;
-          end_row = (i + 1) * to;
+          start_row = i * context_len;
+          end_row = (i + 1) * context_len;
         }
         futures.push_back(pool.submit_task([=]() {
           nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head);
@@ -1052,7 +1306,13 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
 void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
                                     size_t num_head, unsigned int from,
                                     BS::thread_pool<> &pool,
-                                    nntrainer::Tensor &sink_step) {
+                                    nntrainer::Tensor &sink_step,
+                                    unsigned int non_causal_context_len) {
+  const size_t context_len =
+    (!is_causal && non_causal_context_len > 0)
+      ? static_cast<size_t>(non_causal_context_len)
+      : static_cast<size_t>(from + row);
+
   if (qk_out.getDataType() == ml::train::TensorDim::DataType::FP32) {
     float *qk_out_ = qk_out.getData<float>();
 
@@ -1072,8 +1332,7 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
       if (is_causal) {
         end_row = from < local_window_size ? from + 1 : local_window_size;
       } else {
-        unsigned int to = from + row;
-        end_row = to;
+        end_row = context_len;
       }
       nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head,
                                      sink_step.getData());
@@ -1090,9 +1349,8 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
           start_row = calc_attn_index(i + from) - calc_attn_index(from);
           end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
         } else {
-          unsigned int to = from + row;
-          start_row = i * to;
-          end_row = (i + 1) * to;
+          start_row = i * context_len;
+          end_row = (i + 1) * context_len;
         }
         futures.push_back(pool.submit_task([=]() {
           nntrainer::softmax_row(qk_out_, start_row, end_row, num_head,
@@ -1124,7 +1382,7 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
       if (is_causal) {
         end_row = from < local_window_size ? from + 1 : local_window_size;
       } else {
-        end_row = from + row; // end_row = to
+        end_row = context_len;
       }
       nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head,
                                      sink_step_);
@@ -1135,8 +1393,14 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
         seq = row;
 
       for (int i = 0; i < seq; ++i) {
-        size_t start_row = calc_attn_index(i + from) - calc_attn_index(from);
-        size_t end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
+        size_t start_row, end_row;
+        if (is_causal) {
+          start_row = calc_attn_index(i + from) - calc_attn_index(from);
+          end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
+        } else {
+          start_row = i * context_len;
+          end_row = (i + 1) * context_len;
+        }
         futures.push_back(pool.submit_task([=]() {
           nntrainer::softmax_row(qk_out_, start_row, end_row, num_head,
                                  sink_step_);
@@ -1155,7 +1419,14 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
 void MHACoreLayer::compute_fp16vcache_transposed(
   nntrainer::Tensor &in, nntrainer::Tensor &vcache, nntrainer::Tensor &output,
   int from, int num_cache_head, int gqa_size, int head_dim, int to,
-  BS::thread_pool<> &pool) {
+  BS::thread_pool<> &pool, int non_causal_context_len) {
+
+  const int context_len =
+    (!is_causal && non_causal_context_len > 0) ? non_causal_context_len : to;
+  const int cache_window =
+    (!is_causal && non_causal_context_len > 0)
+      ? context_len
+      : static_cast<int>(local_window_size);
 
   if (in.getDataType() == ml::train::TensorDim::DataType::FP32) {
     if ((to - from) != 1) {
@@ -1174,17 +1445,17 @@ void MHACoreLayer::compute_fp16vcache_transposed(
             start_idx =
               calc_attn_index(to - seq + i) - calc_attn_index(to - seq);
           } else {
-            start_idx = i * to; // linear index
+            start_idx = i * context_len; // linear index
           }
           const float *input =
             in.getData<float>() + start_idx * num_cache_head * gqa_size;
           float *out = output.getData<float>() +
                        i * (num_cache_head * gqa_size * head_dim);
 
-          int row_num = is_causal ? (to - seq + i) : to - 1;
+          int row_num = is_causal ? (to - seq + i) : context_len - 1;
           nntrainer::compute_fp16vcache_fp32_transposed(
             row_num, input, vcache.getData<uint16_t>(), out, num_cache_head,
-            gqa_size, head_dim, local_window_size);
+            gqa_size, head_dim, cache_window);
         }));
       }
       for (auto &fut : futures)
@@ -1192,7 +1463,7 @@ void MHACoreLayer::compute_fp16vcache_transposed(
     } else {
       // Single token processing (common during generation)
       // Parallelize over KV heads for decoding since Q direction is always 1
-      int row_num = is_causal ? to - 1 : to - 1;
+      int row_num = is_causal ? to - 1 : context_len - 1;
 
       // Use OpenMP for lower overhead parallelization during decoding
       const float *in_data = in.getData<float>();
@@ -1203,7 +1474,7 @@ void MHACoreLayer::compute_fp16vcache_transposed(
       for (int head_kv = 0; head_kv < num_cache_head; ++head_kv) {
         nntrainer::compute_fp16vcache_fp32_transposed(
           row_num, in_data, vcache_data, output_data, num_cache_head, gqa_size,
-          head_dim, local_window_size, head_kv, head_kv + 1);
+          head_dim, cache_window, head_kv, head_kv + 1);
       }
     }
   } else if (in.getDataType() == ml::train::TensorDim::DataType::FP16) {
@@ -1222,16 +1493,16 @@ void MHACoreLayer::compute_fp16vcache_transposed(
             start_idx =
               calc_attn_index(to - seq + i) - calc_attn_index(to - seq);
           } else {
-            start_idx = i * to;
+            start_idx = i * context_len;
           }
           const _FP16 *input =
             in.getData<_FP16>() + start_idx * num_cache_head * gqa_size;
           _FP16 *out = output.getData<_FP16>() +
                        i * (num_cache_head * gqa_size * head_dim);
-          int row_num = is_causal ? (to - seq + i) : to;
+          int row_num = is_causal ? (to - seq + i) : context_len - 1;
           nntrainer::compute_fp16vcache_transposed(
             row_num, input, vcache.getData<_FP16>(), out, num_cache_head,
-            gqa_size, head_dim, local_window_size);
+            gqa_size, head_dim, cache_window);
         }));
       }
       for (auto &fut : futures)
@@ -1239,7 +1510,7 @@ void MHACoreLayer::compute_fp16vcache_transposed(
     } else {
       // Single token processing (common during generation)
       // Parallelize over KV heads for decoding since Q direction is always 1
-      int row_num = is_causal ? to - 1 : to;
+      int row_num = is_causal ? to - 1 : context_len - 1;
 
       // Use OpenMP for lower overhead parallelization during decoding
       const _FP16 *in_data = in.getData<_FP16>();
@@ -1250,7 +1521,7 @@ void MHACoreLayer::compute_fp16vcache_transposed(
       for (int head_kv = 0; head_kv < num_cache_head; ++head_kv) {
         nntrainer::compute_fp16vcache_transposed(
           row_num, in_data, vcache_data, output_data, num_cache_head, gqa_size,
-          head_dim, local_window_size, head_kv, head_kv + 1);
+          head_dim, cache_window, head_kv, head_kv + 1);
       }
     }
 #else
@@ -1270,11 +1541,57 @@ void MHACoreLayer::setBatch(nntrainer::RunLayerContext &context,
   if (dropout_rate > epsilon) {
     context.updateTensor(tensor_idx[AttentionParams::dropout_mask], batch);
   }
+
+  if (is_cross_attention) {
+    cross_kv_cache_initialized = false;
+    cross_kv_cache_len = 0;
+  }
 }
 
 void MHACoreLayer::updateTensorsByInputDimensions(
   nntrainer::RunLayerContext &context,
   std::vector<nntrainer::TensorDim> input_dimensions) {
+  NNTR_THROW_IF(input_dimensions.size() < 3, std::invalid_argument)
+    << "mha_core requires query/key/value input dimensions";
+
+  is_cross_attention =
+    std::get<props::IsCrossAttention>(mha_core_props).get();
+
+  if (is_cross_attention) {
+    const ml::train::TensorDim &query_dim = input_dimensions[INOUT_INDEX::QUERY];
+    const ml::train::TensorDim &key_dim = input_dimensions[INOUT_INDEX::KEY];
+    const ml::train::TensorDim &value_dim = input_dimensions[INOUT_INDEX::VALUE];
+
+    NNTR_THROW_IF(key_dim.height() != value_dim.height(), std::invalid_argument)
+      << "cross attention requires key/value sequence lengths to match";
+    NNTR_THROW_IF(key_dim.width() != value_dim.width(), std::invalid_argument)
+      << "cross attention requires key/value hidden widths to match";
+
+    unsigned int &max_timestep =
+      std::get<nntrainer::props::MaxTimestep>(mha_core_props).get();
+    unsigned int &max_new_tokens =
+      std::get<props::MaxNewTokens>(mha_core_props).get();
+    max_timestep = query_dim.height() + max_new_tokens;
+
+    ml::train::TensorDim kv_cache_dim = key_dim;
+#ifdef ENABLE_FP16
+    kv_cache_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+#else
+    kv_cache_dim.setDataType(ml::train::TensorDim::DataType::UINT16);
+#endif
+
+    context.updateInput(INOUT_INDEX::QUERY, query_dim);
+    context.updateInput(INOUT_INDEX::KEY, key_dim);
+    context.updateInput(INOUT_INDEX::VALUE, value_dim);
+    context.updateOutput(INOUT_INDEX::OUTPUT, query_dim);
+    context.updateTensor(tensor_idx[AttentionParams::cache_key], kv_cache_dim);
+    context.updateTensor(tensor_idx[AttentionParams::cache_value], kv_cache_dim);
+
+    cross_kv_cache_initialized = false;
+    cross_kv_cache_len = 0;
+    return;
+  }
+
   unsigned int height = input_dimensions[0].height();
   unsigned int &max_timestep =
     std::get<nntrainer::props::MaxTimestep>(mha_core_props).get();
@@ -1302,6 +1619,9 @@ void MHACoreLayer::updateTensorsByInputDimensions(
 
   context.updateTensor(tensor_idx[AttentionParams::cache_key], kv_cache_dim);
   context.updateTensor(tensor_idx[AttentionParams::cache_value], kv_cache_dim);
+
+  cross_kv_cache_initialized = false;
+  cross_kv_cache_len = 0;
 }
 
 void MHACoreLayer::calcDerivative(nntrainer::RunLayerContext &context) {}
