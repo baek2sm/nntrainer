@@ -136,6 +136,13 @@ public:
   using prop_tag = nntrainer::bool_prop_tag;      /**< property type */
 };
 
+class IsCrossAttention : public nntrainer::Property<bool> {
+public:
+  IsCrossAttention(bool value = false) { set(value); };
+  static constexpr const char *key = "is_cross_attention";
+  using prop_tag = nntrainer::bool_prop_tag;
+};
+
 /**
  * @brief RopeScalingType
  * - default
@@ -308,7 +315,7 @@ private:
     props::SlidingWindow, props::MaxNewTokens, props::RopeTheta,
     props::MaxPositionEmbeddings, props::UseSink, props::RopeScalingType,
     props::RopeScalingFactor, props::RopeScalingMaxPositionEmbeddings,
-    props::AttnLogitSoftcapping, props::IsCausal>
+    props::AttnLogitSoftcapping, props::IsCausal, props::IsCrossAttention>
     mha_core_props; /**< mha_core layer properties */
 
   /** softmax activation operation */
@@ -327,6 +334,7 @@ private:
   bool use_sink = false;
   float attn_logit_softcapping = 0.0f;
   bool is_causal;
+  bool is_cross_attention = false;
 
   enum INOUT_INDEX {
     /** input index */
@@ -416,26 +424,27 @@ private:
                        nntrainer::Tensor &out, unsigned int from,
                        size_t sequence_len, unsigned int num_heads,
                        unsigned int group_size, unsigned int head_dim,
-                       BS::thread_pool<> &pool);
-
-  void softmax_triangle(nntrainer::Tensor &qk_out, size_t row, size_t num_heads,
-                        unsigned int from, BS::thread_pool<> &pool);
+                       BS::thread_pool<> &pool,
+                       unsigned int non_causal_context_len = 0);
 
   void softmax_triangle(nntrainer::Tensor &qk_out, size_t row, size_t num_heads,
                         unsigned int from, BS::thread_pool<> &pool,
-                        nntrainer::Tensor &sink_step);
+                        unsigned int non_causal_context_len = 0);
+
+  void softmax_triangle(nntrainer::Tensor &qk_out, size_t row, size_t num_heads,
+                        unsigned int from, BS::thread_pool<> &pool,
+                        nntrainer::Tensor &sink_step,
+                        unsigned int non_causal_context_len = 0);
 
   void compute_vcaches(nntrainer::Tensor &in, nntrainer::Tensor &vcache,
                        nntrainer::Tensor &out, unsigned int from,
                        size_t sequence_len, unsigned int num_heads,
                        unsigned int group_size, unsigned int head_dim);
 
-  void compute_fp16vcache_transposed(nntrainer::Tensor &in,
-                                     nntrainer::Tensor &vcache,
-                                     nntrainer::Tensor &output, int from,
-                                     int num_cache_head, int gqa_size,
-                                     int head_dim, int to,
-                                     BS::thread_pool<> &pool);
+  void compute_fp16vcache_transposed(
+    nntrainer::Tensor &in, nntrainer::Tensor &vcache, nntrainer::Tensor &output,
+    int from, int num_cache_head, int gqa_size, int head_dim, int to,
+    BS::thread_pool<> &pool, int non_causal_context_len = 0);
 
   /************** END OF  ROTARY EMBEDDING *************/
 
