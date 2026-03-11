@@ -22,6 +22,7 @@
 #define WIN_EXPORT
 #endif
 
+#include "causallm_common_properties.h"
 #include <common_properties.h>
 #include <layer_devel.h>
 #include <layer_impl.h>
@@ -107,8 +108,8 @@ public:
   WIN_EXPORT bool supportBackwarding() const override { return false; }
 
   WIN_EXPORT void updateTensorsByInputDimensions(
-    nntrainer::RunLayerContext &context,
-    std::vector<nntrainer::TensorDim> input_dimensions) override;
+      nntrainer::RunLayerContext &context,
+      std::vector<nntrainer::TensorDim> input_dimensions) override;
 
   /**
    * @copydoc Layer::read()
@@ -141,8 +142,8 @@ public:
 
 private:
   std::tuple<nntrainer::props::InDim, nntrainer::props::OutDim,
-             nntrainer::props::Unit, nntrainer::props::Scale>
-    tieword_embedding_props;
+             nntrainer::props::Unit, nntrainer::props::Scale, props::SmartReply>
+      tieword_embedding_props;
   enum mode { embedding, lm_head };
   enum mode mode_;
   std::array<unsigned int, 4> weight_idx; /**< indices of the weights */

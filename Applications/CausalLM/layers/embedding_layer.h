@@ -23,6 +23,7 @@
 #define WIN_EXPORT
 #endif
 
+#include "causallm_common_properties.h"
 #include <common_properties.h>
 #include <layer_impl.h>
 
@@ -118,8 +119,8 @@ public:
 
 private:
   std::tuple<nntrainer::props::InDim, nntrainer::props::OutDim,
-             nntrainer::props::Scale>
-    embedding_props;
+             nntrainer::props::Scale, props::SmartReply>
+      embedding_props;
   unsigned int weight_idx;
 };
 } // namespace causallm

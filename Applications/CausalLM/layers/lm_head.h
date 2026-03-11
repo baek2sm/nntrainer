@@ -22,6 +22,7 @@
 #define WIN_EXPORT
 #endif
 
+#include "causallm_common_properties.h"
 #include <common_properties.h>
 #include <layer_devel.h>
 #include <layer_impl.h>
@@ -106,8 +107,8 @@ public:
   WIN_EXPORT bool supportBackwarding() const override { return false; }
 
   WIN_EXPORT void updateTensorsByInputDimensions(
-    nntrainer::RunLayerContext &context,
-    std::vector<nntrainer::TensorDim> input_dimensions) override;
+      nntrainer::RunLayerContext &context,
+      std::vector<nntrainer::TensorDim> input_dimensions) override;
 
   using Layer::setProperty;
 
@@ -120,7 +121,7 @@ public:
   inline static const std::string type = "lm_head";
 
 private:
-  std::tuple<nntrainer::props::Unit> lmhead_props;
+  std::tuple<nntrainer::props::Unit, props::SmartReply> lmhead_props;
   std::array<unsigned int, 2> weight_idx; /**< indices of the weights */
 };
 } // namespace causallm

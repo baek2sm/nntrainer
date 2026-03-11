@@ -30,29 +30,29 @@ enum LmHeadParams {
   bias,
 };
 
-LmHeadLayer::LmHeadLayer() :
-  LayerImpl(), lmhead_props(nntrainer::props::Unit()) {
+LmHeadLayer::LmHeadLayer()
+    : LayerImpl(), lmhead_props(nntrainer::props::Unit(), props::SmartReply()) {
   weight_idx.fill(std::numeric_limits<unsigned>::max());
 }
 
 void LmHeadLayer::finalize(nntrainer::InitLayerContext &context) {
   auto &weight_regularizer =
-    std::get<nntrainer::props::WeightRegularizer>(*layer_impl_props);
+      std::get<nntrainer::props::WeightRegularizer>(*layer_impl_props);
   auto &weight_regularizer_constant =
-    std::get<nntrainer::props::WeightRegularizerConstant>(*layer_impl_props);
+      std::get<nntrainer::props::WeightRegularizerConstant>(*layer_impl_props);
   auto weight_initializer = nntrainer::props::InitializerInfo::Enum::NONE;
   auto &weight_decay =
-    std::get<nntrainer::props::WeightDecay>(*layer_impl_props);
+      std::get<nntrainer::props::WeightDecay>(*layer_impl_props);
   auto &bias_decay = std::get<nntrainer::props::BiasDecay>(*layer_impl_props);
   auto &bias_initializer =
-    std::get<nntrainer::props::BiasInitializer>(*layer_impl_props);
+      std::get<nntrainer::props::BiasInitializer>(*layer_impl_props);
   auto &disable_bias =
-    std::get<nntrainer::props::DisableBias>(*layer_impl_props);
+      std::get<nntrainer::props::DisableBias>(*layer_impl_props);
 
   auto unit = std::get<nntrainer::props::Unit>(lmhead_props).get();
 
   NNTR_THROW_IF(context.getNumInputs() != 1, std::invalid_argument)
-    << "lm head layer takes only one input";
+      << "lm head layer takes only one input";
 
   std::vector<ml::train::TensorDim> output_dims(1);
 
@@ -73,35 +73,35 @@ void LmHeadLayer::finalize(nntrainer::InitLayerContext &context) {
   output_dims[0].height(1);
 
   output_dims[0].setTensorType(
-    {context.getFormat(), context.getActivationDataType()});
+      {context.getFormat(), context.getActivationDataType()});
 
   context.setOutputDimensions(output_dims);
 
   /** set weight specifications */
   ml::train::TensorDim bias_dim(
-    1, is_nchw ? 1 : unit, 1, is_nchw ? unit : 1,
-    ml::train::TensorDim::TensorType(context.getFormat(),
-                                     context.getWeightDataType()),
-    is_nchw ? 0b0001 : 0b0100);
+      1, is_nchw ? 1 : unit, 1, is_nchw ? unit : 1,
+      ml::train::TensorDim::TensorType(context.getFormat(),
+                                       context.getWeightDataType()),
+      is_nchw ? 0b0001 : 0b0100);
 
   ///@note LMHead layer's tensor dim is transposed dim of user-defined
   /// dim
   /// so it can reuse embedding layer.
   ml::train::TensorDim weight_dim(
-    1, is_nchw ? 1 : unit, is_nchw ? in_dim.width() : 1,
-    is_nchw ? unit : in_dim.channel(),
-    ml::train::TensorDim::TensorType(context.getFormat(),
-                                     context.getWeightDataType()),
-    is_nchw ? 0b0011 : 0b0101);
+      1, is_nchw ? 1 : unit, is_nchw ? in_dim.width() : 1,
+      is_nchw ? unit : in_dim.channel(),
+      ml::train::TensorDim::TensorType(context.getFormat(),
+                                       context.getWeightDataType()),
+      is_nchw ? 0b0011 : 0b0101);
 
   weight_idx[LmHeadParams::weight] = context.requestWeight(
-    weight_dim, weight_initializer, weight_regularizer,
-    weight_regularizer_constant, weight_decay, "weight", true);
+      weight_dim, weight_initializer, weight_regularizer,
+      weight_regularizer_constant, weight_decay, "weight", true);
 
   if (disable_bias.empty() || disable_bias.get() == false) {
     weight_idx[LmHeadParams::bias] = context.requestWeight(
-      bias_dim, bias_initializer, nntrainer::WeightRegularizer::NONE, 1.0f,
-      bias_decay, "bias", true);
+        bias_dim, bias_initializer, nntrainer::WeightRegularizer::NONE, 1.0f,
+        bias_decay, "bias", true);
   }
 }
 
@@ -113,7 +113,7 @@ void LmHeadLayer::setProperty(const std::vector<std::string> &values) {
 void LmHeadLayer::forwarding(nntrainer::RunLayerContext &context,
                              bool training) {
   throw nntrainer::exception::not_supported(
-    "Forwarding for LMHead layer is not supported");
+      "Forwarding for LMHead layer is not supported");
 }
 
 void LmHeadLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
@@ -121,7 +121,7 @@ void LmHeadLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
                                          bool training) {
 
   nntrainer::Tensor weight =
-    context.getWeight(weight_idx[LmHeadParams::weight]);
+      context.getWeight(weight_idx[LmHeadParams::weight]);
 
   nntrainer::Tensor &input_ = context.getInput(SINGLE_INOUT_IDX);
   nntrainer::Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);
@@ -137,23 +137,30 @@ void LmHeadLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
   hidden_step_dim.batch(1);
 
   unsigned int b_size = input_dim.batch();
+  bool smart_reply = std::get<props::SmartReply>(lmhead_props).empty()
+                         ? false
+                         : std::get<props::SmartReply>(lmhead_props).get();
+
+  if (smart_reply && !_from) {
+    b_size = 1;
+  }
 
   for (unsigned int b = 0; b < b_size; ++b) {
     nntrainer::Tensor input_step = input_.getSharedDataTensor(
-      input_step_dim,
-      b * input_dim.getFeatureLen() +
-        (to - from == 1 ? 0 : (to - 1) * input_.width()),
-      true);
+        input_step_dim,
+        b * input_dim.getFeatureLen() +
+            (to - from == 1 ? 0 : (to - 1) * input_.width()),
+        true);
     nntrainer::Tensor hidden_step = hidden_.getSharedDataTensor(
-      hidden_step_dim, b * hidden_dim.getFeatureLen(), true);
+        hidden_step_dim, b * hidden_dim.getFeatureLen(), true);
 
     input_step.dot(weight, hidden_step, false, false);
 
     if (auto &disable_bias =
-          std::get<nntrainer::props::DisableBias>(*layer_impl_props);
+            std::get<nntrainer::props::DisableBias>(*layer_impl_props);
         disable_bias.empty() || disable_bias.get() == false) {
       nntrainer::Tensor &bias =
-        context.getWeight(weight_idx[LmHeadParams::bias]);
+          context.getWeight(weight_idx[LmHeadParams::bias]);
       hidden_step.add_i(bias);
     }
   }
@@ -161,12 +168,12 @@ void LmHeadLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
 
 void LmHeadLayer::calcDerivative(nntrainer::RunLayerContext &context) {
   throw nntrainer::exception::not_supported(
-    "calcDerivative for LMHead layer is not supported");
+      "calcDerivative for LMHead layer is not supported");
 }
 
 void LmHeadLayer::calcGradient(nntrainer::RunLayerContext &context) {
   throw nntrainer::exception::not_supported(
-    "calcGradient for LMHead layer is not supported");
+      "calcGradient for LMHead layer is not supported");
 }
 
 void LmHeadLayer::exportTo(nntrainer::Exporter &exporter,
@@ -176,8 +183,8 @@ void LmHeadLayer::exportTo(nntrainer::Exporter &exporter,
 }
 
 void LmHeadLayer::updateTensorsByInputDimensions(
-  nntrainer::RunLayerContext &context,
-  std::vector<nntrainer::TensorDim> input_dimensions) {
+    nntrainer::RunLayerContext &context,
+    std::vector<nntrainer::TensorDim> input_dimensions) {
   nntrainer::TensorDim in_dim = context.getInput(SINGLE_INOUT_IDX).getDim();
 
   unsigned int height = input_dimensions[0].height();
