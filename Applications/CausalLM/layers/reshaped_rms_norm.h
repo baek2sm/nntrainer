@@ -44,11 +44,11 @@ public:
    * @brief Construct a new custom RMS normalization layer object
    *
    */
-  WIN_EXPORT ReshapedRMSNormLayer() :
-    Layer(),
-    rms_props(props::RMS_NORM_GAMMA_INIT(), nntrainer::props::Epsilon(),
-              props::FeatureSize()),
-    feature_size(0) {
+  WIN_EXPORT ReshapedRMSNormLayer()
+      : Layer(), rms_props(props::RMS_NORM_GAMMA_INIT(),
+                           nntrainer::props::Epsilon(), props::FeatureSize(),
+                           props::SmartReply(), props::SkipPrefill()),
+        feature_size(0) {
     wt_idx.fill(std::numeric_limits<unsigned int>::max());
   }
 
@@ -107,23 +107,24 @@ public:
   WIN_EXPORT void setProperty(const std::vector<std::string> &values) override {
     auto remain_props = loadProperties(values, rms_props);
     NNTR_THROW_IF(!remain_props.empty(), std::invalid_argument)
-      << "[rms_norm] Unknown Layer Properties count " +
-           std::to_string(values.size());
+        << "[rms_norm] Unknown Layer Properties count " +
+               std::to_string(values.size());
   };
 
   WIN_EXPORT void updateTensorsByInputDimensions(
-    nntrainer::RunLayerContext &context,
-    std::vector<nntrainer::TensorDim> input_dimensions) override;
+      nntrainer::RunLayerContext &context,
+      std::vector<nntrainer::TensorDim> input_dimensions) override;
 
   inline static const std::string type = "reshaped_rms_norm";
 
 private:
   std::array<unsigned int, 1> wt_idx;
   std::tuple<props::RMS_NORM_GAMMA_INIT, nntrainer::props::Epsilon,
-             props::FeatureSize>
-    rms_props;
+             props::FeatureSize, props::SmartReply, props::SkipPrefill>
+      rms_props;
 
   unsigned int feature_size;
+  bool skip_prefill = false;
 };
 
 } // namespace causallm

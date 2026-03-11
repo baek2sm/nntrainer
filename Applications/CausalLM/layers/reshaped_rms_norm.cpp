@@ -24,24 +24,28 @@ void ReshapedRMSNormLayer::finalize(nntrainer::InitLayerContext &context) {
   context.setOutputDimensions(dim);
   feature_size = std::get<props::FeatureSize>(rms_props);
 
+  if (!std::get<props::SkipPrefill>(rms_props).empty()) {
+    skip_prefill = std::get<props::SkipPrefill>(rms_props).get();
+  }
+
   NNTR_THROW_IF(dim[0].width() % feature_size != 0, std::invalid_argument)
-    << "feature size must be a divisor of width";
+      << "feature size must be a divisor of width";
 
   nntrainer::TensorDim gamma_dim(
-    1, 1, 1, feature_size,
-    nntrainer::TensorDim::TensorType(context.getFormat(),
-                                     context.getWeightDataType()));
+      1, 1, 1, feature_size,
+      nntrainer::TensorDim::TensorType(context.getFormat(),
+                                       context.getWeightDataType()));
   wt_idx[RMSParams::gamma] = context.requestWeight(
-    gamma_dim, nntrainer::props::InitializerInfo::Enum::NONE,
-    nntrainer::WeightRegularizer::NONE, 1.0f, 0.0f, "gamma", false);
+      gamma_dim, nntrainer::props::InitializerInfo::Enum::NONE,
+      nntrainer::WeightRegularizer::NONE, 1.0f, 0.0f, "gamma", false);
 }
 
 void ReshapedRMSNormLayer::forwarding(nntrainer::RunLayerContext &context,
                                       bool training) {}
 
 void ReshapedRMSNormLayer::incremental_forwarding(
-  nntrainer::RunLayerContext &context, unsigned int from, unsigned int to,
-  bool training) {
+    nntrainer::RunLayerContext &context, unsigned int from, unsigned int to,
+    bool training) {
   auto &epsilon = std::get<nntrainer::props::Epsilon>(rms_props).get();
 
   nntrainer::Tensor &in = context.getInput(SINGLE_INOUT_IDX);
@@ -55,6 +59,14 @@ void ReshapedRMSNormLayer::incremental_forwarding(
   ml::train::TensorDim out_step_dim = out_dim;
 
   unsigned int _from = from;
+  bool is_prefill = !from;
+  if (from) {
+    NNTR_THROW_IF(to - from != 1, std::invalid_argument)
+        << "incremental step size is not 1";
+    from = 0;
+    to = 1;
+  } else if (skip_prefill && is_prefill)
+    return;
 
   in_step_dim.batch(1);
   in_step_dim.height(to - from);
@@ -68,13 +80,19 @@ void ReshapedRMSNormLayer::incremental_forwarding(
   step_reshaped_dim.height(in_step_dim.height() *
                            (in_dim.width() / feature_size));
 
+  bool smart_reply = std::get<props::SmartReply>(rms_props).get();
+
   unsigned int b_size = in_dim.batch();
+
+  if (smart_reply && !_from) {
+    b_size = 1;
+  }
 
   for (unsigned int b = 0; b < b_size; ++b) {
     nntrainer::Tensor in_step =
-      in.getSharedDataTensor(in_step_dim, b * in_dim.getFeatureLen(), true);
-    nntrainer::Tensor out_step =
-      out.getSharedDataTensor(out_step_dim, b * out_dim.getFeatureLen(), true);
+        in.getSharedDataTensor(in_step_dim, b * in_dim.getFeatureLen(), true);
+    nntrainer::Tensor out_step = out.getSharedDataTensor(
+        out_step_dim, b * out_dim.getFeatureLen(), true);
 
     // reshape in_step
     // reshape out_step
@@ -86,16 +104,16 @@ void ReshapedRMSNormLayer::incremental_forwarding(
       /// nntrainer::Tensor operation.
 #ifdef ENABLE_FP16
       nntrainer::rms_norm_wrt_width_fp16_intrinsic(
-        in_step.getData<float>(), out_step.getData<float>(),
-        in_step.getDim().height(), in_step.getDim().width(), epsilon);
+          in_step.getData<float>(), out_step.getData<float>(),
+          in_step.getDim().height(), in_step.getDim().width(), epsilon);
 #else
       nntrainer::rms_norm_wrt_width_fp32_intrinsic(
-        in_step.getData<float>(), out_step.getData<float>(),
-        in_step.getDim().height(), in_step.getDim().width(), epsilon);
+          in_step.getData<float>(), out_step.getData<float>(),
+          in_step.getDim().height(), in_step.getDim().width(), epsilon);
 #endif
     } else {
       throw std::invalid_argument(
-        "Error: not yet implemented for this data type");
+          "Error: not yet implemented for this data type");
     }
     out_step.multiply_i(gamma);
 
@@ -110,8 +128,8 @@ void ReshapedRMSNormLayer::incremental_forwarding(
 }
 
 void ReshapedRMSNormLayer::updateTensorsByInputDimensions(
-  nntrainer::RunLayerContext &context,
-  std::vector<nntrainer::TensorDim> input_dimensions) {
+    nntrainer::RunLayerContext &context,
+    std::vector<nntrainer::TensorDim> input_dimensions) {
   context.updateInput(SINGLE_INOUT_IDX, input_dimensions[0]);
   context.updateOutput(SINGLE_INOUT_IDX, input_dimensions[0]);
 }

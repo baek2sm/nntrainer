@@ -100,19 +100,22 @@ public:
   WIN_EXPORT void setProperty(const std::vector<std::string> &values) override {
     auto remain_props = loadProperties(values, rms_props);
     NNTR_THROW_IF(!remain_props.empty(), std::invalid_argument)
-      << "[rms_norm] Unknown Layer Properties count " +
-           std::to_string(values.size());
+        << "[rms_norm] Unknown Layer Properties count " +
+               std::to_string(values.size());
   };
 
   WIN_EXPORT void updateTensorsByInputDimensions(
-    nntrainer::RunLayerContext &context,
-    std::vector<nntrainer::TensorDim> input_dimensions) override;
+      nntrainer::RunLayerContext &context,
+      std::vector<nntrainer::TensorDim> input_dimensions) override;
 
   inline static const std::string type = "rms_norm";
 
 private:
   std::array<unsigned int, 1> wt_idx;
-  std::tuple<props::RMS_NORM_GAMMA_INIT, nntrainer::props::Epsilon> rms_props;
+  std::tuple<props::RMS_NORM_GAMMA_INIT, nntrainer::props::Epsilon,
+             props::SmartReply, props::SkipPrefill>
+      rms_props;
+  bool skip_prefill = false;
 };
 
 } // namespace causallm

@@ -23,13 +23,18 @@ static constexpr size_t SINGLE_INOUT_IDX = 0;
 void RMSNormLayer::finalize(nntrainer::InitLayerContext &context) {
   std::vector<nntrainer::TensorDim> dim = context.getInputDimensions();
   context.setOutputDimensions(dim);
+
+  if (!std::get<props::SkipPrefill>(rms_props).empty()) {
+    skip_prefill = std::get<props::SkipPrefill>(rms_props).get();
+  }
+
   nntrainer::TensorDim gamma_dim(
-    1, 1, 1, dim[0].width(),
-    nntrainer::TensorDim::TensorType(context.getFormat(),
-                                     context.getWeightDataType()));
+      1, 1, 1, dim[0].width(),
+      nntrainer::TensorDim::TensorType(context.getFormat(),
+                                       context.getWeightDataType()));
   wt_idx[RMSParams::gamma] = context.requestWeight(
-    gamma_dim, nntrainer::props::InitializerInfo::Enum::NONE,
-    nntrainer::WeightRegularizer::NONE, 1.0f, 0.0f, "gamma", false);
+      gamma_dim, nntrainer::props::InitializerInfo::Enum::NONE,
+      nntrainer::WeightRegularizer::NONE, 1.0f, 0.0f, "gamma", false);
 }
 
 void RMSNormLayer::forwarding(nntrainer::RunLayerContext &context,
@@ -51,19 +56,33 @@ void RMSNormLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
   ml::train::TensorDim out_step_dim = out_dim;
 
   unsigned int _from = from;
+  bool is_prefill = !from;
+  if (from) {
+    NNTR_THROW_IF(to - from != 1, std::invalid_argument)
+        << "incremental step size is not 1";
+    from = 0;
+    to = 1;
+  } else if (skip_prefill && is_prefill)
+    return;
 
   in_step_dim.batch(1);
   in_step_dim.height(to - from);
   out_step_dim.batch(1);
   out_step_dim.height(to - from);
 
+  bool smart_reply = std::get<props::SmartReply>(rms_props).get();
+
   unsigned int b_size = in_dim.batch();
+
+  if (smart_reply && !_from) {
+    b_size = 1;
+  }
 
   for (unsigned int b = 0; b < b_size; ++b) {
     nntrainer::Tensor in_step =
-      in.getSharedDataTensor(in_step_dim, b * in_dim.getFeatureLen(), true);
-    nntrainer::Tensor out_step =
-      out.getSharedDataTensor(out_step_dim, b * out_dim.getFeatureLen(), true);
+        in.getSharedDataTensor(in_step_dim, b * in_dim.getFeatureLen(), true);
+    nntrainer::Tensor out_step = out.getSharedDataTensor(
+        out_step_dim, b * out_dim.getFeatureLen(), true);
 
     if (in_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
       auto t = in_step.multiply(in_step).average(3).add(epsilon);
@@ -71,7 +90,7 @@ void RMSNormLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
       in_step.multiply(t, out_step);
     } else {
       throw std::invalid_argument(
-        "Error: not yet implemented for this data type");
+          "Error: not yet implemented for this data type");
     }
     out_step.multiply_i(gamma);
 
@@ -83,8 +102,8 @@ void RMSNormLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
 }
 
 void RMSNormLayer::updateTensorsByInputDimensions(
-  nntrainer::RunLayerContext &context,
-  std::vector<nntrainer::TensorDim> input_dimensions) {
+    nntrainer::RunLayerContext &context,
+    std::vector<nntrainer::TensorDim> input_dimensions) {
   context.updateInput(SINGLE_INOUT_IDX, input_dimensions[0]);
   context.updateOutput(SINGLE_INOUT_IDX, input_dimensions[0]);
 }
