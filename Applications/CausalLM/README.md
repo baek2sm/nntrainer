@@ -9,6 +9,7 @@
 - Qwen3 (1.7b/4b/7b/14b)
 - Qwen3MoE (30b-A3b)
 - Gpt-Oss-20b 
+- mT5 (decoder path)
 - You can try your own model with custom layers! 
 - Feel free to contribute! 😊
 
@@ -57,5 +58,6 @@ $ ./tools/package_android.sh -Domp-num-threads=4 -Dthread-backend=omp
 - Qwen3 (0.6B, 1.7B, 4B, 8B, 14B, 32B) [[link](https://huggingface.co/Qwen/Qwen3-4B)]
 - Qwen3-MoE (30B-A3B) [[link](https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507)]
 - GPT-OSS (MoE: 20B, 120B) [[link](https://huggingface.co/openai/gpt-oss-20b)]
+- mT5 (small/base/large/xl/xxl) [[link](https://huggingface.co/google/mt5-small)]
 
 For more details, please refer to the [Model Documentation](models/README.md).

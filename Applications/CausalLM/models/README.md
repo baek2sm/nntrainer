@@ -13,6 +13,7 @@ Here is the list of supported models. We provide **Standard** implementations an
 | Model Name 🏷️ | Size 📏 | Type 🏗️ | Special Features ✨ | Description 📝 |
 | :--- | :---: | :---: | :--- | :--- |
 | `causal_lm` | - | 📦 Standard | - | Basic implementation of the llama model. |
+| `mt5_causallm` | **small/base/large/xl/xxl** | 📦 Standard | Decoder path | mT5 decoder implementation for CausalLM runtime. |
 | `qwen3_causallm` | **0.6B, 1.7B, 4B, 8B, 14B, 32B** | 📦 Standard | - | Basic implementation of the Qwen3 model. |
 | `qwen3_moe_causallm` | **30B-A3B** | 📦 Standard | - | Basic implementation of the Qwen3 MoE model. |
 | `qwen3_slim_moe_causallm` | **30B-A3B** | 🛠️ **Variant** | 🍃 **Slim** | Activated by FSU scheme (On-the-fly expert loading). |
