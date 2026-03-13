@@ -7,6 +7,10 @@ executable_src = [
     meson.current_source_dir() / 'main.cpp',
 ]
 
+mha_core_test_app_src = [
+    meson.current_source_dir() / 'mha_core_test_app.cpp',
+]
+
 causallm_inc_abs = [meson.current_source_dir()]
 causallm_inc = [include_directories('.')]
 
@@ -70,4 +74,10 @@ e = executable('nntr_causallm',
     executable_src,
     include_directories: causallm_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_layer_dependencies, causallm_dep],
+)
+
+executable('nntr_mha_core_test',
+    mha_core_test_app_src,
+    include_directories: causallm_inc,
+    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_mha_core_dep],
 )
