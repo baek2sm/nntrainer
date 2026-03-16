@@ -308,7 +308,7 @@ private:
     props::SlidingWindow, props::MaxNewTokens, props::RopeTheta,
     props::MaxPositionEmbeddings, props::UseSink, props::RopeScalingType,
     props::RopeScalingFactor, props::RopeScalingMaxPositionEmbeddings,
-    props::AttnLogitSoftcapping, props::IsCausal>
+    props::AttnLogitSoftcapping, props::IsCausal, nntrainer::props::SkipPrefill>
     mha_core_props; /**< mha_core layer properties */
 
   /** softmax activation operation */
@@ -327,6 +327,7 @@ private:
   bool use_sink = false;
   float attn_logit_softcapping = 0.0f;
   bool is_causal;
+  bool skip_prefill = false;
 
   enum INOUT_INDEX {
     /** input index */
