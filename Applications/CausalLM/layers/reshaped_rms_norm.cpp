@@ -24,6 +24,10 @@ void ReshapedRMSNormLayer::finalize(nntrainer::InitLayerContext &context) {
   context.setOutputDimensions(dim);
   feature_size = std::get<props::FeatureSize>(rms_props);
 
+  if (!std::get<props::SkipPrefill>(rms_props).empty()) {
+    skip_prefill = std::get<props::SkipPrefill>(rms_props).get();
+  }
+
   NNTR_THROW_IF(dim[0].width() % feature_size != 0, std::invalid_argument)
     << "feature size must be a divisor of width";
 
@@ -54,7 +58,15 @@ void ReshapedRMSNormLayer::incremental_forwarding(
   ml::train::TensorDim in_step_dim = in_dim;
   ml::train::TensorDim out_step_dim = out_dim;
 
-  unsigned int _from = from;
+  bool is_prefill = !from;
+  if (from) {
+    NNTR_THROW_IF(to - from != 1, std::invalid_argument)
+      << "incremental step size is not 1";
+    from = 0;
+    to = 1;
+  } else if (skip_prefill && is_prefill) {
+    return;
+  }
 
   in_step_dim.batch(1);
   in_step_dim.height(to - from);

@@ -30,7 +30,16 @@ namespace ActivationOp {
 float swiglu(float x) { return x / (1 + nntrainer::exp_util(-x)); }
 } // namespace ActivationOp
 
+void SwiGLULayer::setProperty(const std::vector<std::string> &values) {
+  auto remain_props = loadProperties(values, swiglu_props);
+  Layer::setProperty(remain_props);
+}
+
 void SwiGLULayer::finalize(nntrainer::InitLayerContext &context) {
+  if (!std::get<props::SkipPrefill>(swiglu_props).empty()) {
+    skip_prefill = std::get<props::SkipPrefill>(swiglu_props).get();
+  }
+
   context.setOutputDimensions({context.getInputDimensions()[0]});
 }
 
@@ -44,7 +53,15 @@ void SwiGLULayer::incremental_forwarding(nntrainer::RunLayerContext &context,
   nntrainer::Tensor &in2 = context.getInput(INPUT_IDX_2);
   nntrainer::Tensor &out = context.getOutput(OUT_IDX);
 
-  unsigned int _from = from;
+  bool is_prefill = !from;
+  if (from) {
+    NNTR_THROW_IF(to - from != 1, std::invalid_argument)
+      << "incremental step size is not 1";
+    from = 0;
+    to = 1;
+  } else if (skip_prefill && is_prefill) {
+    return;
+  }
 
   int iter = to - from;
 

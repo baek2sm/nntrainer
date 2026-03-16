@@ -52,7 +52,8 @@ MHACoreLayer::MHACoreLayer() :
     props::SlidingWindow(), props::MaxNewTokens(), props::RopeTheta(),
     props::MaxPositionEmbeddings(), props::UseSink(), props::RopeScalingType(),
     props::RopeScalingFactor(), props::RopeScalingMaxPositionEmbeddings(),
-    props::AttnLogitSoftcapping(), props::IsCausal()),
+    props::AttnLogitSoftcapping(), props::IsCausal(),
+    nntrainer::props::SkipPrefill()),
   sm(nntrainer::ActivationType::ACT_SOFTMAX),
   epsilon(1e-3),
   cache_index(0),
@@ -149,6 +150,11 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
   /** Is Causal */
   is_causal = std::get<props::IsCausal>(mha_core_props).get();
 
+  if (!std::get<nntrainer::props::SkipPrefill>(mha_core_props).empty()) {
+    skip_prefill =
+      std::get<nntrainer::props::SkipPrefill>(mha_core_props).get();
+  }
+
   /** Tensor for KV-Cache */
 #ifdef ENABLE_FP16
   ml::train::TensorDim cache_key_dim(
@@ -208,6 +214,7 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
 
   unsigned int from = _from;
   unsigned int to = _to;
+  bool is_prefill = !_from;
 
   if (to >= max_timestep) {
     // initial forwarding
@@ -221,6 +228,8 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
       from = max_timestep - 1;
       to = max_timestep;
     }
+  } else if (skip_prefill && is_prefill) {
+    return;
   }
 
   // util fn to compute tensor dimension for one step.
