@@ -59,3 +59,11 @@ $ ./tools/package_android.sh -Domp-num-threads=4 -Dthread-backend=omp
 - GPT-OSS (MoE: 20B, 120B) [[link](https://huggingface.co/openai/gpt-oss-20b)]
 
 For more details, please refer to the [Model Documentation](models/README.md).
+
+## Cross-Attention Validation
+
+- Standalone validation app exists at `cross_attention_validation/`.
+- It runs an independent model:
+  `fully_connected x3 -> mha_core -> fully_connected`.
+- PyTorch reference + weight converter + run guide:
+  `cross_attention_validation/README.md`.
