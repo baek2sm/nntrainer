@@ -113,7 +113,7 @@ public:
 
 private:
   float lora_scaling;
-  std::tuple<props::Unit, props::LoraRank, props::LoraAlpha, props::SkipPrefill>
+  std::tuple<props::Unit, props::LoraRank, props::LoraAlpha>
     fc_props;                             /**< fc layer properties :
                                                 unit - number of output neurons,
                                                 lora_rank - rank of lora (optional)

@@ -308,7 +308,7 @@ private:
     props::SlidingWindow, props::MaxNewTokens, props::RopeTheta,
     props::MaxPositionEmbeddings, props::UseSink, props::RopeScalingType,
     props::RopeScalingFactor, props::RopeScalingMaxPositionEmbeddings,
-    props::AttnLogitSoftcapping, props::IsCausal, nntrainer::props::SkipPrefill>
+    props::AttnLogitSoftcapping, props::IsCausal>
     mha_core_props; /**< mha_core layer properties */
 
   /** softmax activation operation */

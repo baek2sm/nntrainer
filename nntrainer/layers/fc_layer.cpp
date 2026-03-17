@@ -42,8 +42,7 @@ enum LORAParams { loraA, loraB, loraTmp, loraOut };
 FullyConnectedLayer::FullyConnectedLayer() :
   LayerImpl(),
   lora_scaling(1.0f),
-  fc_props(props::Unit(), props::LoraRank(), props::LoraAlpha(),
-           props::SkipPrefill()),
+  fc_props(props::Unit(), props::LoraRank(), props::LoraAlpha()),
   quantizer(nullptr) {
   weight_idx.fill(std::numeric_limits<unsigned>::max());
   lora_idx.fill(std::numeric_limits<unsigned>::max());
@@ -68,8 +67,8 @@ void FullyConnectedLayer::finalize(InitLayerContext &context) {
   lora_scaling = (lora_rank && !std::get<props::LoraAlpha>(fc_props).empty())
                    ? (float)std::get<props::LoraAlpha>(fc_props) / lora_rank
                    : 1;
-  if (!std::get<props::SkipPrefill>(fc_props).empty())
-    skip_prefill = std::get<props::SkipPrefill>(fc_props).get();
+  if (!std::get<props::SkipPrefill>(*layer_impl_props).empty())
+    skip_prefill = std::get<props::SkipPrefill>(*layer_impl_props).get();
 
   NNTR_THROW_IF(context.getNumInputs() != 1, std::invalid_argument)
     << "Fully connected layer takes only one input";
