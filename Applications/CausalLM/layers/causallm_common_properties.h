@@ -95,20 +95,6 @@ public:
   using prop_tag = nntrainer::enum_class_prop_tag;
   static constexpr const char *key = "gamma_initializer";
 };
-
-/**
- * @brief Whether the layer should skip prefill or not.
- *
- */
-class SkipPrefill : public nntrainer::Property<bool> {
-public:
-  /**
-   * @brief Construct a new SkipPrefill object
-   */
-  SkipPrefill(bool value = false) { set(value); };
-  static constexpr const char *key = "skip_prefill";
-  using prop_tag = nntrainer::bool_prop_tag;
-};
 }; // namespace props
 
 WIN_EXPORT enum RMSParams { gamma };
