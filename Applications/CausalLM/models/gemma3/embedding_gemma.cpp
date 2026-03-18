@@ -11,18 +11,23 @@
  */
 
 #include <embedding_gemma.h>
+#include <iostream>
 
 namespace causallm {
 
 void EmbeddingGemma::setupParameters(json &cfg, json &generation_cfg,
                                      json &nntr_cfg) {
+  std::cout << "[DEBUG] EmbeddingGemma::setupParameters start" << std::endl;
   Gemma3Transformer::setupParameters(cfg, generation_cfg, nntr_cfg);
   SentenceTransformer::setupParameters(cfg, generation_cfg, nntr_cfg);
+  std::cout << "[DEBUG] EmbeddingGemma::setupParameters end" << std::endl;
 }
 
 void EmbeddingGemma::registerCustomLayers() {
+  std::cout << "[DEBUG] EmbeddingGemma::registerCustomLayers start" << std::endl;
   SentenceTransformer::registerCustomLayers();
   Gemma3Transformer::registerCustomLayers();
+  std::cout << "[DEBUG] EmbeddingGemma::registerCustomLayers end" << std::endl;
 }
 
 } // namespace causallm

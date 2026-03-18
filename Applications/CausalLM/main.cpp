@@ -242,6 +242,13 @@ int main(int argc, char *argv[]) {
       std::string model_type = nntr_cfg["model_type"].get<std::string>();
       architecture = resolve_architecture(model_type, architecture);
     }
+    std::cout << "[DEBUG] main - architecture: " << architecture << std::endl;
+
+    // Initialize and run model
+    std::cout << "[DEBUG] main - calling Factory::create" << std::endl;
+    auto model = causallm::Factory::Instance().create(architecture, cfg,
+                                                      generation_cfg, nntr_cfg);
+    std::cout << "[DEBUG] main - Factory::create success" << std::endl;
 
     // Determine input text
     if (argc >= 3) {

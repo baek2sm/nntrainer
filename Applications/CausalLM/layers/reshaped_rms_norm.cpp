@@ -42,6 +42,7 @@ void ReshapedRMSNormLayer::forwarding(nntrainer::RunLayerContext &context,
 void ReshapedRMSNormLayer::incremental_forwarding(
   nntrainer::RunLayerContext &context, unsigned int from, unsigned int to,
   bool training) {
+  std::cout << "[DEBUG] ReshapedRMSNormLayer[" << context.getName() << "]::incremental_forwarding start (from: " << from << ", to: " << to << ")" << std::endl;
   auto &epsilon = std::get<nntrainer::props::Epsilon>(rms_props).get();
 
   nntrainer::Tensor &in = context.getInput(SINGLE_INOUT_IDX);
@@ -69,6 +70,7 @@ void ReshapedRMSNormLayer::incremental_forwarding(
                            (in_dim.width() / feature_size));
 
   unsigned int b_size = in_dim.batch();
+  std::cout << "[DEBUG]   feature_size: " << feature_size << ", b_size: " << b_size << ", in_step_dim: " << in_step_dim << ", step_reshaped_dim: " << step_reshaped_dim << std::endl;
 
   for (unsigned int b = 0; b < b_size; ++b) {
     nntrainer::Tensor in_step =
@@ -80,15 +82,18 @@ void ReshapedRMSNormLayer::incremental_forwarding(
     // reshape out_step
     in_step.reshape(step_reshaped_dim);
     out_step.reshape(step_reshaped_dim);
+    std::cout << "[DEBUG]   batch " << b << ": in_ptr=" << in_step.getData() << ", out_ptr=" << out_step.getData() << ", dtype=" << (int)in_step.getDataType() << std::endl;
 
     if (in_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
       ///@todo rms_norm_wrt_width_something() should be refactored to
       /// nntrainer::Tensor operation.
 #ifdef ENABLE_FP16
+      std::cout << "[DEBUG]     calling nntrainer::rms_norm_wrt_width_fp16_intrinsic" << std::endl;
       nntrainer::rms_norm_wrt_width_fp16_intrinsic(
         in_step.getData<float>(), out_step.getData<float>(),
         in_step.getDim().height(), in_step.getDim().width(), epsilon);
 #else
+      std::cout << "[DEBUG]     calling nntrainer::rms_norm_wrt_width_fp32_intrinsic" << std::endl;
       nntrainer::rms_norm_wrt_width_fp32_intrinsic(
         in_step.getData<float>(), out_step.getData<float>(),
         in_step.getDim().height(), in_step.getDim().width(), epsilon);
@@ -107,6 +112,7 @@ void ReshapedRMSNormLayer::incremental_forwarding(
               << "output:" << out_step << "gamma:" << gamma << std::endl;
 #endif
   }
+  std::cout << "[DEBUG] ReshapedRMSNormLayer[" << context.getName() << "]::incremental_forwarding end" << std::endl;
 }
 
 void ReshapedRMSNormLayer::updateTensorsByInputDimensions(

@@ -34,6 +34,7 @@ std::map<std::string, std::string> SentenceTransformer::layer_map = {
 
 void SentenceTransformer::setupParameters(json &cfg, json &generation_cfg,
                                           json &nntr_cfg) {
+  std::cout << "[DEBUG] SentenceTransformer::setupParameters start" << std::endl;
   Transformer::setupParameters(cfg, generation_cfg, nntr_cfg);
 
   std::string modules_config_path = "modules.json";
@@ -96,9 +97,11 @@ void SentenceTransformer::setupParameters(json &cfg, json &generation_cfg,
     std::cerr << "Failed to load modules config from: " << modules_config_path
               << " Reason: " << e.what() << std::endl;
   }
+  std::cout << "[DEBUG] SentenceTransformer::setupParameters end" << std::endl;
 }
 
 void SentenceTransformer::constructModel() {
+  std::cout << "[DEBUG] SentenceTransformer::constructModel start" << std::endl;
   for (auto &module : modules) {
     if (!module.contains("type")) {
       continue;
@@ -119,6 +122,7 @@ void SentenceTransformer::constructModel() {
       }
     }
   }
+  std::cout << "[DEBUG] SentenceTransformer::constructModel end" << std::endl;
 }
 
 void SentenceTransformer::addModule(const std::string &type, int idx) {
@@ -249,8 +253,10 @@ std::vector<float *> SentenceTransformer::encode(const WSTR prompt,
   // start: 0, end: input_len (process all tokens at once)
   // This performs a single forward pass for the entire prompt sequence to get
   // embeddings.
+  std::cout << "[DEBUG] SentenceTransformer::encode - incremental_inference start" << std::endl;
   std::vector<float *> output = model->incremental_inference(
     BATCH_SIZE, input, label, input_len, 0, input_len, false);
+  std::cout << "[DEBUG] SentenceTransformer::encode - incremental_inference end" << std::endl;
 
   free(input_sample);
 
