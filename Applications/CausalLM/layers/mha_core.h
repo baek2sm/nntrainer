@@ -432,7 +432,8 @@ private:
                        size_t kv_len = 0);
 
   void softmax_triangle(nntrainer::Tensor &qk_out, size_t row, size_t num_heads,
-                        unsigned int from, BS::thread_pool<> &pool);
+                        unsigned int from, BS::thread_pool<> &pool,
+                        size_t kv_len = 0);
 
   void softmax_triangle(nntrainer::Tensor &qk_out, size_t row, size_t num_heads,
                         unsigned int from, BS::thread_pool<> &pool,

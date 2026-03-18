@@ -158,6 +158,10 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
     << "Sliding window (local_window) cannot be set when is_cross_attention is "
        "true";
 
+  /** Cross-attention must be non-causal */
+  NNTR_THROW_IF(is_cross_attention && is_causal, std::invalid_argument)
+    << "Cross-attention (is_cross_attention=true) requires is_causal=false";
+
   /** Validate K,V data type for cross-attention */
   NNTR_THROW_IF(
     is_cross_attention &&
@@ -476,9 +480,11 @@ void MHACoreLayer::compute_kcaches(nntrainer::Tensor &in,
                                ? (is_causal ? from + i + 1 : from + q_len)
                                : kv_len;
         // Calculate dynamic offset for the output (triangle optimization)
+        size_t kv_count =
+          is_cross_attention ? kv_len : static_cast<size_t>(from + q_len);
         size_t out_start_row =
           is_causal ? calc_attn_index(from + i) - calc_attn_index(from)
-                    : i * (from + q_len);
+                    : i * kv_count;
         float *output_addr = out.getData<float>() + out_start_row * num_head;
 
         futures.emplace_back(pool.submit_task([=]() {
@@ -713,7 +719,7 @@ void MHACoreLayer::one_batch_crs_incremental_forwarding(
                          query_step.getTensorType());
   compute_kcaches(query_step, key_step, out_, 0, query_seq_len, num_heads_Q,
                   gqa_size, head_dim, pool, kv_seq_len);
-  softmax_triangle(out_, query_seq_len, num_heads_Q, 0, pool);
+  softmax_triangle(out_, query_seq_len, num_heads_Q, 0, pool, kv_seq_len);
   compute_fp16vcache_transposed(out_, value_step, attention_output_step, 0,
                                 num_heads_KV, gqa_size, head_dim, query_seq_len,
                                 pool, kv_seq_len);
@@ -1015,7 +1021,9 @@ void MHACoreLayer::apply_rotary_emb_tensor_v2(nntrainer::Tensor &in,
 
 void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
                                     size_t num_head, unsigned int from,
-                                    BS::thread_pool<> &pool) {
+                                    BS::thread_pool<> &pool, size_t kv_len) {
+  // For cross-attention, kv_len specifies the actual KV sequence length.
+  // For self-attention (kv_len == 0), it defaults to from + row.
   if (qk_out.getDataType() == ml::train::TensorDim::DataType::FP32) {
     float *qk_out_ = qk_out.getData<float>();
 
@@ -1035,7 +1043,7 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
       if (is_causal) {
         end_row = from < local_window_size ? from + 1 : local_window_size;
       } else {
-        end_row = from + row; // end_row = to
+        end_row = kv_len > 0 ? kv_len : from + row;
       }
       nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head);
     } else {
@@ -1050,7 +1058,7 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
           start_row = calc_attn_index(from + i) - calc_attn_index(from);
           end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
         } else {
-          unsigned int to = from + row;
+          size_t to = kv_len > 0 ? kv_len : from + row;
           start_row = i * to;
           end_row = (i + 1) * to;
         }
@@ -1082,7 +1090,7 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
       if (is_causal) {
         end_row = from < local_window_size ? from + 1 : local_window_size;
       } else {
-        end_row = from + row; // end_row = to
+        end_row = kv_len > 0 ? kv_len : from + row;
       }
       nntrainer::softmax_row_inplace(qk_out_, start_row, end_row, num_head);
     } else {
@@ -1097,7 +1105,7 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
           start_row = calc_attn_index(from + i) - calc_attn_index(from);
           end_row = calc_attn_index(from + i + 1) - calc_attn_index(from);
         } else {
-          unsigned int to = from + row;
+          size_t to = kv_len > 0 ? kv_len : from + row;
           start_row = i * to;
           end_row = (i + 1) * to;
         }
@@ -1239,7 +1247,8 @@ void MHACoreLayer::compute_fp16vcache_transposed(
             start_idx =
               calc_attn_index(to - seq + i) - calc_attn_index(to - seq);
           } else {
-            start_idx = i * to; // linear index
+            size_t effective_kv_count = kv_len > 0 ? kv_len : (size_t)to;
+            start_idx = i * effective_kv_count;
           }
           const float *input =
             in.getData<float>() + start_idx * num_cache_head * gqa_size;
@@ -1248,7 +1257,7 @@ void MHACoreLayer::compute_fp16vcache_transposed(
 
           int row_num = !is_cross_attention
                           ? (is_causal ? (to - seq + i) : to - 1)
-                          : kv_len;
+                          : static_cast<int>(kv_len) - 1;
           nntrainer::compute_fp16vcache_fp32_transposed(
             row_num, input, vcache.getData<uint16_t>(), out, num_cache_head,
             gqa_size, head_dim, local_window_size);
@@ -1259,7 +1268,8 @@ void MHACoreLayer::compute_fp16vcache_transposed(
     } else { // token generation
       // Single token processing (common during generation)
       // Parallelize over KV heads for decoding since Q direction is always 1
-      int row_num = !is_cross_attention ? to - 1 : kv_len;
+      int row_num = !is_cross_attention ? to - 1
+                                        : static_cast<int>(kv_len) - 1;
 
       // Use OpenMP for lower overhead parallelization during decoding
       const float *in_data = in.getData<float>();
@@ -1290,7 +1300,8 @@ void MHACoreLayer::compute_fp16vcache_transposed(
             start_idx =
               calc_attn_index(to - seq + i) - calc_attn_index(to - seq);
           } else {
-            start_idx = i * to;
+            size_t effective_kv_count = kv_len > 0 ? kv_len : (size_t)to;
+            start_idx = i * effective_kv_count;
           }
           const _FP16 *input =
             in.getData<_FP16>() + start_idx * num_cache_head * gqa_size;
@@ -1298,7 +1309,7 @@ void MHACoreLayer::compute_fp16vcache_transposed(
                        i * (num_cache_head * gqa_size * head_dim);
           int row_num = !is_cross_attention
                           ? (is_causal ? (to - seq + i) : to - 1)
-                          : kv_len;
+                          : static_cast<int>(kv_len) - 1;
           nntrainer::compute_fp16vcache_transposed(
             row_num, input, vcache.getData<_FP16>(), out, num_cache_head,
             gqa_size, head_dim, local_window_size);
@@ -1309,7 +1320,8 @@ void MHACoreLayer::compute_fp16vcache_transposed(
     } else {
       // Single token processing (common during generation)
       // Parallelize over KV heads for decoding since Q direction is always 1
-      int row_num = !is_cross_attention ? to - 1 : : kv_len;
+      int row_num = !is_cross_attention ? to - 1
+                                        : static_cast<int>(kv_len) - 1;
 
       // Use OpenMP for lower overhead parallelization during decoding
       const _FP16 *in_data = in.getData<_FP16>();
