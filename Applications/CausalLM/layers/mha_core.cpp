@@ -151,6 +151,7 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
   /** Is Causal */
   is_causal = std::get<props::IsCausal>(mha_core_props).get();
   is_cross_attention = std::get<props::IsCrossAttention>(mha_core_props).get();
+  use_rope = std::get<props::UseRope>(mha_core_props).get();
 
   /** Validate sliding_window is not set for cross-attention */
   NNTR_THROW_IF(is_cross_attention && local_window_size != UINT_MAX,
@@ -586,10 +587,10 @@ void MHACoreLayer::one_batch_slf_incremental_forwarding(
     batch * cache_value_dim.getFeatureLen() + from * cache_value_dim.width(),
     true);
 
-  apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, false);
+  apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, !use_rope);
 
   apply_rotary_emb_tensor_v2(key_step, b_cache_key_step, head_dim, _from,
-                             false);
+                             !use_rope);
 
   if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
     apply_rotary_emb_tensor_v2(value_step, b_cache_value_step, head_dim, _from,
@@ -666,10 +667,10 @@ void MHACoreLayer::one_batch_slf_incremental_forwarding(
     batch * cache_value_dim.getFeatureLen() + from * cache_value_dim.width(),
     true);
 
-  apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, false);
+  apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, !use_rope);
 
   apply_rotary_emb_tensor_v2(key_step, b_cache_key_step, head_dim, _from,
-                             false);
+                             !use_rope);
 
   if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
     apply_rotary_emb_tensor_v2(value_step, b_cache_value_step, head_dim, _from,

@@ -144,6 +144,19 @@ public:
 };
 
 /**
+ * @brief UseRope property
+ * @note  When false, rotary position embedding is skipped.
+ *        Useful for models that use other position encodings
+ *        (e.g., T5 relative position bias).
+ */
+class UseRope : public nntrainer::Property<bool> {
+public:
+  UseRope(bool value = true) { set(value); };
+  static constexpr const char *key = "use_rope";
+  using prop_tag = nntrainer::bool_prop_tag;
+};
+
+/**
  * @brief RopeScalingType
  * - default
  * - yarn
@@ -320,7 +333,8 @@ private:
     props::SlidingWindow, props::MaxNewTokens, props::RopeTheta,
     props::MaxPositionEmbeddings, props::UseSink, props::RopeScalingType,
     props::RopeScalingFactor, props::RopeScalingMaxPositionEmbeddings,
-    props::AttnLogitSoftcapping, props::IsCausal, props::IsCrossAttention>
+    props::AttnLogitSoftcapping, props::IsCausal, props::IsCrossAttention,
+    props::UseRope>
     mha_core_props; /**< mha_core layer properties */
 
   /** softmax activation operation */
@@ -340,6 +354,7 @@ private:
   float attn_logit_softcapping = 0.0f;
   bool is_causal;
   bool is_cross_attention = false;
+  bool use_rope = true;
 
   enum INOUT_INDEX {
     /** input index */

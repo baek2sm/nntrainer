@@ -34,6 +34,7 @@
 #include "gemma3_causallm.h"
 #include "gptoss_cached_slim_causallm.h"
 #include "gptoss_causallm.h"
+#include "mt5_causallm.h"
 #include "qwen2_causallm.h"
 #include "qwen2_embedding.h"
 #include "qwen3_cached_slim_moe_causallm.h"
@@ -196,6 +197,12 @@ int main(int argc, char *argv[]) {
     "EmbeddingGemma", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::EmbeddingGemma>(cfg, generation_cfg,
                                                         nntr_cfg);
+    });
+  causallm::Factory::Instance().registerModel(
+    "MT5ForConditionalGeneration",
+    [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::MT5CausalLM>(cfg, generation_cfg,
+                                                     nntr_cfg);
     });
 
   // Validate arguments
