@@ -135,7 +135,7 @@ public:
    * @brief Construct a new SkipPrefill object
    *
    */
-  SkipPrefill(bool value = false) : nntrainer::Property<bool>(value) {}
+  SkipPrefill() : nntrainer::Property<bool>() {}
   static constexpr const char *key = "skip_prefill";
   using prop_tag = bool_prop_tag;
 };
