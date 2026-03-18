@@ -24,8 +24,8 @@ void RMSNormLayer::finalize(nntrainer::InitLayerContext &context) {
   std::vector<nntrainer::TensorDim> dim = context.getInputDimensions();
   context.setOutputDimensions(dim);
 
-  if (!std::get<props::SkipPrefill>(rms_props).empty())
-    skip_prefill = std::get<props::SkipPrefill>(rms_props).get();
+  if (!std::get<nntrainer::props::SkipPrefill>(rms_props).empty())
+    skip_prefill = std::get<nntrainer::props::SkipPrefill>(rms_props).get();
 
   nntrainer::TensorDim gamma_dim(
     1, 1, 1, dim[0].width(),

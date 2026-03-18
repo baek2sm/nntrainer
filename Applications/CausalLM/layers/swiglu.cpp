@@ -33,8 +33,8 @@ float swiglu(float x) { return x / (1 + nntrainer::exp_util(-x)); }
 void SwiGLULayer::finalize(nntrainer::InitLayerContext &context) {
   context.setOutputDimensions({context.getInputDimensions()[0]});
 
-  if (!std::get<props::SkipPrefill>(swiglu_props).empty())
-    skip_prefill = std::get<props::SkipPrefill>(swiglu_props).get();
+  if (!std::get<nntrainer::props::SkipPrefill>(swiglu_props).empty())
+    skip_prefill = std::get<nntrainer::props::SkipPrefill>(swiglu_props).get();
 }
 
 void SwiGLULayer::forwarding(nntrainer::RunLayerContext &context,
