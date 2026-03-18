@@ -113,7 +113,7 @@ public:
 private:
   std::array<unsigned int, 1> wt_idx;
   std::tuple<props::RMS_NORM_GAMMA_INIT, nntrainer::props::Epsilon,
-             props::SkipPrefill>
+             nntrainer::props::SkipPrefill>
     rms_props;
   bool skip_prefill = false;
 };

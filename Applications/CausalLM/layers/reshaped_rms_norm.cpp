@@ -24,8 +24,8 @@ void ReshapedRMSNormLayer::finalize(nntrainer::InitLayerContext &context) {
   context.setOutputDimensions(dim);
   feature_size = std::get<props::FeatureSize>(rms_props);
 
-  if (!std::get<props::SkipPrefill>(rms_props).empty())
-    skip_prefill = std::get<props::SkipPrefill>(rms_props).get();
+  if (!std::get<nntrainer::props::SkipPrefill>(rms_props).empty())
+    skip_prefill = std::get<nntrainer::props::SkipPrefill>(rms_props).get();
 
   NNTR_THROW_IF(dim[0].width() % feature_size != 0, std::invalid_argument)
     << "feature size must be a divisor of width";
