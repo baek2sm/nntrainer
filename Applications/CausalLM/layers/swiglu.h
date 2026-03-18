@@ -19,8 +19,6 @@
 #include <node_exporter.h>
 #include <utility>
 
-#include <causallm_common_properties.h>
-
 #pragma once
 #ifdef _WIN32
 #define WIN_EXPORT __declspec(dllexport)
@@ -40,7 +38,8 @@ public:
    * @brief Construct a new custom SwiGLU layer object
    *
    */
-  WIN_EXPORT SwiGLULayer() : Layer(), swiglu_props(props::SkipPrefill()) {}
+  WIN_EXPORT SwiGLULayer() :
+    Layer(), swiglu_props(nntrainer::props::SkipPrefill()) {}
 
   /**
    * @brief Destroy the custom SwiGLU layer object
@@ -108,7 +107,7 @@ public:
   inline static const std::string type = "swiglu";
 
 private:
-  std::tuple<props::SkipPrefill> swiglu_props;
+  std::tuple<nntrainer::props::SkipPrefill> swiglu_props;
   bool skip_prefill = false;
 };
 
