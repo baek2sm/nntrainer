@@ -44,6 +44,9 @@ void AdditionLayer::forwarding(RunLayerContext &context, bool training) {
 void AdditionLayer::incremental_forwarding(RunLayerContext &context,
                                            unsigned int from, unsigned int to,
                                            bool training) {
+  if (!from)
+    return;
+
   Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);
   TensorDim hidden_dim = hidden_.getDim();
   TensorDim hidden_step_dim = hidden_dim;
