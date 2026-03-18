@@ -502,7 +502,8 @@ void MHACoreLayer::compute_kcaches(nntrainer::Tensor &in,
     if (q_len == 1) {
       // Single token processing (common during generation)
       // Parallelize over KV heads for decoding since Q direction is always 1
-      int num_rows = is_causal ? from + 1 : from + q_len;
+      int num_rows =
+        !is_cross_attention ? (is_causal ? from + 1 : from + q_len) : kv_len;
       unsigned int num_cache_head = num_head / group_size;
 
       // Use OpenMP for lower overhead parallelization during decoding
@@ -523,10 +524,14 @@ void MHACoreLayer::compute_kcaches(nntrainer::Tensor &in,
       for (unsigned int i = seq_start; i < q_len; ++i) {
         _FP16 *input_addr = in.getData<_FP16>() + num_head * head_dim * i;
         _FP16 *cache_addr = cache.getData<_FP16>();
-        int row_to_compute = is_causal ? from + i + 1 : from + q_len;
+        int row_to_compute = !is_cross_attention
+                               ? (is_causal ? from + i + 1 : from + q_len)
+                               : kv_len;
+        size_t kv_count =
+          is_cross_attention ? kv_len : static_cast<size_t>(from + q_len);
         size_t out_start_row =
           is_causal ? calc_attn_index(from + i) - calc_attn_index(from)
-                    : i * (from + q_len);
+                    : i * kv_count;
 
         _FP16 *output_addr = out.getData<_FP16>() + out_start_row * num_head;
 
