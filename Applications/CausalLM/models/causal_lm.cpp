@@ -399,22 +399,12 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   // input_dims.push_back(input_dim);
   // model->resetInputDimension(input_dims);
 
+  std::cout << "[DEBUG] Starting PREFILL phase..." << std::endl;
   auto start_prefill = std::chrono::high_resolution_clock::now();
 
   std::vector<float *> output;
 
   if (SAVE_KVCACHE) {
-    //@note This is for the save the kv cache. precomputed kv cache should be
-    // always located at the begining of the prompt.
-    // Therefore, it start from 0. and system prompt should be saved in the
-    // init_input, so that we can compute system prompt size properly
-    //
-    // The structure of this precomputed K,V Cache is :
-    //
-    //  //<-- System Prompt -->/<-- Input Tokens -->/<-- Tail prompt --> //
-    //  //< Precomputed cache >/<--given as input-->/<--- from json ---->//
-    //
-
     std::cout << "\n==============[KV CACHE SAVE MODE]================\n";
     output = model->incremental_inference(BATCH_SIZE, input, label, input_len,
                                           0 + global_token_len,
@@ -422,7 +412,7 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
 
     SYS_PROMP_LEN = input_len;
     save_kvcache(PRE_COMPUTED_CACHE_PATH, SYS_PROMP_LEN);
-
+    std::cout << "[DEBUG] KV CACHE saved." << std::endl;
     std::cout
       << "kv caches are saved in " << PRE_COMPUTED_CACHE_PATH << std::endl
       << "and the size of prompt is " << SYS_PROMP_LEN << ".\n"
@@ -433,13 +423,16 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   }
 
   if (USE_KVCACHE) {
+    std::cout << "[DEBUG] Loading KV cache..." << std::endl;
     load_kvcache(PRE_COMPUTED_CACHE_PATH, SYS_PROMP_LEN);
   } else {
     SYS_PROMP_LEN = 0;
   }
+  std::cout << "[DEBUG] Calling incremental_inference (PREFILL)..." << std::endl;
   output = model->incremental_inference(BATCH_SIZE, input, label, init_len,
                                         SYS_PROMP_LEN,
                                         SYS_PROMP_LEN + input_len, false);
+  std::cout << "[DEBUG] PREFILL inference completed." << std::endl;
 
   // post process of model output
   std::vector<unsigned int> id_list(generate_multi_tokens(
@@ -455,7 +448,7 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   /**
    * TOKEN GENERATION
    */
-
+  std::cout << "[DEBUG] Starting TOKEN GENERATION phase..." << std::endl;
   input_len += SYS_PROMP_LEN;
 
   // Update generated token by prefill as an input

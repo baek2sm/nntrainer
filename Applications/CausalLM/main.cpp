@@ -264,10 +264,14 @@ int main(int argc, char *argv[]) {
       }
     }
 
+    std::cout << "[DEBUG] Creating model for architecture: " << architecture << std::endl;
     auto model = causallm::Factory::Instance().create(architecture, cfg,
                                                       generation_cfg, nntr_cfg);
+    std::cout << "[DEBUG] Model created, initializing..." << std::endl;
     model->initialize();
+    std::cout << "[DEBUG] Model initialized, loading weights..." << std::endl;
     model->load_weight(weight_file);
+    std::cout << "[DEBUG] Weights loaded, starting model run..." << std::endl;
 
     bool do_sample = generation_cfg.value("do_sample", false);
 
@@ -280,6 +284,7 @@ int main(int argc, char *argv[]) {
 #else
     model->run(input_text, do_sample, system_head_prompt, system_tail_prompt);
 #endif
+    std::cout << "[DEBUG] Model run completed." << std::endl;
 #ifdef PROFILE
     stop_and_print_peak();
 #endif
