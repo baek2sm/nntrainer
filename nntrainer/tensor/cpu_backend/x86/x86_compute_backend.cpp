@@ -322,7 +322,9 @@ template <>
 void gemm_q4_0(const unsigned int M, const unsigned int N, const unsigned int K,
                const float *A, const unsigned int lda, const void *B,
                const unsigned int ldb, float *C, const unsigned int ldc) {
-  return __ggml_q4_0_8x8_q8_0_GEMM(M, N, K, A, lda, B, ldb, C, ldc);
+  // TEMPORARY HACK: Force ARM format (q4_0x4) instead of x86 format (q4_0x8)
+  // This allows quantizing for Android on x86
+  return __ggml_q4_0_4x8_q8_0_GEMM<float>(M, N, K, A, lda, B, ldb, C, ldc);
 }
 
 void gemm_q4_0(const unsigned int M, std::vector<unsigned int> Ns,
@@ -402,7 +404,9 @@ template <> void dequantize_row_q8_K(const void *x, float *y, int64_t k) {
 
 void repack_q4_0(void *W, void *repacked_W, size_t data_size,
                  const unsigned int M, const unsigned int N) {
-  __ggml_repack_q4_0_to_q4_0_8(W, repacked_W, data_size, M, N);
+  // TEMPORARY HACK: Force ARM format (q4_0x4) instead of x86 format (q4_0x8)
+  // This allows quantizing for Android on x86
+  __ggml_repack_q4_0_to_q4_0_4(W, repacked_W, data_size, M, N);
 }
 
 void repack_q4_0_to_q4_0_8(void *W, void *repacked_W, size_t data_size,
@@ -417,7 +421,9 @@ void repack_q4_K(void *W, void *repacked_W, size_t data_size,
 
 void unpack_q4_0(const void *in_q4_0x, void *out_q4_0, size_t data_size,
                  const unsigned int M, const unsigned int N) {
-  Q4_0Utils::unpackBlocksQ4_0x8((const block_q4_0x8 *)in_q4_0x, data_size, M, N,
+  // TEMPORARY HACK: Force ARM format (q4_0x4) instead of x86 format (q4_0x8)
+  // This allows quantizing for Android on x86
+  Q4_0Utils::unpackBlocksQ4_0x4((const block_q4_0x4 *)in_q4_0x, data_size, M, N,
                                 (block_q4_0 *)out_q4_0);
 }
 
