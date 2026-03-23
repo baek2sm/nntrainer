@@ -23,6 +23,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <engine.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -68,19 +69,6 @@ static std::string withKey(const std::string &key, const char *value) {
   return key + "=" + std::string(value);
 }
 
-static std::string withKey(const std::string &key,
-                           std::initializer_list<std::string> values) {
-  std::string result = key + "=";
-  bool first = true;
-  for (const auto &v : values) {
-    if (!first)
-      result += ",";
-    result += v;
-    first = false;
-  }
-  return result;
-}
-
 static LayerHandle createLayer(const std::string &type,
                                const std::vector<std::string> &props) {
   auto layer = ml::train::createLayer(type, props);
@@ -111,8 +99,8 @@ static TestIO loadTestIO(const std::string &path) {
   uint32_t d_model = header[3], d_q = header[4], d_kv = header[5];
 
   std::cout << "I/O header: batch=" << batch << " q_len=" << q_len
-            << " kv_len=" << kv_len << " d_model=" << d_model
-            << " d_q=" << d_q << " d_kv=" << d_kv << std::endl;
+            << " kv_len=" << kv_len << " d_model=" << d_model << " d_q=" << d_q
+            << " d_kv=" << d_kv << std::endl;
 
   TestIO io;
   auto readVec = [&](size_t count) {
@@ -134,8 +122,8 @@ static TestIO loadTestIO(const std::string &path) {
 // ============================================================
 static void printTensor(const std::string &name, const float *data,
                         unsigned int rows, unsigned int cols) {
-  std::cout << "\n--- " << name << " (" << rows << " x " << cols
-            << ") ---" << std::endl;
+  std::cout << "\n--- " << name << " (" << rows << " x " << cols << ") ---"
+            << std::endl;
   for (unsigned int r = 0; r < rows; ++r) {
     std::cout << "  Row " << r << ": [";
     for (unsigned int c = 0; c < cols; ++c) {
@@ -172,10 +160,9 @@ int main(int argc, char *argv[]) {
   // ============================================================
   // 1. Register custom layers
   // ============================================================
-  auto app_context =
-    nntrainer::Engine::Global().getRegisteredContext("cpu");
-  app_context->registerFactory(
-    nntrainer::createLayer<causallm::MHACoreLayer>);
+  const auto &ct_engine = nntrainer::Engine::Global();
+  const auto app_context =
+    static_cast<nntrainer::AppContext *>(ct_engine.getRegisteredContext("cpu"));
 
   // ============================================================
   // 2. Build the model
@@ -188,64 +175,71 @@ int main(int argc, char *argv[]) {
   });
 
   // Input layers
-  model->addLayer(createLayer("input", {
-    withKey("name", "query_input"),
-    withKey("input_shape", "1:1:" + std::to_string(Q_SEQ_LEN) + ":" +
-                             std::to_string(D_MODEL)),
-  }));
-  model->addLayer(createLayer("input", {
-    withKey("name", "kv_input"),
-    withKey("input_shape", "1:1:" + std::to_string(KV_SEQ_LEN) + ":" +
-                             std::to_string(D_MODEL)),
-  }));
+  model->addLayer(createLayer(
+    "input", {
+               withKey("name", "query_input"),
+               withKey("input_shape", "1:1:" + std::to_string(Q_SEQ_LEN) + ":" +
+                                        std::to_string(D_MODEL)),
+             }));
+  model->addLayer(createLayer(
+    "input", {
+               withKey("name", "kv_input"),
+               withKey("input_shape", "1:1:" + std::to_string(KV_SEQ_LEN) +
+                                        ":" + std::to_string(D_MODEL)),
+             }));
 
   // Q projection
-  model->addLayer(createLayer("fully_connected", {
-    withKey("name", "q_proj"),
-    withKey("unit", D_Q),
-    withKey("input_layers", "query_input"),
-    withKey("disable_bias", "true"),
-    withKey("weight_initializer", "ones"),
-  }));
+  model->addLayer(
+    createLayer("fully_connected", {
+                                     withKey("name", "q_proj"),
+                                     withKey("unit", D_Q),
+                                     withKey("input_layers", "query_input"),
+                                     withKey("disable_bias", "true"),
+                                     withKey("weight_initializer", "ones"),
+                                   }));
 
   // K projection
-  model->addLayer(createLayer("fully_connected", {
-    withKey("name", "k_proj"),
-    withKey("unit", D_KV),
-    withKey("input_layers", "kv_input"),
-    withKey("disable_bias", "true"),
-    withKey("weight_initializer", "ones"),
-  }));
+  model->addLayer(
+    createLayer("fully_connected", {
+                                     withKey("name", "k_proj"),
+                                     withKey("unit", D_KV),
+                                     withKey("input_layers", "kv_input"),
+                                     withKey("disable_bias", "true"),
+                                     withKey("weight_initializer", "ones"),
+                                   }));
 
   // V projection
-  model->addLayer(createLayer("fully_connected", {
-    withKey("name", "v_proj"),
-    withKey("unit", D_KV),
-    withKey("input_layers", "kv_input"),
-    withKey("disable_bias", "true"),
-    withKey("weight_initializer", "ones"),
-  }));
+  model->addLayer(
+    createLayer("fully_connected", {
+                                     withKey("name", "v_proj"),
+                                     withKey("unit", D_KV),
+                                     withKey("input_layers", "kv_input"),
+                                     withKey("disable_bias", "true"),
+                                     withKey("weight_initializer", "ones"),
+                                   }));
 
   // MHA Core (cross-attention)
-  model->addLayer(createLayer("mha_core", {
-    withKey("name", "cross_attn"),
-    withKey("num_heads", NUM_HEADS_Q),
-    withKey("num_heads_KV", NUM_HEADS_KV),
-    withKey("max_timestep",
-            std::to_string(std::max(Q_SEQ_LEN, KV_SEQ_LEN) + 10)),
-    withKey("is_causal", "false"),
-    withKey("is_cross_attention", "true"),
-    withKey("input_layers", "q_proj,k_proj,v_proj"),
-  }));
+  model->addLayer(createLayer(
+    "mha_core", {
+                  withKey("name", "cross_attn"),
+                  withKey("num_heads", NUM_HEADS_Q),
+                  withKey("num_heads_KV", NUM_HEADS_KV),
+                  withKey("max_timestep",
+                          std::to_string(std::max(Q_SEQ_LEN, KV_SEQ_LEN) + 10)),
+                  withKey("is_causal", "false"),
+                  withKey("is_cross_attention", "true"),
+                  withKey("input_layers", "q_proj,k_proj,v_proj"),
+                }));
 
   // Output projection
-  model->addLayer(createLayer("fully_connected", {
-    withKey("name", "o_proj"),
-    withKey("unit", D_MODEL),
-    withKey("input_layers", "cross_attn"),
-    withKey("disable_bias", "true"),
-    withKey("weight_initializer", "ones"),
-  }));
+  model->addLayer(
+    createLayer("fully_connected", {
+                                     withKey("name", "o_proj"),
+                                     withKey("unit", D_MODEL),
+                                     withKey("input_layers", "cross_attn"),
+                                     withKey("disable_bias", "true"),
+                                     withKey("weight_initializer", "ones"),
+                                   }));
 
   // ============================================================
   // 3. Compile and initialize
@@ -277,12 +271,11 @@ int main(int argc, char *argv[]) {
   std::vector<float *> inputs = {io.query_input.data(), io.kv_input.data()};
   std::vector<float *> labels = {};
 
-  auto output = model->incremental_inference(
-    BATCH_SIZE, inputs, labels,
-    Q_SEQ_LEN, // init_seq_len
-    0,          // from
-    Q_SEQ_LEN,  // to
-    false       // output_hidden_state
+  auto output = model->incremental_inference(BATCH_SIZE, inputs, labels,
+                                             Q_SEQ_LEN, // init_seq_len
+                                             0,         // from
+                                             Q_SEQ_LEN, // to
+                                             false      // output_hidden_state
   );
 
   // ============================================================

@@ -8,11 +8,11 @@ option('enable-test', type: 'boolean', value: true)
 option('enable-logging', type: 'boolean', value: true)
 option('enable-tizen-feature-check', type: 'boolean', value: true)
 option('enable-nnstreamer-backbone', type: 'boolean', value: false)
-option('enable-tflite-backbone', type: 'boolean', value: true)
+option('enable-tflite-backbone', type: 'boolean', value: false)
 option('enable-profile', type: 'boolean', value: false)
 option('enable-trace', type: 'boolean', value: false)
 option('enable-debug', type: 'boolean', value: false)
-option('enable-tflite-interpreter', type: 'boolean', value: true)
+option('enable-tflite-interpreter', type: 'boolean', value: false)
 option('enable-onnx-interpreter', type: 'boolean', value: false)
 option('enable-fsu', type: 'boolean', value: false)
 option('fsu-path', type: 'string', value: '')
@@ -62,7 +62,7 @@ option('enable-nnstreamer-tensor-trainer', type: 'feature', value: 'auto')
 option('nnstreamer-subplugin-install-path', type: 'string', value: 'lib/nnstreamer') # where nnstreamer subplugin should be installed (after prefix)
 
 # application related options
-option('enable-transformer', type: 'boolean', value: false)
+option('enable-transformer', type: 'boolean', value: true)
 option('libiomp_root', type:'string', value: './libiomp_win')
 
 # ARM architecture options
