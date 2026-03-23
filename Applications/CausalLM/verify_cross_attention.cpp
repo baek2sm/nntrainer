@@ -18,8 +18,7 @@
  *   1. Run verify_cross_attention.py to generate weight and I/O files
  *   2. Build with: add this to CausalLM/meson.build as a test executable
  *
- * @note Requires ENABLE_FP16 (model uses FP32-FP32, but KV cache internally
- * uses FP16)
+ * @note Uses model_tensor_type=FP32-FP32
  */
 
 #include <cstdint>
@@ -82,8 +81,7 @@ static LayerHandle createLayer(const std::string &type,
 struct TestIO {
   std::vector<float> query_input;
   std::vector<float> kv_input;
-  std::vector<float> ref_output_fp32;
-  std::vector<float> ref_output_fp16;
+  std::vector<float> ref_output;
 };
 
 static TestIO loadTestIO(const std::string &path) {
@@ -112,8 +110,7 @@ static TestIO loadTestIO(const std::string &path) {
 
   io.query_input = readVec(batch * q_len * d_model);
   io.kv_input = readVec(batch * kv_len * d_model);
-  io.ref_output_fp32 = readVec(batch * q_len * d_model);
-  io.ref_output_fp16 = readVec(batch * q_len * d_model);
+  io.ref_output = readVec(batch * q_len * d_model);
 
   return io;
 }
@@ -251,6 +248,8 @@ int main(int argc, char *argv[]) {
   std::cout << "Initializing model..." << std::endl;
   model->initialize(ml::train::ExecutionMode::INFERENCE);
 
+  model->summarize(std::cout, ML_TRAIN_SUMMARY_MODEL);
+
   // ============================================================
   // 4. Load weights
   // ============================================================
@@ -296,16 +295,15 @@ int main(int argc, char *argv[]) {
 
   std::cout << "\n============================================================"
             << std::endl;
-  std::cout << "Reference OUTPUT (FP16 activations):" << std::endl;
+  std::cout << "Reference OUTPUT (FP32):" << std::endl;
   std::cout << "============================================================"
             << std::endl;
-  printTensor("PyTorch reference", io.ref_output_fp16.data(), Q_SEQ_LEN,
-              D_MODEL);
+  printTensor("PyTorch reference", io.ref_output.data(), Q_SEQ_LEN, D_MODEL);
 
   // Compute max absolute difference
   float max_diff = 0.0f;
   for (unsigned int i = 0; i < Q_SEQ_LEN * D_MODEL; ++i) {
-    float diff = std::abs(output[0][i] - io.ref_output_fp16[i]);
+    float diff = std::abs(output[0][i] - io.ref_output[i]);
     if (diff > max_diff)
       max_diff = diff;
   }

@@ -17,9 +17,7 @@
 #   4. Saves reference input/output tensors (cross_attn_test_io.bin)
 #   5. Prints all intermediate values for manual verification
 #
-# Note: The C++ test uses model_tensor_type=FP32-FP32, but KV cache
-# internally uses FP16. This script computes both FP32 and FP16 references
-# for comparison. The FP16 reference matches the actual computation path.
+# Note: The C++ test uses model_tensor_type=FP32-FP32.
 
 import argparse
 import numpy as np
@@ -116,30 +114,21 @@ def main():
     W_v = np.random.randn(D_MODEL, D_KV).astype(np.float32) * 0.1   # (64, 32)
     W_o = np.random.randn(D_Q, D_MODEL).astype(np.float32) * 0.1    # (64, 64)
 
+    print("Weight_Q:", W_q.reshape(-1)[:3])
+    print("Weight_K:", W_k.reshape(-1)[:3])
+    print("Weight_V:", W_v.reshape(-1)[:3])
+    print("Weight_O:", W_o.reshape(-1)[:3])
+
     # ============================================================
     # FP32 Forward Pass
     # ============================================================
-    Q = np.matmul(query_input, W_q)
+    Q = np.matmul(query_input, W_q)    
     K = np.matmul(kv_input, W_k)
     V = np.matmul(kv_input, W_v)
     attn_output, attn_weights = cross_attention_reference(
         Q, K, V, NUM_HEADS_Q, NUM_HEADS_KV, HEAD_DIM
     )
     final_output = np.matmul(attn_output, W_o)
-
-    # ============================================================
-    # FP16 Forward Pass (all activations FP16, matching nntrainer FP32-FP16 mode)
-    # Weights stay FP32, but all intermediate activations are quantized to FP16
-    # ============================================================
-    Q_fp16 = np.matmul(query_input, W_q).astype(np.float16).astype(np.float32)
-    K_fp16 = np.matmul(kv_input, W_k).astype(np.float16).astype(np.float32)
-    V_fp16 = np.matmul(kv_input, W_v).astype(np.float16).astype(np.float32)
-    attn_output_fp16, attn_weights_fp16 = cross_attention_reference(
-        Q_fp16, K_fp16, V_fp16, NUM_HEADS_Q, NUM_HEADS_KV, HEAD_DIM
-    )
-    # attn_output would also be FP16 in nntrainer
-    attn_output_fp16_q = attn_output_fp16.astype(np.float16).astype(np.float32)
-    final_output_fp16 = np.matmul(attn_output_fp16_q, W_o)
 
     # ============================================================
     # Print Results
@@ -158,38 +147,29 @@ def main():
     print(f"  GQA group     = {NUM_HEADS_Q // NUM_HEADS_KV}")
 
     print(f"\n--- Query Input (first 8 cols) ---")
-    print(query_input[0, :, :8])
+    print(query_input.reshape(-1)[:3])
     print(f"\n--- KV Input (first 8 cols) ---")
-    print(kv_input[0, :, :8])
+    print(kv_input.reshape(-1)[:3])
 
     print(f"\n--- Q projection (first 8 cols) ---")
-    print(Q[0, :, :8])
+    print(Q.reshape(-1)[:3])
     print(f"\n--- K projection (first 8 cols) ---")
-    print(K[0, :, :8])
+    print(K.reshape(-1)[:3])
     print(f"\n--- V projection (first 8 cols) ---")
-    print(V[0, :, :8])
+    print(V.reshape(-1)[:3])
 
     print(f"\n--- Attention Weights per head ---")
     for h in range(NUM_HEADS_Q):
-        print(f"  Head {h}: {attn_weights[0, h]}")
+        print(f"  Head {h}: {attn_weights[0, h].reshape(-1)[:3]}")
 
     print(f"\n--- Attention Output (first 8 cols) ---")
-    print(attn_output[0, :, :8])
+    print(attn_output[0, :, :8].reshape(-1)[:3])
 
     print(f"\n{'=' * 60}")
-    print("FINAL OUTPUT (FP32 reference):")
+    print("FINAL OUTPUT (FP32):")
     print(f"{'=' * 60}")
     for row in range(Q_SEQ_LEN):
-        print(f"  Row {row}: {final_output[0, row]}")
-
-    print(f"\n{'=' * 60}")
-    print("FINAL OUTPUT (FP16 activations, matching nntrainer):")
-    print(f"{'=' * 60}")
-    for row in range(Q_SEQ_LEN):
-        print(f"  Row {row}: {final_output_fp16[0, row]}")
-
-    max_diff = np.max(np.abs(final_output - final_output_fp16))
-    print(f"\n  Max diff (FP32 vs FP16): {max_diff:.6e}")
+        print(f"  Row {row}: {final_output[0, row].reshape(-1)[:3]}")
 
     # ============================================================
     # Save weights for nntrainer
@@ -199,9 +179,10 @@ def main():
     # Layer order: q_proj, k_proj, v_proj, mha_core(no weights), o_proj
     weight_path = os.path.join(args.output_dir, "cross_attn_test_weights.bin")
     with open(weight_path, "wb") as f:
-        save_nntrainer_weight(f, W_q)  # q_proj: (64, 64)
-        save_nntrainer_weight(f, W_k)  # k_proj: (64, 32)
+        # nntrainer order is v,k,q,o (it's different with coding order)
         save_nntrainer_weight(f, W_v)  # v_proj: (64, 32)
+        save_nntrainer_weight(f, W_k)  # k_proj: (64, 32)
+        save_nntrainer_weight(f, W_q)  # q_proj: (64, 64)
         save_nntrainer_weight(f, W_o)  # o_proj: (64, 64)
     print(f"\nWeights saved to: {weight_path}")
 
@@ -217,9 +198,8 @@ def main():
         # Inputs
         save_nntrainer_weight(f, query_input)
         save_nntrainer_weight(f, kv_input)
-        # Reference outputs
-        save_nntrainer_weight(f, final_output)       # FP32 reference
-        save_nntrainer_weight(f, final_output_fp16)   # FP16 activation reference
+        # Reference output
+        save_nntrainer_weight(f, final_output)
     print(f"I/O tensors saved to: {io_path}")
     print(f"\nDone. Compare with nntrainer C++ test output.")
 
