@@ -17,8 +17,9 @@
 #   4. Saves reference input/output tensors (cross_attn_test_io.bin)
 #   5. Prints all intermediate values for manual verification
 #
-# Note: The C++ test uses model_tensor_type=FP32-FP16 so all activations
-# are FP16. This script computes both FP32 and FP16 references.
+# Note: The C++ test uses model_tensor_type=FP32-FP32, but KV cache
+# internally uses FP16. This script computes both FP32 and FP16 references
+# for comparison. The FP16 reference matches the actual computation path.
 
 import argparse
 import numpy as np

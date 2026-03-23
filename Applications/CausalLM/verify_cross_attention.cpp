@@ -18,7 +18,8 @@
  *   1. Run verify_cross_attention.py to generate weight and I/O files
  *   2. Build with: add this to CausalLM/meson.build as a test executable
  *
- * @note Requires ENABLE_FP16 (model uses FP32-FP16 mixed precision)
+ * @note Requires ENABLE_FP16 (model uses FP32-FP32, but KV cache internally
+ * uses FP16)
  */
 
 #include <cstdint>
@@ -163,7 +164,7 @@ int main(int argc, char *argv[]) {
   const auto &ct_engine = nntrainer::Engine::Global();
   const auto app_context =
     static_cast<nntrainer::AppContext *>(ct_engine.getRegisteredContext("cpu"));
-
+  app_context->registerFactory(nntrainer::createLayer<causallm::MHACoreLayer>);
   // ============================================================
   // 2. Build the model
   // ============================================================
@@ -171,7 +172,7 @@ int main(int argc, char *argv[]) {
 
   model->setProperty({
     "batch_size=1",
-    "model_tensor_type=FP32-FP16",
+    "model_tensor_type=FP32-FP32",
   });
 
   // Input layers

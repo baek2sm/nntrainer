@@ -163,19 +163,24 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
     << "Cross-attention (is_cross_attention=true) requires is_causal=false";
 
   /** Validate K,V data type for cross-attention */
+  /** Note: FP32 is allowed and will be cast to FP16 internally */
   NNTR_THROW_IF(
     is_cross_attention &&
       key_dim.getDataType() != ml::train::TensorDim::DataType::FP16 &&
+      key_dim.getDataType() != ml::train::TensorDim::DataType::FP32 &&
       key_dim.getDataType() != ml::train::TensorDim::DataType::UINT16,
     std::invalid_argument)
-    << "Cross-attention requires Key tensor to be FP16 or UINT16 data types";
+    << "Cross-attention requires Key tensor to be FP16, FP32, or UINT16 data "
+       "types";
 
   NNTR_THROW_IF(
     is_cross_attention &&
       value_dim.getDataType() != ml::train::TensorDim::DataType::FP16 &&
+      value_dim.getDataType() != ml::train::TensorDim::DataType::FP32 &&
       value_dim.getDataType() != ml::train::TensorDim::DataType::UINT16,
     std::invalid_argument)
-    << "Cross-attention requires Value tensor to be FP16 or UINT16 data types";
+    << "Cross-attention requires Value tensor to be FP16, FP32, or UINT16 data "
+       "types";
 
   /** Tensor for KV-Cache (only for self attention) */
   if (!is_cross_attention) {
@@ -720,14 +725,68 @@ void MHACoreLayer::one_batch_crs_incremental_forwarding(
   const unsigned int kv_seq_len = key_step.height();
   const unsigned int gqa_size = num_heads_Q / num_heads_KV;
 
+  // Check if KV inputs need casting from FP32
+  bool needs_casting =
+    (key_step.getDataType() == ml::train::TensorDim::DataType::FP32 ||
+     value_step.getDataType() == ml::train::TensorDim::DataType::FP32);
+
   nntrainer::Tensor out_(1, 1, query_seq_len * kv_seq_len, num_heads_Q,
                          query_step.getTensorType());
-  compute_kcaches(query_step, key_step, out_, 0, query_seq_len, num_heads_Q,
-                  gqa_size, head_dim, pool, kv_seq_len);
-  softmax_triangle(out_, query_seq_len, num_heads_Q, 0, pool, kv_seq_len);
-  compute_fp16vcache_transposed(out_, value_step, attention_output_step, 0,
-                                num_heads_KV, gqa_size, head_dim, query_seq_len,
-                                pool, kv_seq_len);
+
+  if (needs_casting) {
+#ifdef ENABLE_FP16
+    // Cast KV inputs from FP32 to FP16
+    ml::train::TensorDim K_fp16_dim = key_step.getDim();
+    K_fp16_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+    ml::train::TensorDim V_fp16_dim = value_step.getDim();
+    V_fp16_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+
+    nntrainer::Tensor K_fp16(K_fp16_dim, true);
+    nntrainer::Tensor V_fp16(V_fp16_dim, true);
+
+    // Copy data with automatic FP32 to FP16 casting
+    K_fp16.copyData(key_step);
+    V_fp16.copyData(value_step);
+
+    compute_kcaches(query_step, K_fp16, out_, 0, query_seq_len, num_heads_Q,
+                    gqa_size, head_dim, pool, kv_seq_len);
+    softmax_triangle(out_, query_seq_len, num_heads_Q, 0, pool, kv_seq_len);
+    compute_fp16vcache_transposed(out_, V_fp16, attention_output_step, 0,
+                                  num_heads_KV, gqa_size, head_dim,
+                                  query_seq_len, pool, kv_seq_len);
+#else
+    // Cast KV inputs from FP32 to UINT16
+    // Note: UINT16 is stored as uint16_t but treated as FP16 for computation
+    ml::train::TensorDim K_uint16_dim = key_step.getDim();
+    K_uint16_dim.setDataType(ml::train::TensorDim::DataType::UINT16);
+    ml::train::TensorDim V_uint16_dim = value_step.getDim();
+    V_uint16_dim.setDataType(ml::train::TensorDim::DataType::UINT16);
+
+    nntrainer::Tensor K_uint16(K_uint16_dim, true);
+    nntrainer::Tensor V_uint16(V_uint16_dim, true);
+
+    // Copy data with automatic FP32 to UINT16 casting
+    K_uint16.copyData(key_step);
+    V_uint16.copyData(value_step);
+
+    compute_kcaches(query_step, K_uint16, out_, 0, query_seq_len, num_heads_Q,
+                    gqa_size, head_dim, pool, kv_seq_len);
+    softmax_triangle(out_, query_seq_len, num_heads_Q, 0, pool, kv_seq_len);
+
+    // Use wrapper function for consistency - handles both prefill and token
+    // generation
+    compute_fp16vcache_transposed(out_, V_uint16, attention_output_step, 0,
+                                  num_heads_KV, gqa_size, head_dim,
+                                  query_seq_len, pool, kv_seq_len);
+#endif
+  } else {
+    compute_kcaches(query_step, key_step, out_, 0, query_seq_len, num_heads_Q,
+                    gqa_size, head_dim, pool, kv_seq_len);
+    softmax_triangle(out_, query_seq_len, num_heads_Q, 0, pool, kv_seq_len);
+    compute_fp16vcache_transposed(out_, value_step, attention_output_step, 0,
+                                  num_heads_KV, gqa_size, head_dim,
+                                  query_seq_len, pool, kv_seq_len);
+  }
 }
 
 /************************************************************** */
@@ -1273,8 +1332,7 @@ void MHACoreLayer::compute_fp16vcache_transposed(
     } else { // token generation
       // Single token processing (common during generation)
       // Parallelize over KV heads for decoding since Q direction is always 1
-      int row_num = !is_cross_attention ? to - 1
-                                        : static_cast<int>(kv_len) - 1;
+      int row_num = !is_cross_attention ? to - 1 : static_cast<int>(kv_len) - 1;
 
       // Use OpenMP for lower overhead parallelization during decoding
       const float *in_data = in.getData<float>();
@@ -1325,8 +1383,7 @@ void MHACoreLayer::compute_fp16vcache_transposed(
     } else {
       // Single token processing (common during generation)
       // Parallelize over KV heads for decoding since Q direction is always 1
-      int row_num = !is_cross_attention ? to - 1
-                                        : static_cast<int>(kv_len) - 1;
+      int row_num = !is_cross_attention ? to - 1 : static_cast<int>(kv_len) - 1;
 
       // Use OpenMP for lower overhead parallelization during decoding
       const _FP16 *in_data = in.getData<_FP16>();
