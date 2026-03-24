@@ -45,9 +45,19 @@ assert HEAD_DIM == D_KV // NUM_HEADS_KV, \
     f"head_dim mismatch: Q has {HEAD_DIM}, KV has {D_KV // NUM_HEADS_KV}"
 
 
-def save_nntrainer_weight(f, weight_np):
-    """Save a weight tensor in nntrainer binary format (row-major float32)."""
-    np.array(weight_np, dtype=np.float32).tofile(f)
+def save_nntrainer_weight(f, weight_np, transpose=False):
+    """Save a weight tensor in nntrainer binary format (row-major float32).
+    
+    Args:
+        f: File handle to write to
+        weight_np: Numpy array to save
+        transpose: If True, transpose before saving (required for FC weights)
+    """
+    
+    if transpose:        
+        np.array(weight_np.T, dtype=np.float32).tofile(f)
+    else:
+        np.array(weight_np, dtype=np.float32).tofile(f)
 
 
 # ============================================================
@@ -180,10 +190,10 @@ def main():
     weight_path = os.path.join(args.output_dir, "cross_attn_test_weights.bin")
     with open(weight_path, "wb") as f:
         # nntrainer order is v,k,q,o (it's different with coding order)
-        save_nntrainer_weight(f, W_v)  # v_proj: (64, 32)
-        save_nntrainer_weight(f, W_k)  # k_proj: (64, 32)
-        save_nntrainer_weight(f, W_q)  # q_proj: (64, 64)
-        save_nntrainer_weight(f, W_o)  # o_proj: (64, 64)
+        save_nntrainer_weight(f, W_v, transpose=False)  # v_proj: (64, 32) -> (32, 64)
+        save_nntrainer_weight(f, W_k, transpose=False)  # k_proj: (64, 32) -> (32, 64)
+        save_nntrainer_weight(f, W_q, transpose=False)  # q_proj: (64, 64) -> (64, 64)
+        save_nntrainer_weight(f, W_o, transpose=False)  # o_proj: (64, 64) -> (64, 64)
     print(f"\nWeights saved to: {weight_path}")
 
     # ============================================================
