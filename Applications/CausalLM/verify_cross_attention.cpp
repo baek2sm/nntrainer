@@ -262,6 +262,23 @@ int main(int argc, char *argv[]) {
   std::cout << "Loading test I/O from: " << io_path << std::endl;
   TestIO io = loadTestIO(io_path);
 
+  // Print first 3 values of query_input and kv_input for verification
+  std::cout << "\nquery_input (first 3 values): [";
+  for (unsigned int i = 0; i < 3 && i < io.query_input.size(); ++i) {
+    if (i > 0)
+      std::cout << ", ";
+    std::cout << io.query_input[i];
+  }
+  std::cout << "]" << std::endl;
+
+  std::cout << "kv_input (first 3 values): [";
+  for (unsigned int i = 0; i < 3 && i < io.kv_input.size(); ++i) {
+    if (i > 0)
+      std::cout << ", ";
+    std::cout << io.kv_input[i];
+  }
+  std::cout << "]" << std::endl;
+
   // ============================================================
   // 6. Run inference
   // ============================================================

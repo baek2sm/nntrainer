@@ -307,7 +307,7 @@ void FullyConnectedLayer::incremental_forwarding(RunLayerContext &context,
       hidden_step.add_i(bias);
     }
 
-    std::cout << hidden_step << std::endl;
+    // std::cout << hidden_step << std::endl;
   }
 }
 
