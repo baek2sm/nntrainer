@@ -19,8 +19,6 @@
 #include <node_exporter.h>
 #include <utility>
 
-#include <causallm_common_properties.h>
-
 #pragma once
 #ifdef _WIN32
 #define WIN_EXPORT __declspec(dllexport)
