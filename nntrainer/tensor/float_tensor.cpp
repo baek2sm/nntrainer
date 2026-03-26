@@ -1076,6 +1076,21 @@ void FloatTensor::copyData(const Tensor &from) {
     scopy_int8_to_float32(from.size(), from.getData<int8_t>(), 1,
                           (float *)getData(), 1);
     break;
+  case ml::train::TensorDim::DataType::QINT4: {
+    // Unpack 4-bit signed nibbles into float (without applying scale).
+    // Even indices use the upper nibble, odd indices use the lower nibble.
+    // The caller is responsible for applying scale factors afterward.
+    const int8_t *src = from.getData<int8_t>();
+    float *dst = (float *)getData();
+    size_t n = from.size();
+    for (size_t i = 0; i < n; ++i) {
+      int8_t val = src[i / 2];
+      int8_t nibble =
+        (i % 2 == 0) ? val >> 4 : ((int8_t)(val << 4) >> 4);
+      dst[i] = static_cast<float>(nibble);
+    }
+    break;
+  }
   case ml::train::TensorDim::DataType::UINT16:
     copy_u16_fp32(from.size(), from.getData<uint16_t>(), (float *)getData());
     break;
