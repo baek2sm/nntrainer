@@ -36,7 +36,12 @@
  *     --lmhead_dtype <type> Target dtype for LM head layer (default: FP32)
  *     --output_bin <name> Output bin filename (auto-generated if omitted)
  *
- *   Supported data types: FP32, FP16, Q4_0, Q6_K
+ *   Supported data types: FP32, FP16, Q4_0, Q6_K, Q4_K, QINT4
+ *
+ *   Dequantization (QINT4 -> FP32):
+ *     To convert a QINT4 model back to FP32, set --fc_dtype FP32 on a model
+ *     whose nntr_config.json has fc_layer_dtype "QINT4".  The tool loads the
+ *     QINT4 weights and saves them dequantized as FP32.
  *
  *   Example:
  *     # Quantize Qwen3-4B to Q4_0 FC layers (embedding stays FP32):
@@ -88,8 +93,10 @@ namespace {
  * @brief Map of string data type names to DataType enum values
  */
 const std::map<std::string, DataType> dtype_str_map = {
-  {"FP32", DataType::FP32}, {"FP16", DataType::FP16}, {"Q4_0", DataType::Q4_0},
-  {"Q6_K", DataType::Q6_K}, {"Q4_K", DataType::Q4_K}, {"NONE", DataType::NONE},
+  {"FP32", DataType::FP32},   {"FP16", DataType::FP16},
+  {"Q4_0", DataType::Q4_0},   {"Q6_K", DataType::Q6_K},
+  {"Q4_K", DataType::Q4_K},   {"QINT4", DataType::QINT4},
+  {"NONE", DataType::NONE},
 };
 
 /**
@@ -137,7 +144,7 @@ DataType strToDataType(const std::string &s) {
   auto it = dtype_str_map.find(upper);
   if (it == dtype_str_map.end()) {
     throw std::invalid_argument("Unsupported data type: " + s +
-                                ". Supported: FP32, FP16, Q4_0, Q6_K, Q4_K");
+                                ". Supported: FP32, FP16, Q4_0, Q6_K, Q4_K, QINT4");
   }
   return it->second;
 }
@@ -333,7 +340,7 @@ void printUsage(const char *prog) {
     << "                        from this config will be used.\n"
     << "  --help, -h            Show this help message\n"
     << "\n"
-    << "Supported data types: FP32, FP16, Q4_0, Q6_K, Q4_K\n"
+    << "Supported data types: FP32, FP16, Q4_0, Q6_K, Q4_K, QINT4\n"
     << "Supported ISA options: AUTO (current platform), X86, ARM\n"
     << "\n"
     << "Examples:\n"
@@ -502,10 +509,17 @@ int main(int argc, char *argv[]) {
     DataType embd_dtype = strToDataType(embd_dtype_str);
     DataType lmhead_dtype = strToDataType(lmhead_dtype_str);
 
-    // Validate source model is FP32
+    // Determine source model tensor type and whether this is a dequantize
     std::string src_tensor_type =
       nntr_cfg["model_tensor_type"].get<std::string>();
-    if (src_tensor_type != "FP32-FP32") {
+
+    // Dequantize: source weights are quantized (e.g. QINT4) and target is FP32
+    bool is_dequantize = (fc_dtype == DataType::FP32 &&
+                          src_tensor_type != "FP32-FP32" &&
+                          src_tensor_type != "FP16-FP32" &&
+                          src_tensor_type != "FP16-FP16");
+
+    if (!is_dequantize && src_tensor_type != "FP32-FP32") {
       std::cerr << "[WARNING] Source model_tensor_type is '" << src_tensor_type
                 << "', not 'FP32-FP32'.\n"
                 << "  Quantization from non-FP32 models may produce unexpected "
@@ -567,29 +581,43 @@ int main(int argc, char *argv[]) {
     std::cout << "  Model initialized successfully.\n";
 
     // =========================================================================
-    // Step 3: Load FP32 weights
+    // Step 3: Load source weights
     // =========================================================================
-    std::cout << "[3/5] Loading FP32 weights from: " << src_weight_path << "\n";
+    std::cout << "[3/5] Loading "
+              << (is_dequantize ? src_tensor_type : "FP32")
+              << " weights from: " << src_weight_path << "\n";
     model->load_weight(src_weight_path);
     std::cout << "  Weights loaded successfully.\n";
 
     // =========================================================================
-    // Step 4: Build layer dtype map and save quantized weights
+    // Step 4: Build layer dtype map and save weights
     // =========================================================================
-    std::cout << "[4/5] Quantizing and saving weights to: " << dst_weight_path
-              << "\n";
+    std::cout << "[4/5] "
+              << (is_dequantize ? "Dequantizing" : "Quantizing")
+              << " and saving weights to: " << dst_weight_path << "\n";
 
     auto layer_dtype_map = buildLayerDtypeMap(
       num_layers, fc_dtype, embd_dtype, lmhead_dtype, tie_word_embeddings);
 
-    std::cout << "  Layer dtype mapping (" << layer_dtype_map.size()
-              << " layers targeted):\n";
-    for (const auto &[name, dt] : layer_dtype_map) {
-      std::cout << "    " << name << " -> " << dataTypeToStr(dt) << "\n";
+    // For dequantize (quantized -> FP32): pass FP32 as the global target dtype
+    // so all layers that aren't already FP32 are dequantized on save.
+    // For quantize (FP32 -> quantized): per-layer map drives conversion,
+    // global dtype stays NONE so unspecified layers keep their original dtype.
+    DataType global_save_dtype =
+      is_dequantize ? DataType::FP32 : DataType::NONE;
+
+    if (layer_dtype_map.empty() && !is_dequantize) {
+      std::cout << "  No layer dtype mapping (all layers keep original dtype).\n";
+    } else if (!layer_dtype_map.empty()) {
+      std::cout << "  Layer dtype mapping (" << layer_dtype_map.size()
+                << " layers targeted):\n";
+      for (const auto &[name, dt] : layer_dtype_map) {
+        std::cout << "    " << name << " -> " << dataTypeToStr(dt) << "\n";
+      }
     }
 
-    model->save_weight(dst_weight_path, DataType::NONE, layer_dtype_map, {}, {},
-                       target_isa);
+    model->save_weight(dst_weight_path, global_save_dtype, layer_dtype_map, {},
+                       {}, target_isa);
 
     // Report file size
     auto src_size = std::filesystem::file_size(src_weight_path);
@@ -616,10 +644,11 @@ int main(int argc, char *argv[]) {
 
     std::string output_config_path = output_dir + "/nntr_config.json";
 
-    // If output is same dir and we'd overwrite, save as
-    // nntr_config_quantized.json
+    // If output is same dir and we'd overwrite, save as a suffixed filename
     if (output_dir == model_path) {
-      output_config_path = output_dir + "/nntr_config_quantized.json";
+      output_config_path = output_dir + "/" +
+                           (is_dequantize ? "nntr_config_dequantized.json"
+                                          : "nntr_config_quantized.json");
     }
 
     std::ofstream config_out(output_config_path);
@@ -637,13 +666,16 @@ int main(int argc, char *argv[]) {
     // =========================================================================
     std::cout << "\n";
     std::cout << "==========================================================\n";
-    std::cout << "  Quantization complete!\n";
+    std::cout << "  " << (is_dequantize ? "Dequantization" : "Quantization")
+              << " complete!\n";
     std::cout << "==========================================================\n";
     std::cout << "\n";
-    std::cout << "To run the quantized model:\n";
+    std::cout << "To run the converted model:\n";
     if (output_dir == model_path) {
-      std::cout << "  1. Rename nntr_config_quantized.json to "
-                   "nntr_config.json\n";
+      std::cout << "  1. Rename "
+                << (is_dequantize ? "nntr_config_dequantized.json"
+                                  : "nntr_config_quantized.json")
+                << " to nntr_config.json\n";
       std::cout << "  2. nntr_causallm " << model_path << "\n";
     } else {
       std::cout << "  1. Copy config.json and generation_config.json to "
