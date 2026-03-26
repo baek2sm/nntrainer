@@ -353,5 +353,80 @@ int main(int argc, char *argv[]) {
               << std::endl;
   }
 
-  return 0;
+  // ============================================================
+  // 8. Token generation test (query_seq_len = 1)
+  //
+  // After the prefill run, k_proj/v_proj output tensors retain all 5 KV
+  // positions.  Running with to - from = 1 exercises the q_len == 1 branch in
+  // compute_kcaches / compute_fp16vcache_transposed while cross_attn still
+  // attends to all 5 KV positions (key_batch dim is not clipped in
+  // one_batch_crs_incremental_forwarding).
+  //
+  // For each decoder position i we run from=0, to=1 with query_input[i] at
+  // row 0.  The FC layer always reads from the start of the tensor regardless
+  // of 'from', so placing the desired query at row 0 is sufficient.
+  // ============================================================
+  std::cout
+    << "\n============================================================"
+    << std::endl;
+  std::cout << "TOKEN GENERATION TEST (query_seq_len = 1 per step):"
+            << std::endl;
+  std::cout << "============================================================"
+            << std::endl;
+
+  bool token_gen_pass = true;
+
+  for (unsigned int qi = 0; qi < Q_SEQ_LEN; ++qi) {
+    // Build a single-token query: place query row qi at row 0, zero the rest.
+    std::vector<float> single_query(BATCH_SIZE * MAX_Q_SEQ_LEN * D_MODEL, 0.0f);
+    const float *src = io.query_input.data() + qi * D_MODEL;
+    std::copy(src, src + D_MODEL, single_query.begin());
+
+    std::vector<float *> tg_inputs = {io.kv_input.data(), single_query.data()};
+    std::vector<float *> tg_labels = {};
+
+    auto tg_output = model->incremental_inference(BATCH_SIZE, tg_inputs,
+                                                   tg_labels,
+                                                   1,   // init_seq_len = 1
+                                                   0,   // from
+                                                   1,   // to  (one token)
+                                                   true // output_hidden_state
+    );
+
+    if (tg_output.empty() || tg_output[0] == nullptr) {
+      std::cerr << "ERROR: No output for token gen step " << qi << std::endl;
+      token_gen_pass = false;
+      continue;
+    }
+
+    // Compare tg_output[0][0..D_MODEL-1] against ref_output row qi.
+    const float *ref_row = io.ref_output.data() + qi * D_MODEL;
+    float step_diff = 0.0f;
+    for (unsigned int d = 0; d < D_MODEL; ++d) {
+      float diff = std::abs(tg_output[0][d] - ref_row[d]);
+      if (diff > step_diff)
+        step_diff = diff;
+    }
+
+    std::cout << "  Step " << qi << " max_diff = " << std::scientific
+              << step_diff;
+    if (step_diff < 1e-2f) {
+      std::cout << " PASS" << std::endl;
+    } else {
+      std::cout << " FAIL" << std::endl;
+      token_gen_pass = false;
+    }
+  }
+
+  std::cout << "\n============================================================"
+            << std::endl;
+  if (token_gen_pass) {
+    std::cout << "TOKEN GENERATION TEST: PASS" << std::endl;
+  } else {
+    std::cout << "TOKEN GENERATION TEST: FAIL" << std::endl;
+  }
+  std::cout << "============================================================"
+            << std::endl;
+
+  return (max_diff < 1e-2f && token_gen_pass) ? 0 : 1;
 }

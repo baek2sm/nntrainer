@@ -465,7 +465,9 @@ sharedConstTensors NeuralNetwork::incremental_forwarding(
           node->getName() == "cross_attn") {
         std::cout << node->getName() << std::endl;
         std::cout << node->getOutput(0) << std::endl;
-        std::cout << node->getWeight(0) << std::endl;
+        if (node->getName() != "cross_attn") {
+          std::cout << node->getWeight(0) << std::endl;
+        }
       }
 
       // auto end_layer =

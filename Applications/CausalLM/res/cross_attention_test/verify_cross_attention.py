@@ -189,11 +189,16 @@ def main():
     # Layer order: q_proj, k_proj, v_proj, mha_core(no weights), o_proj
     weight_path = os.path.join(args.output_dir, "cross_attn_test_weights.bin")
     with open(weight_path, "wb") as f:
-        # nntrainer order is v,k,q,o (it's different with coding order)
-        save_nntrainer_weight(f, W_v, transpose=False)  # v_proj: (64, 32) -> (32, 64)
-        save_nntrainer_weight(f, W_k, transpose=False)  # k_proj: (64, 32) -> (32, 64)
-        save_nntrainer_weight(f, W_q, transpose=False)  # q_proj: (64, 64) -> (64, 64)
-        save_nntrainer_weight(f, W_o, transpose=False)  # o_proj: (64, 64) -> (64, 64)
+        # nntrainer model->load() reads layers in topological order.
+        # Topological sort of this model: kv_input -> v_proj, k_proj -> query_input -> q_proj -> o_proj
+        # So the weight file order is: v_proj, k_proj, q_proj, o_proj.
+        # FC weights are stored as (in_features, out_features) matching nntrainer's
+        # NCHW weight layout [1,1,in_features,out_features].
+        # The computation is output = input @ weight, same as numpy matmul convention.
+        save_nntrainer_weight(f, W_v, transpose=False)  # v_proj weight: (D_MODEL, D_KV)
+        save_nntrainer_weight(f, W_k, transpose=False)  # k_proj weight: (D_MODEL, D_KV)
+        save_nntrainer_weight(f, W_q, transpose=False)  # q_proj weight: (D_MODEL, D_Q)
+        save_nntrainer_weight(f, W_o, transpose=False)  # o_proj weight: (D_Q, D_MODEL)
     print(f"\nWeights saved to: {weight_path}")
 
     # ============================================================
