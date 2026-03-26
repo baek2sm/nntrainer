@@ -411,6 +411,25 @@ public:
                             quant_weight.size(), N, K, target_isa);
                 quant_weight.save(file);
               }
+            } else if (dtype == TensorDim::DataType::FP32 &&
+                       weight.getDataType() ==
+                         TensorDim::DataType::QINT4) {
+              // Dequantize QINT4 -> FP32
+              Tensor fp32_weight =
+                weight.clone(TensorDim::DataType::FP32);
+              // Apply per-tensor or per-channel scale factors
+              if (weight.q_scheme() == QScheme::PER_TENSOR_AFFINE) {
+                fp32_weight.multiply_i(*weight.getScale<float>());
+              } else {
+                // PER_CHANNEL_AFFINE: one scale per group of 32 elements
+                const float *scales = weight.getScale<float>();
+                float *dst = fp32_weight.getData<float>();
+                constexpr size_t group_size = 32;
+                for (size_t i = 0; i < fp32_weight.size(); ++i) {
+                  dst[i] *= scales[i / group_size];
+                }
+              }
+              fp32_weight.save(file);
             } else {
               NNTR_THROW_IF(true, std::runtime_error)
                 << "This dtype is not supported in save with quantization";
