@@ -234,6 +234,7 @@ void FullyConnectedLayer::forwarding(RunLayerContext &context, bool training) {
     Tensor &bias = context.getWeight(weight_idx[FCParams::bias]);
     hidden_.add_i(bias);
   }
+  std::cout << hidden_ << std::endl;
 }
 
 void FullyConnectedLayer::incremental_forwarding(RunLayerContext &context,
@@ -305,6 +306,8 @@ void FullyConnectedLayer::incremental_forwarding(RunLayerContext &context,
       Tensor &bias = context.getWeight(weight_idx[FCParams::bias]);
       hidden_step.add_i(bias);
     }
+
+    // std::cout << hidden_step << std::endl;
   }
 }
 

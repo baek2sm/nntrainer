@@ -71,3 +71,10 @@ e = executable('nntr_causallm',
     include_directories: causallm_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_layer_dependencies, causallm_dep],
 )
+
+# Cross-attention verification test (no tokenizer dependency)
+verify_cross_attn = executable('verify_cross_attention',
+    [meson.current_source_dir() / 'verify_cross_attention.cpp'],
+    include_directories: causallm_inc,
+    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_mha_core_dep],
+)
