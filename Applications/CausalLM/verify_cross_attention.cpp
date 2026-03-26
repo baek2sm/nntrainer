@@ -46,6 +46,7 @@ static constexpr unsigned int D_MODEL = 64;
 static constexpr unsigned int NUM_HEADS_Q = 4;
 static constexpr unsigned int NUM_HEADS_KV = 2;
 static constexpr unsigned int HEAD_DIM = 16;
+static constexpr unsigned int MAX_Q_SEQ_LEN = 32;
 static constexpr unsigned int Q_SEQ_LEN = 3;
 static constexpr unsigned int KV_SEQ_LEN = 5;
 static constexpr unsigned int D_Q = NUM_HEADS_Q * HEAD_DIM;   // 64
@@ -179,8 +180,8 @@ int main(int argc, char *argv[]) {
   model->addLayer(createLayer(
     "input", {
                withKey("name", "query_input"),
-               withKey("input_shape", "1:1:" + std::to_string(KV_SEQ_LEN) + ":" +
-                                        std::to_string(D_MODEL)),
+               withKey("input_shape", "1:1:" + std::to_string(KV_SEQ_LEN) +
+                                        ":" + std::to_string(D_MODEL)),
              }));
   model->addLayer(createLayer(
     "input", {
@@ -289,7 +290,8 @@ int main(int argc, char *argv[]) {
 
   // Zero-pad query_input from Q_SEQ_LEN to KV_SEQ_LEN tokens so that
   // incremental_inference can use to=KV_SEQ_LEN for all layers uniformly.
-  std::vector<float> query_input_padded(BATCH_SIZE * KV_SEQ_LEN * D_MODEL, 0.0f);
+  std::vector<float> query_input_padded(BATCH_SIZE * MAX_Q_SEQ_LEN * D_MODEL,
+                                        0.0f);
   std::copy(io.query_input.begin(), io.query_input.end(),
             query_input_padded.begin());
 
@@ -301,10 +303,10 @@ int main(int argc, char *argv[]) {
   // output_hidden_state=true returns pointer into the full hidden tensor
   // (KV_SEQ_LEN rows), from which we compare only the first Q_SEQ_LEN rows.
   auto output = model->incremental_inference(BATCH_SIZE, inputs, labels,
-                                             KV_SEQ_LEN, // init_seq_len
-                                             0,           // from
+                                             Q_SEQ_LEN,  // init_seq_len
+                                             0,          // from
                                              KV_SEQ_LEN, // to
-                                             true         // output_hidden_state
+                                             true        // output_hidden_state
   );
 
   // ============================================================

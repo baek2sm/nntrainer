@@ -459,9 +459,10 @@ sharedConstTensors NeuralNetwork::incremental_forwarding(
       //      start_prefill time
       model_graph.flushCacheExcept(f);
       node->incremental_forwarding(from, to, training);
-
+      std::cout << node->getName() << std::endl;
       if (node->getName() == "v_proj" || node->getName() == "k_proj" ||
-          node->getName() == "q_proj" || node->getName() == "o_proj") {
+          node->getName() == "q_proj" || node->getName() == "o_proj" ||
+          node->getName() == "cross_attn") {
         std::cout << node->getName() << std::endl;
         std::cout << node->getOutput(0) << std::endl;
         std::cout << node->getWeight(0) << std::endl;
