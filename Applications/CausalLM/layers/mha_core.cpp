@@ -149,7 +149,11 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
   /** Is Causal */
   is_causal = std::get<props::IsCausal>(mha_core_props).get();
 
-  /** Tensor for KV-Cache */
+  if (!std::get<nntrainer::props::SkipPrefill>(*layer_impl_props).empty())
+    skip_prefill =
+      std::get<nntrainer::props::SkipPrefill>(*layer_impl_props).get();
+
+    /** Tensor for KV-Cache */
 #ifdef ENABLE_FP16
   ml::train::TensorDim cache_key_dim(
     {batch_size, 1, max_timestep, num_heads_KV * head_dim},
@@ -357,13 +361,13 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
         batch * cache_key_dim.getFeatureLen() + from * cache_key_dim.width(),
         true);
       nntrainer::Tensor cache_value_nth_step =
-        cache_key.getSharedDataTensor(cache_value_step_dim,
-                                      batch * cache_value_dim.getFeatureLen() +
-                                        from * cache_value_dim.width(),
-                                      true);
+        cache_value.getSharedDataTensor(cache_value_step_dim,
+                                        batch * cache_value_dim.getFeatureLen() +
+                                          from * cache_value_dim.width(),
+                                        true);
 
       cache_key_nth_step.copyData(cache_key_0_step);
-      cache_key_nth_step.copyData(cache_value_0_step);
+      cache_value_nth_step.copyData(cache_value_0_step);
     }
   }
 }
@@ -516,8 +520,6 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     batch * cache_value_dim.getFeatureLen() + from * cache_value_dim.width(),
     true);
 
-  apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, false);
-
   apply_rotary_emb_tensor_v2(key_step, b_cache_key_step, head_dim, _from,
                              false);
 
@@ -531,6 +533,11 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     NNTR_THROW_IF(true, std::invalid_argument) << "enable-fp16 is not set!";
 #endif
   }
+  bool is_prefill = !from;
+  if (skip_prefill && is_prefill)
+    return;
+
+  apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, false);
 
   ml::train::TensorDim cached_key_dim = cache_key_dim;
   ml::train::TensorDim cached_value_dim = cache_value_dim;
