@@ -466,8 +466,7 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
                                           SYS_PROMP_LEN + input_len, false);
 
     // post process of model output
-    id_list = generate_multi_tokens(output[0], NUM_VOCAB, BATCH_SIZE, 1,
-                                    ids_history, _len);
+    id_list = std::vector<unsigned int>(generate(output[0], do_sample));
 
     if (init_len < INIT_SEQ_LEN)
       registerOutputs(tokenizer, id_list, init_len, eos_list);

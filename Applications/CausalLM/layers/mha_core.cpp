@@ -361,13 +361,13 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
         batch * cache_key_dim.getFeatureLen() + from * cache_key_dim.width(),
         true);
       nntrainer::Tensor cache_value_nth_step =
-        cache_key.getSharedDataTensor(cache_value_step_dim,
-                                      batch * cache_value_dim.getFeatureLen() +
-                                        from * cache_value_dim.width(),
-                                      true);
+        cache_value.getSharedDataTensor(cache_value_step_dim,
+                                        batch * cache_value_dim.getFeatureLen() +
+                                          from * cache_value_dim.width(),
+                                        true);
 
       cache_key_nth_step.copyData(cache_key_0_step);
-      cache_key_nth_step.copyData(cache_value_0_step);
+      cache_value_nth_step.copyData(cache_value_0_step);
     }
   }
 }
