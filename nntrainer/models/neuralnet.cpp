@@ -31,7 +31,6 @@
 #include <future>
 #include <iomanip>
 #include <sstream>
-#include <unordered_set>
 
 #include <activation_realizer.h>
 #include <adamw.h>
@@ -716,6 +715,7 @@ void NeuralNetwork::load(const std::string &file_path,
       }
       size_t size = weight->getVariable().getMemoryBytes();
       auto tensor_data_type = weight->getDim().getDataType();
+      weight->getVariableRef().setFileOffset(start_from);
       ///@todo instead of checking the data type,
       /// we may need to create a common parent class for
       /// quantized tensors, requiring qparam to be saved
@@ -728,7 +728,6 @@ void NeuralNetwork::load(const std::string &file_path,
         // for tensor with qparam
         size += sizeof(uint16_t);
       }
-
       weight->getVariableRef().setFileOffset(start_from);
       file_offset.emplace_back(std::make_pair(start_from, size));
       start_from += size;
