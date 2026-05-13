@@ -26,6 +26,7 @@ CAUSALLM_COMMON_INCLUDES := \
     $(LOCAL_PATH)/../models/qwen3_slim_moe \
     $(LOCAL_PATH)/../models/qwen3_cached_slim_moe \
     $(LOCAL_PATH)/../models/gemma3 \
+    $(LOCAL_PATH)/../models/timm_vit \
 
 # Prebuilt nntrainer libraries
 include $(CLEAR_VARS)
@@ -92,6 +93,7 @@ LOCAL_SRC_FILES := \
     ../models/gemma3/gemma3_causallm.cpp \
     ../models/gemma3/embedding_gemma.cpp \
     ../models/gemma3/function.cpp \
+    ../models/timm_vit/timm_vit_transformer.cpp \
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_STATIC_LIBRARIES := tokenizers_c

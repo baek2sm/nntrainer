@@ -20,6 +20,7 @@
  * @bug		No known bugs except for NYI items
  *
  */
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -49,6 +50,7 @@
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
+#include "timm_vit/timm_vit_transformer.h"
 #include <models/gemma3/function.h>
 #if !defined(_WIN32)
 #include <sys/resource.h>
@@ -64,6 +66,9 @@ using json = nlohmann::json;
 std::atomic<size_t> peak_rss_kb{0};
 std::atomic<bool> tracking_enabled{true};
 
+/**
+ * @brief Print the maximum resident set size for the current process.
+ */
 void printMemoryUsage() {
 #if defined(_WIN32)
   std::cout << "Max Resident Set Size: unavailable on Windows" << std::endl;
@@ -75,6 +80,9 @@ void printMemoryUsage() {
 #endif
 }
 
+/**
+ * @brief Read the current process resident set size on Linux.
+ */
 size_t read_vm_rss_kb() {
 #if defined(_WIN32)
   return 0;
@@ -92,6 +100,9 @@ size_t read_vm_rss_kb() {
 #endif
 }
 
+/**
+ * @brief Read private resident memory from smaps_rollup on Linux.
+ */
 size_t read_private_rss_kb() {
 #if defined(_WIN32)
   return 0;
@@ -110,6 +121,9 @@ size_t read_private_rss_kb() {
 #endif
 }
 
+/**
+ * @brief Start a background sampler for peak private RSS.
+ */
 void start_peak_tracker() {
   std::thread([] {
     while (tracking_enabled.load()) {
@@ -123,6 +137,9 @@ void start_peak_tracker() {
   }).detach();
 }
 
+/**
+ * @brief Stop the memory sampler and print the observed peak.
+ */
 void stop_and_print_peak() {
   tracking_enabled.store(false);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -130,6 +147,9 @@ void stop_and_print_peak() {
             << std::endl;
 }
 
+/**
+ * @brief Resolve config architecture names to registered model factory names.
+ */
 std::string resolve_architecture(std::string model_type,
                                  const std::string &architecture) {
   std::transform(model_type.begin(), model_type.end(), model_type.begin(),
@@ -145,15 +165,26 @@ std::string resolve_architecture(std::string model_type,
       return "Qwen2Embedding";
     } else if (architecture == "BertForMaskedLM") {
       return "MultilingualTinyBert";
+    } else if (architecture == "TimmViT" ||
+               architecture == "vit_base_patch16_siglip_224") {
+      return "TimmViT";
     } else {
       throw std::invalid_argument(
         "Unsupported architecture for embedding model: " + architecture);
     }
   }
 
+  if (architecture == "TimmViT" ||
+      architecture == "vit_base_patch16_siglip_224") {
+    return "TimmViT";
+  }
+
   return architecture;
 }
 
+/**
+ * @brief Entry point for loading, initializing, and running a CausalLM model.
+ */
 int main(int argc, char *argv[]) {
 
   auto start_time = std::chrono::high_resolution_clock::now();
@@ -233,6 +264,11 @@ int main(int argc, char *argv[]) {
         cfg, generation_cfg, nntr_cfg);
     });
 #endif
+  causallm::Factory::Instance().registerModel(
+    "TimmViT", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::TimmViTTransformer>(cfg, generation_cfg,
+                                                            nntr_cfg);
+    });
 
   // Validate arguments
   if (argc < 2) {
@@ -253,8 +289,11 @@ int main(int argc, char *argv[]) {
   try {
     // Load configuration files
     json cfg = causallm::LoadJsonFile(model_path + "/config.json");
-    json generation_cfg =
-      causallm::LoadJsonFile(model_path + "/generation_config.json");
+    json generation_cfg = json::object();
+    std::string generation_config_path = model_path + "/generation_config.json";
+    if (std::filesystem::exists(generation_config_path)) {
+      generation_cfg = causallm::LoadJsonFile(generation_config_path);
+    }
     json nntr_cfg = causallm::LoadJsonFile(model_path + "/nntr_config.json");
 
     if (nntr_cfg.contains("system_prompt")) {
@@ -271,8 +310,17 @@ int main(int argc, char *argv[]) {
     std::cout << weight_file << std::endl;
 
     // Initialize and run model
-    std::string architecture =
-      cfg["architectures"].get<std::vector<std::string>>()[0];
+    std::string architecture;
+    if (cfg.contains("architectures") && cfg["architectures"].is_array() &&
+        !cfg["architectures"].empty()) {
+      architecture = cfg["architectures"].get<std::vector<std::string>>()[0];
+    } else if (cfg.contains("architecture") &&
+               cfg["architecture"].is_string()) {
+      architecture = cfg["architecture"].get<std::string>();
+    } else {
+      throw std::invalid_argument(
+        "config.json must contain 'architectures' or 'architecture'.");
+    }
 
     if (nntr_cfg.contains("model_type")) {
       std::string model_type = nntr_cfg["model_type"].get<std::string>();
