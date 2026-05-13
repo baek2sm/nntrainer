@@ -28,6 +28,9 @@
 
 namespace causallm {
 
+/**
+ * @brief Load a file as a binary string.
+ */
 std::string LoadBytesFromFile(const std::string &path) {
   std::ifstream file(path, std::ios::binary | std::ios::ate);
   if (!file.is_open()) {
@@ -43,6 +46,9 @@ std::string LoadBytesFromFile(const std::string &path) {
   return buffer;
 }
 
+/**
+ * @brief Convert model_type text from config to ModelType.
+ */
 ModelType strToModelType(std::string model_type) {
 
   std::string model_type_lower = model_type;
@@ -62,6 +68,9 @@ ModelType strToModelType(std::string model_type) {
   return model_type_map.at(model_type_lower);
 }
 
+/**
+ * @brief Construct a Transformer and initialize shared config state.
+ */
 Transformer::Transformer(json &cfg, json &generation_cfg, json &nntr_cfg,
                          ModelType model_type) {
 
@@ -78,15 +87,28 @@ Transformer::Transformer(json &cfg, json &generation_cfg, json &nntr_cfg,
                              ", Config Type: " + config_model_type_str);
   }
 
-  // Initialize the model with the provided configurations
-  // This is where you would set up the model layers, parameters, etc.
-  setupParameters(cfg, generation_cfg, nntr_cfg);
+  const bool skip_tokenizer = nntr_cfg.contains("skip_tokenizer") &&
+                              nntr_cfg["skip_tokenizer"].get<bool>();
 
-  // prep tokenizer
-  tokenizer = tokenizers::Tokenizer::FromBlobJSON(
-    LoadBytesFromFile(nntr_cfg["tokenizer_file"]));
+  // Initialize the model with the provided configurations. Vision models such
+  // as TimmViT defer this to their derived constructor because the base
+  // Transformer setup expects text-model fields.
+  if (!(skip_tokenizer && model_type == ModelType::MODEL)) {
+    setupParameters(cfg, generation_cfg, nntr_cfg);
+  }
+
+  // Skip tokenizer if specified (e.g., for vision encoder models)
+  if (skip_tokenizer) {
+    tokenizer = nullptr; // No tokenizer for this model
+  } else {
+    tokenizer = tokenizers::Tokenizer::FromBlobJSON(
+      LoadBytesFromFile(nntr_cfg["tokenizer_file"]));
+  }
 };
 
+/**
+ * @brief Set common transformer parameters from model configs.
+ */
 void Transformer::setupParameters(json &cfg, json &generation_cfg,
                                   json &nntr_cfg) {
 
@@ -144,6 +166,9 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
   return;
 };
 
+/**
+ * @brief Build and compile the symbolic transformer graph.
+ */
 void Transformer::initialize() {
 
   // RegisterCustomLayers
@@ -175,6 +200,9 @@ void Transformer::initialize() {
 #endif
 }
 
+/**
+ * @brief Construct the default decoder-only transformer graph.
+ */
 std::pair<Tensor, Tensor> Transformer::constructModel() {
 
   // input
@@ -207,6 +235,9 @@ std::pair<Tensor, Tensor> Transformer::constructModel() {
   return {x, h};
 };
 
+/**
+ * @brief Load model weights from a binary nntrainer model file.
+ */
 void Transformer::load_weight(const std::string &weight_path) {
 
   if (!is_initialized) {
@@ -223,6 +254,9 @@ void Transformer::load_weight(const std::string &weight_path) {
   }
 };
 
+/**
+ * @brief Save model weights to a binary nntrainer model file.
+ */
 void Transformer::save_weight(const std::string &weight_path) {
 
   if (!is_initialized) {
@@ -239,6 +273,9 @@ void Transformer::save_weight(const std::string &weight_path) {
   }
 };
 
+/**
+ * @brief Save model weights with optional dtype conversion.
+ */
 void Transformer::save_weight(
   const std::string &weight_path, ml::train::TensorDim::DataType dtype,
   const std::map<std::string, ml::train::TensorDim::DataType>
@@ -259,6 +296,9 @@ void Transformer::save_weight(
   }
 };
 
+/**
+ * @brief Run a transformer model for a prompt.
+ */
 void Transformer::run(const WSTR prompt, bool do_sample,
                       const WSTR system_prompt, const WSTR tail_prompt,
                       bool log_output) {
@@ -271,6 +311,9 @@ void Transformer::run(const WSTR prompt, bool do_sample,
   /// The run action can be defined by the precedent classes.
 }
 
+/**
+ * @brief Create one decoder block with attention and feed-forward layers.
+ */
 Tensor Transformer::createTransformerDecoderBlock(const int layer_id,
                                                   Tensor input) {
 
@@ -304,6 +347,9 @@ Tensor Transformer::createTransformerDecoderBlock(const int layer_id,
   return decoder_output({residual, ffn_out});
 }
 
+/**
+ * @brief Create external KV-cache placeholder tensors for one layer.
+ */
 std::pair<Tensor, Tensor>
 Transformer::createKVCachePlaceholders(const int layer_id, int n_heads) {
   const unsigned int max_timestep = static_cast<unsigned int>(MAX_SEQ_LEN);
@@ -335,6 +381,9 @@ Transformer::createKVCachePlaceholders(const int layer_id, int n_heads) {
 #endif
 }
 
+/**
+ * @brief Create the default attention subgraph.
+ */
 Tensor Transformer::createAttention(const int layer_id, int seq_len,
                                     int n_heads, int head_dim, Tensor query,
                                     Tensor key, Tensor value) {
@@ -390,6 +439,9 @@ Tensor Transformer::createAttention(const int layer_id, int seq_len,
   return wo(a);
 }
 
+/**
+ * @brief Create the default feed-forward subgraph.
+ */
 Tensor Transformer::createMlp(const int layer_id, int dim, int hidden_dim,
                               Tensor input) {
 
@@ -420,6 +472,9 @@ Tensor Transformer::createMlp(const int layer_id, int dim, int hidden_dim,
   return ffn_down(act);
 }
 
+/**
+ * @brief Register custom CausalLM layers in the nntrainer app context.
+ */
 void Transformer::registerCustomLayers() {
   ///
   const auto &ct_engine = nntrainer::Engine::Global();
