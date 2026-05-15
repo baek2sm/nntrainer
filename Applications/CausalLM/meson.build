@@ -181,6 +181,10 @@ test_api = executable('test_api',
 
 # KVCacheManager unit tests
 if get_option('enable-test')
+  causallm_unittest_inc = include_directories(
+    '../../test/unittest/models'
+  )
+
   unittest_kv_cache_manager = executable(
     'unittest_kv_cache_manager',
     meson.source_root() / 'test' / 'unittest' / 'layers' / 'unittest_kv_cache_manager.cpp',
@@ -195,4 +199,36 @@ if get_option('enable-test')
     timeout: 60,
     suite: 'unittests'
   )
+
+  enable_causallm_model_unittest = get_option('platform') == 'windows'
+  if build_machine.system() != 'windows'
+    enable_causallm_model_unittest = false
+  endif
+  # Keep tiny model-level CausalLM tests Windows-only until Qwen3 validation is
+  # completed on Ubuntu and Android with latest main. Re-enable those platforms
+  # by widening this guard after validation.
+  if enable_causallm_model_unittest
+    unittest_causallm_models = executable(
+      'unittest_causallm_models',
+      [
+        meson.source_root() / 'test' / 'unittest' / 'models' / 'causallm_test_utils.cpp',
+      ],
+      dependencies: [
+        nntrainer_dep,
+        nntrainer_ccapi_dep,
+        gtest_main_dep,
+        causallm_layer_dependencies,
+        causallm_dep
+      ],
+      include_directories: causallm_inc + [causallm_unittest_inc],
+      build_by_default: true,
+      install: false,
+    )
+
+    test('unittest_causallm_models', unittest_causallm_models,
+      args: '--gtest_output=xml:@0@/@1@.xml'.format(meson.build_root(), 'unittest_causallm_models'),
+      timeout: 60,
+      suite: 'unittests'
+    )
+  endif
 endif
