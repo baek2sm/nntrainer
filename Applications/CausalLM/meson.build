@@ -200,13 +200,10 @@ if get_option('enable-test')
     suite: 'unittests'
   )
 
-  enable_causallm_model_unittest = get_option('platform') == 'windows'
-  if build_machine.system() != 'windows'
-    enable_causallm_model_unittest = false
-  endif
-  # Keep tiny model-level CausalLM tests Windows-only until Qwen3 validation is
-  # completed on Ubuntu and Android with latest main. Re-enable those platforms
-  # by widening this guard after validation.
+  # Ubuntu native builds use platform=none.
+  model_unittest_platforms = ['none', 'windows', 'android']
+  platform = get_option('platform')
+  enable_causallm_model_unittest = platform in model_unittest_platforms
   if enable_causallm_model_unittest
     unittest_causallm_models = executable(
       'unittest_causallm_models',
