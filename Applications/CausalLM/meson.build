@@ -42,15 +42,70 @@ elif get_option('platform') != 'tizen'
 endif
 
 tokenizer_dependencies = []
-tokenizer_path = meson.current_source_dir() / 'lib' / 'libtokenizers_c.a'
-tokenizer_windows_path = meson.build_root() / 'tokenizers_c_win' / 'target' / 'release' / 'tokenizers_c.lib'
-tokenizer_windows_link_args = [
-    tokenizer_windows_path,
-    'bcrypt.lib',
-    'ntdll.lib',
-    'userenv.lib',
-    'ws2_32.lib'
-]
+tokenizer_option = get_option('causallm-tokenizer-lib')
+tokenizer_rust_target = ''
+if get_option('platform') == 'windows'
+    if meson.is_cross_build()
+        if host_machine.cpu_family() == 'aarch64'
+            tokenizer_rust_target = 'aarch64-pc-windows-msvc'
+        elif host_machine.cpu_family() == 'x86_64'
+            tokenizer_rust_target = 'x86_64-pc-windows-msvc'
+        endif
+    endif
+
+    if tokenizer_option != ''
+        tokenizer_path = tokenizer_option
+    elif tokenizer_rust_target == ''
+        tokenizer_path = meson.build_root() / 'tokenizers_c_win' / 'target' / 'release' / 'tokenizers_c.lib'
+    else
+        tokenizer_path = meson.build_root() / 'tokenizers_c_win' / 'target' / tokenizer_rust_target / 'release' / 'tokenizers_c.lib'
+    endif
+else
+    if tokenizer_option != ''
+        error('causallm-tokenizer-lib is only supported for Windows CausalLM builds.')
+    endif
+
+    tokenizer_path = meson.current_source_dir() / 'lib' / 'libtokenizers_c.a'
+endif
+
+generate_windows_tokenizer = tokenizer_option == ''
+generate_windows_tokenizer = generate_windows_tokenizer and get_option('platform') == 'windows'
+generate_windows_tokenizer = generate_windows_tokenizer and build_machine.system() == 'windows'
+generate_windows_tokenizer = generate_windows_tokenizer and not fs.exists(tokenizer_path)
+
+if generate_windows_tokenizer
+    run_command(
+        powershell_prog,
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        meson.current_source_dir() / 'build_tokenizer_windows.ps1',
+        '-BuildDir',
+        meson.build_root(),
+        '-RustTarget',
+        tokenizer_rust_target,
+        check: true
+    )
+endif
+
+if not fs.exists(tokenizer_path)
+    if get_option('platform') == 'windows'
+        tokenizer_error = 'CausalLM Windows build requires tokenizers_c.lib. Run Applications\\CausalLM\\build_tokenizer_windows.ps1 -BuildDir @0@ or pass -Dcausallm-tokenizer-lib=/path/to/tokenizers_c.lib.'
+        error(tokenizer_error.format(meson.build_root()))
+    else
+        error('CausalLM tokenizer library not found: @0@'.format(tokenizer_path))
+    endif
+endif
+
+tokenizer_link_args = [tokenizer_path]
+if get_option('platform') == 'windows'
+    tokenizer_link_args += [
+        'bcrypt.lib',
+        'ntdll.lib',
+        'userenv.lib',
+        'ws2_32.lib'
+    ]
+endif
 
 cpp_args = []
 
@@ -83,7 +138,7 @@ else
         include_directories: causallm_inc,
         install: true,
         install_dir: application_install_dir,
-        link_args: [tokenizer_path],
+        link_args: tokenizer_link_args,
         cpp_args: cpp_args
     )
 endif
@@ -91,7 +146,7 @@ endif
 causallm_dep = declare_dependency(
     link_with: [causallm],
     include_directories: causallm_inc,
-    link_args: get_option('platform') == 'windows' ? tokenizer_windows_link_args : []
+    link_args: get_option('platform') == 'windows' ? tokenizer_link_args : []
 )
 
 e = executable('nntr_causallm',
