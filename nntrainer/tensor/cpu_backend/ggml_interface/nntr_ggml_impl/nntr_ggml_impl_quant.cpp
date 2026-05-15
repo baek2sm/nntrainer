@@ -475,7 +475,7 @@ void dequantize_row_q4_0_impl(const block_q4_0 *__restrict x,
   const int64_t nb = k / qk;
 
   for (int64_t i = 0; i < nb; i++) {
-    const float d = nntr_fp16_to_fp32(x[i].d);
+    const float d = nntr_compute_fp16_to_fp32(x[i].d);
 
     for (int j = 0; j < qk / 2; ++j) {
       const int x0 = (x[i].qs[j] & 0x0F) - 8;
