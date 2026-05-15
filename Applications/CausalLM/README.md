@@ -132,7 +132,60 @@ e.g.,
 $ ./build/Applications/CausalLM/nntr_causallm /tmp/nntrainer/Applications/CausalLM/res/qwen3/qwen3-4b/
 ```
 
-### 3. Android Build & Test
+### 3. Windows Build & Test
+
+Windows CausalLM builds need a `tokenizers_c.lib` that matches the local
+MSVC toolchain. The repository keeps the Linux static library in
+`Applications/CausalLM/lib/`; Windows builds generate the matching library from
+source instead of carrying a checked-in binary.
+
+#### Prerequisites
+
+- Visual Studio Build Tools with the MSVC C++ toolchain
+- Meson and Ninja
+- Rust (`cargo`) from https://rustup.rs/
+
+#### Build tokenizer library
+
+Meson builds the default `tokenizers_c.lib` automatically when it is missing.
+The helper can also be run directly to pre-build or refresh the library:
+
+```powershell
+PS> powershell -ExecutionPolicy Bypass -File Applications\CausalLM\build_tokenizer_windows.ps1 -BuildDir build-causallm-win
+```
+
+The build writes the default Meson input under the build directory:
+
+```text
+build-causallm-win\tokenizers_c_win\target\release\tokenizers_c.lib
+```
+
+For Windows cross builds, Meson passes the matching Rust target triple and the
+library is written under `target\<triple>\release\`.
+
+If you already have a compatible `tokenizers_c.lib`, pass it explicitly during
+Meson setup:
+
+```powershell
+PS> meson setup build-causallm-win -Dplatform=windows -Denable-transformer=true -Dcausallm-tokenizer-lib=C:\path\to\tokenizers_c.lib
+```
+
+When using a DLL import library instead of a static library, make sure the
+matching `tokenizers_c.dll` is available on `PATH` at runtime.
+
+#### Build and run
+
+```powershell
+PS> meson setup build-causallm-win -Dplatform=windows -Denable-transformer=true -Denable-test=false
+PS> ninja -C build-causallm-win nntr_causallm
+PS> $build = Resolve-Path build-causallm-win
+PS> $dllDirs = Get-ChildItem $build -Filter *.dll -Recurse | ForEach-Object { Split-Path -Parent $_.FullName } | Sort-Object -Unique
+PS> $env:PATH = (($dllDirs + @($build, "$build\Applications\CausalLM")) -join ";") + ";" + $env:PATH
+PS> $env:NNTR_NUM_THREADS = "4"
+PS> .\build-causallm-win\Applications\CausalLM\nntr_causallm.exe C:\path\to\model "Hello from Windows"
+```
+
+### 4. Android Build & Test
 
 The Android build process is modularized to support building the core library, API library, and test applications independently.
 
