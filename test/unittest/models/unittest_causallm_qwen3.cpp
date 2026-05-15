@@ -324,7 +324,8 @@ TEST_P(CausalLMTinyModelTest, PromptProducesExpectedLogits) {
 
 INSTANTIATE_TEST_SUITE_P(
   Qwen3, CausalLMTinyModelTest,
-  ::testing::Values(makeQwen3Case(causallm_test::makeTinyFp32DataType())),
+  ::testing::Values(makeQwen3Case(causallm_test::makeTinyFp32DataType()),
+                    makeQwen3Case(causallm_test::makeTinyQ40Fp32DataType())),
   [](const ::testing::TestParamInfo<causallm_test::TinyCausalLMCase> &info) {
     return info.param.name;
   });
