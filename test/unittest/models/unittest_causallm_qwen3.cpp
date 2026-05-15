@@ -195,14 +195,14 @@ causallm::json makeTinyQwen3Config() {
     {"architectures", {"Qwen3ForCausalLM"}},
     {"bos_token_id", 0},
     {"eos_token_id", {31}},
-    {"head_dim", 32},
-    {"hidden_size", 32},
-    {"intermediate_size", 32},
+    {"head_dim", 8},
+    {"hidden_size", 64},
+    {"intermediate_size", 64},
     {"is_causal", true},
     {"max_position_embeddings", 8},
-    {"num_attention_heads", 1},
+    {"num_attention_heads", 8},
     {"num_hidden_layers", 1},
-    {"num_key_value_heads", 1},
+    {"num_key_value_heads", 4},
     {"rms_norm_eps", 1e-5},
     {"rope_theta", 10000},
     {"tie_word_embeddings", true},
@@ -245,8 +245,8 @@ makeQwen3LayerDtypeMap(const causallm_test::TinyCausalLMDataType &data_type) {
  */
 std::vector<float> makeExpectedQwen3Logits() {
   std::vector<float> logits(32, 0.0f);
-  logits[1] = 5.65594937f;
-  logits[4] = 11.31189874f;
+  logits[1] = 7.99936008f;
+  logits[4] = 15.99872017f;
   return logits;
 }
 
@@ -258,7 +258,7 @@ makeQwen3Case(const causallm_test::TinyCausalLMDataType &data_type) {
   return {
     "Qwen3_" + data_type.name,
     data_type,
-    {"hello", makeExpectedQwen3Logits(),
+    {"hello tok4", makeExpectedQwen3Logits(),
      data_type.name == "FP32" ? 1e-4f : 1e-3f},
     makeTinyQwen3Config,
     makeQwen3LayerDtypeMap,
