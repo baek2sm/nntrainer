@@ -37,7 +37,8 @@ $CargoArgs = @(
     "build",
     "--manifest-path", (Join-Path $CrateDir "Cargo.toml"),
     "--target-dir", $TargetDir,
-    "--release"
+    "--release",
+    "--locked"
 )
 
 if (-Not [string]::IsNullOrWhiteSpace($RustTarget)) {
