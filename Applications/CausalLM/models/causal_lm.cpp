@@ -107,15 +107,10 @@ void CausalLM::setupParameters(json &cfg, json &generation_cfg,
 
 void CausalLM::allocateAndBindKVCache() {
   if (!kv_cache.isAllocated()) {
-    // dtype matches mha_core's internal cache choice (kept consistent so
-    // saved caches stay binary-compatible across the 3-input/5-input modes).
+    // dtype matches mha_core's cache placeholders so external cache storage
+    // is interpreted consistently across platforms.
 #ifdef ENABLE_FP16
     const auto cache_dtype = ml::train::TensorDim::DataType::FP16;
-#elif defined(_WIN32)
-    // Qwen3 generation currently produces invalid tokens on Windows with the
-    // UINT16 KV cache path. Keep the host-side cache in FP32 on Windows until
-    // that path is fixed.
-    const auto cache_dtype = ml::train::TensorDim::DataType::FP32;
 #else
     const auto cache_dtype = ml::train::TensorDim::DataType::UINT16;
 #endif
@@ -158,6 +153,11 @@ void CausalLM::allocateAndBindKVCache() {
     NNTR_THROW_IF(kp == nullptr || vp == nullptr, std::runtime_error)
       << "allocateAndBindKVCache: cache_k_l" << i << " / cache_v_l" << i
       << " input placeholder not found in compiled graph";
+    NNTR_THROW_IF(kp->getDataType() != kc.getDataType() ||
+                    vp->getDataType() != vc.getDataType(),
+                  std::runtime_error)
+      << "allocateAndBindKVCache: cache placeholder dtype mismatch for layer "
+      << i;
 
     kp->setData(kc.getMemoryData(), kc.getOffset(), false);
     vp->setData(vc.getMemoryData(), vc.getOffset(), false);
@@ -166,16 +166,10 @@ void CausalLM::allocateAndBindKVCache() {
 
 void CausalLM::setKVCachePosition(unsigned int pos) {
   kv_cache.setPosition(pos);
-#if defined(_WIN32)
-  if (pos == 0)
-    return;
-  throw std::runtime_error(
-    "loading a non-zero KV cache position is not supported on Windows yet");
-#endif
   std::function<void(ml::train::Layer &, nntrainer::RunLayerContext &, void *)>
     fn = [pos](ml::train::Layer &l, nntrainer::RunLayerContext &, void *) {
       if (l.getType() == causallm::MHACoreLayer::type)
-        dynamic_cast<causallm::MHACoreLayer &>(l).setCacheIndex(pos);
+        l.setProperty({"cache_index=" + std::to_string(pos)});
     };
   model->forEachLayer(fn, nullptr);
 }

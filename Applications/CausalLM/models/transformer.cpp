@@ -302,26 +302,30 @@ Transformer::createKVCachePlaceholders(const int layer_id, int n_heads) {
   const unsigned int max_timestep = static_cast<unsigned int>(MAX_SEQ_LEN);
   const unsigned int kv_width =
     static_cast<unsigned int>(HEAD_DIM * n_heads / GQA_SIZE);
-
 #ifdef ENABLE_FP16
   ml::train::TensorDim cache_dim(
     {BATCH_SIZE, 1, max_timestep, kv_width},
     {ml::train::TensorDim::Format::NCHW, ml::train::TensorDim::DataType::FP16});
-#elif defined(_WIN32)
-  // Must match CausalLM::allocateAndBindKVCache(). The UINT16 KV cache path
-  // breaks Qwen3 generation on Windows today, so Windows placeholders use FP32.
-  ml::train::TensorDim cache_dim(
-    {BATCH_SIZE, 1, max_timestep, kv_width},
-    {ml::train::TensorDim::Format::NCHW, ml::train::TensorDim::DataType::FP32});
-#else
-  ml::train::TensorDim cache_dim({BATCH_SIZE, 1, max_timestep, kv_width},
-                                 {ml::train::TensorDim::Format::NCHW,
-                                  ml::train::TensorDim::DataType::UINT16});
-#endif
 
   Tensor cache_k(cache_dim, "cache_k_l" + std::to_string(layer_id));
   Tensor cache_v(cache_dim, "cache_v_l" + std::to_string(layer_id));
   return {cache_k, cache_v};
+#else
+  const std::string cache_shape = std::to_string(BATCH_SIZE) +
+                                  ":1:" + std::to_string(max_timestep) + ":" +
+                                  std::to_string(kv_width);
+
+  LayerHandle cache_k_input(createLayer(
+    "input",
+    {withKey("name", "cache_k_l" + std::to_string(layer_id)),
+     withKey("input_shape", cache_shape), withKey("input_dtype", "UINT16")}));
+  LayerHandle cache_v_input(createLayer(
+    "input",
+    {withKey("name", "cache_v_l" + std::to_string(layer_id)),
+     withKey("input_shape", cache_shape), withKey("input_dtype", "UINT16")}));
+
+  return {cache_k_input(Tensor()), cache_v_input(Tensor())};
+#endif
 }
 
 Tensor Transformer::createAttention(const int layer_id, int seq_len,

@@ -249,6 +249,12 @@ void SentenceTransformer::allocateAndBindKVCache() {
         "SentenceTransformer: KV cache placeholder not found for layer " +
         std::to_string(i));
     }
+    if (kp->getDataType() != kc.getDataType() ||
+        vp->getDataType() != vc.getDataType()) {
+      throw std::runtime_error(
+        "SentenceTransformer: KV cache placeholder dtype mismatch for layer " +
+        std::to_string(i));
+    }
 
     kp->setData(kc.getMemoryData(), kc.getOffset(), false);
     vp->setData(vc.getMemoryData(), vc.getOffset(), false);
