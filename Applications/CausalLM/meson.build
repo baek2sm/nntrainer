@@ -212,6 +212,7 @@ if get_option('enable-test')
       'unittest_causallm_models',
       [
         meson.source_root() / 'test' / 'unittest' / 'models' / 'causallm_test_utils.cpp',
+        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3.cpp',
       ],
       dependencies: [
         nntrainer_dep,
