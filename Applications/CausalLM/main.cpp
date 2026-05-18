@@ -154,16 +154,6 @@ std::string resolve_architecture(std::string model_type,
   return architecture;
 }
 
-static std::string apply_chat_template(const std::string &architecture,
-                                       const std::string &input) {
-  if (architecture == "Gemma3ForCausalLM") {
-    return "<bos><start_of_turn>user\n" + input +
-           "<end_of_turn>\n<start_of_turn>model\n";
-  }
-
-  return input;
-}
-
 int main(int argc, char *argv[]) {
 
   auto start_time = std::chrono::high_resolution_clock::now();
@@ -313,14 +303,11 @@ int main(int argc, char *argv[]) {
     // Determine input text
     if (argc >= 3) {
       input_text = argv[2];
-      if (architecture == "Gemma3ForCausalLM") {
-        input_text = apply_chat_template(architecture, argv[2]);
-      } else if (chat_tmpl.isAvailable()) {
-        // Apply chat template to raw user input if available
-        input_text = chat_tmpl.apply(input_text);
-      }
-      if (input_text.empty()) {
-        input_text = apply_chat_template(architecture, argv[2]);
+      if (chat_tmpl.isAvailable()) {
+        auto formatted_input = chat_tmpl.apply(input_text);
+        if (!formatted_input.empty()) {
+          input_text = formatted_input;
+        }
       }
     } else {
       if (nntr_cfg.contains("chat_input")) {

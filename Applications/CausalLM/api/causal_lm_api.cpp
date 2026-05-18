@@ -48,7 +48,6 @@ using json = nlohmann::json;
 static std::unique_ptr<causallm::Transformer> g_model;
 static std::mutex g_mutex;
 static bool g_initialized = false;
-static std::string g_architecture = "";
 static bool g_use_chat_template = false;
 static bool g_verbose = false;
 static std::string g_last_output = "";
@@ -144,14 +143,7 @@ static const char *get_model_name_from_type(ModelType type) {
   }
 }
 
-static std::string apply_chat_template(const std::string &architecture,
-                                       const std::string &input) {
-  if (architecture == "Gemma3ForCausalLM") {
-    return "<bos><start_of_turn>user\n" + input +
-           "<end_of_turn>\n<start_of_turn>model\n";
-  }
-
-  // Use dynamic chat template from tokenizer_config.json if available
+static std::string apply_chat_template(const std::string &input) {
   if (g_chat_template.isAvailable()) {
     std::string formatted_input = g_chat_template.apply(input);
     if (!formatted_input.empty()) {
@@ -159,19 +151,6 @@ static std::string apply_chat_template(const std::string &architecture,
     }
   }
 
-  // Fallback: hardcoded per-architecture templates
-  if (architecture == "LlamaForCausalLM") {
-    // Llama 2/3 chat format: [INST] {prompt} [/INST]
-    return "[INST] " + input + " [/INST]";
-  } else if (architecture == "Qwen2ForCausalLM" ||
-             architecture == "Qwen3ForCausalLM" ||
-             architecture == "Qwen3MoeForCausalLM" ||
-             architecture == "Qwen3SlimMoeForCausalLM" ||
-             architecture == "Qwen3CachedSlimMoeForCausalLM") {
-    // Qwen chat format
-    // <|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n
-    return "<|im_start|>user\n" + input + "<|im_end|>\n<|im_start|>assistant\n";
-  }
   return input;
 }
 
@@ -497,13 +476,15 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
       } else {
         std::cerr
           << "[Warning] tokenizer_config.json found but chat template could "
-             "not be loaded. Falling back to hardcoded templates."
+             "not be loaded. Chat formatting will not be applied to raw input."
           << std::endl;
       }
     } else {
       g_chat_template = causallm::ChatTemplate();
       std::cerr << "[Warning] tokenizer_config.json not found in "
-                << model_dir_path << ". Using hardcoded chat templates."
+                << model_dir_path
+                << ". Chat template will not be available for raw input "
+                   "formatting."
                 << std::endl;
     }
 
@@ -541,7 +522,6 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
     g_model->load_weight(weight_file);
 
     g_initialized = true;
-    g_architecture = architecture;
 
     auto finish_init = std::chrono::high_resolution_clock::now();
     auto init_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -573,7 +553,7 @@ ErrorCode runModel(const char *inputTextPrompt, const char **outputText) {
     std::string input(inputTextPrompt);
 
     if (g_use_chat_template) {
-      input = apply_chat_template(g_architecture, input);
+      input = apply_chat_template(input);
     }
 
     // We assume single batch request for this API.
