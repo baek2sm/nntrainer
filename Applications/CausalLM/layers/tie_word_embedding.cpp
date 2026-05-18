@@ -454,10 +454,10 @@ void TieWordEmbedding::save(std::ofstream &file,
             if (K == 1) {
               weight.save(file);
             } else {
-              NNTR_THROW_IF(N % 32 != 0 || K % 32 != 0, std::invalid_argument)
-                << "Q4_0 quantization requires both width and height to be "
-                   "divisible by 32, but got height="
-                << K << ", width=" << N;
+              NNTR_THROW_IF(N % 32 != 0, std::invalid_argument)
+                << "Q4_0 embedding quantization requires width to be "
+                   "divisible by 32, but got width="
+                << N;
               nntrainer::Tensor quant_weight(dim.batch(), dim.channel(), K, N,
                                              {nntrainer::Tformat::NCHW, dtype});
               nntrainer::quantize_q4_0(weight.getData<float>(),
