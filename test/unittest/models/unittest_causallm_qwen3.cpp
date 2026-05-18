@@ -4,7 +4,7 @@
  *
  * @file   unittest_causallm_qwen3.cpp
  * @date   15 May 2026
- * @brief  Tiny Qwen3 CausalLM model unit tests
+ * @brief  Tiny Qwen3 model unit tests
  * @see    https://github.com/nntrainer/nntrainer
  * @author SeungBaek Hong <sb92.hong@samsung.com>
  * @bug    No known bugs except for NYI items
@@ -17,12 +17,19 @@
 #include <layer.h>
 #include <layer_context.h>
 #include <qwen3_causallm.h>
+#include <qwen3_embedding.h>
 
 #include <algorithm>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <stdexcept>
 #include <utility>
 
+/**
+ * @brief Helpers for tiny Qwen3 model tests
+ */
 namespace {
 
 /**
@@ -188,6 +195,139 @@ public:
 };
 
 /**
+ * @brief Files generated for one tiny Qwen3 embedding test invocation
+ */
+struct TinyQwen3EmbeddingFiles {
+  std::filesystem::path dir;            /**< Temporary test directory */
+  std::filesystem::path tokenizer_path; /**< Tiny tokenizer.json path */
+  std::filesystem::path modules_path;   /**< Tiny modules.json path */
+  std::filesystem::path weight_path;    /**< Tiny model weight path */
+};
+
+/**
+ * @brief Tiny Qwen3 Embedding adapter for model-level tests
+ */
+class TinyQwen3Embedding final : public causallm::Qwen3Embedding {
+public:
+  /**
+   * @brief Construct a tiny Qwen3 Embedding test adapter
+   */
+  TinyQwen3Embedding(causallm::json &cfg, causallm::json &generation_cfg,
+                     causallm::json &nntr_cfg) :
+    causallm::Transformer(cfg, generation_cfg, nntr_cfg,
+                          causallm::ModelType::EMBEDDING),
+    causallm::Qwen3Embedding(cfg, generation_cfg, nntr_cfg) {}
+
+  /**
+   * @brief Initialize the tiny Qwen3 embedding model
+   */
+  void initializeModel() { initialize(); }
+
+  /**
+   * @brief Save tiny Qwen3 embedding weights with dtype conversion
+   */
+  void saveWeightWithDtype(
+    const std::string &path,
+    const std::map<std::string, ml::train::TensorDim::DataType>
+      &layer_dtype_map) {
+    save_weight(path, ml::train::TensorDim::DataType::NONE, layer_dtype_map);
+  }
+
+  /**
+   * @brief Load tiny Qwen3 embedding model weights
+   */
+  void loadWeight(const std::string &path) { load_weight(path); }
+
+  /**
+   * @brief Set deterministic tiny Qwen3 embedding weights
+   */
+  void setDeterministicWeights() {
+    auto set_weights = [](ml::train::Layer &layer,
+                          nntrainer::RunLayerContext &context, void *) {
+      for (unsigned int i = 0; i < context.getNumWeights(); ++i) {
+        auto &weight = context.getWeight(i);
+        if (weight.getDataType() != ml::train::TensorDim::DataType::FP32)
+          continue;
+
+        weight.setValue(0.0f);
+        if (layer.getType() == "rms_norm" ||
+            layer.getType() == "reshaped_rms_norm") {
+          weight.setValue(1.0f);
+        } else if (layer.getName() == "embedding0") {
+          weight.setValue(0, 0, 1, 0, 1.0f);
+          weight.setValue(0, 0, 4, 0, 2.0f);
+        }
+      }
+    };
+
+    model->forEachLayer(set_weights, nullptr);
+  }
+
+  /**
+   * @brief Encode one prompt and copy the embedding output
+   */
+  std::vector<float> encodePrompt(const std::string &prompt) {
+    auto output = encode(prompt);
+    std::vector<float> embedding(output[0], output[0] + BATCH_SIZE * DIM);
+    for (auto &out : output)
+      delete[] out;
+    return embedding;
+  }
+};
+
+/**
+ * @brief Write a string into a file
+ */
+void writeTextFile(const std::filesystem::path &path,
+                   const std::string &content) {
+  std::ofstream file(path, std::ios::binary);
+  if (!file)
+    throw std::runtime_error("failed to open " + path.string());
+
+  file << content;
+  if (!file.good())
+    throw std::runtime_error("failed to write " + path.string());
+}
+
+/**
+ * @brief Make tiny SentenceTransformer module config files
+ */
+std::filesystem::path
+writeTinyQwen3EmbeddingModules(const std::filesystem::path &dir) {
+  auto modules_path = dir / "modules.json";
+  auto pooling_dir = dir / "1_Pooling";
+  std::filesystem::create_directories(pooling_dir);
+
+  writeTextFile(modules_path, R"([
+  {
+    "idx": 0,
+    "name": "0",
+    "path": "",
+    "type": "sentence_transformers.models.Transformer"
+  },
+  {
+    "idx": 1,
+    "name": "1",
+    "path": "1_Pooling",
+    "type": "sentence_transformers.models.Pooling"
+  }
+])");
+
+  writeTextFile(pooling_dir / "config.json", R"({
+  "word_embedding_dimension": 64,
+  "pooling_mode_cls_token": false,
+  "pooling_mode_mean_tokens": false,
+  "pooling_mode_max_tokens": false,
+  "pooling_mode_mean_sqrt_len_tokens": false,
+  "pooling_mode_weightedmean_tokens": false,
+  "pooling_mode_lasttoken": true,
+  "include_prompt": true
+})");
+
+  return modules_path;
+}
+
+/**
  * @brief Make the tiny Qwen3 model config
  */
 causallm::json makeTinyQwen3Config() {
@@ -208,6 +348,52 @@ causallm::json makeTinyQwen3Config() {
     {"tie_word_embeddings", true},
     {"vocab_size", 32},
   };
+}
+
+/**
+ * @brief Make the tiny Qwen3 embedding model config
+ */
+causallm::json makeTinyQwen3EmbeddingConfig() {
+  auto cfg = makeTinyQwen3Config();
+  cfg["vocab_size"] = 33;
+  return cfg;
+}
+
+/**
+ * @brief Make tiny Qwen3 embedding test files
+ */
+TinyQwen3EmbeddingFiles makeQwen3EmbeddingFiles() {
+  const auto *info = ::testing::UnitTest::GetInstance()->current_test_info();
+  std::string suite_name = "Qwen3EmbeddingTinyModelTest";
+  std::string test_name = "Unknown";
+
+  if (info != nullptr) {
+    suite_name = info->test_suite_name();
+    test_name = info->name();
+  }
+
+  auto files = causallm_test::makeTinyCausalLMFiles(suite_name, test_name,
+                                                    "Qwen3Embedding_Q40_FP32");
+
+  return {
+    files.dir,
+    files.tokenizer_path,
+    writeTinyQwen3EmbeddingModules(files.dir),
+    files.dir / "qwen3_embedding_tiny.bin",
+  };
+}
+
+/**
+ * @brief Make the tiny Qwen3 embedding nntrainer config
+ */
+causallm::json makeTinyQwen3EmbeddingNntrainerConfig(
+  const TinyQwen3EmbeddingFiles &files,
+  const causallm_test::TinyCausalLMDataType &data_type) {
+  auto cfg =
+    causallm_test::makeTinyNntrainerConfig(files.tokenizer_path, data_type);
+  cfg["model_type"] = "Embedding";
+  cfg["module_config_path"] = files.modules_path.string();
+  return cfg;
 }
 
 /**
@@ -238,6 +424,57 @@ makeQwen3LayerDtypeMap(const causallm_test::TinyCausalLMDataType &data_type) {
       causallm_test::toTensorDataType(data_type.lmhead_dtype);
 
   return dtype_map;
+}
+
+/**
+ * @brief Make the tiny Qwen3 embedding Q4_0 layer dtype map
+ */
+std::map<std::string, ml::train::TensorDim::DataType>
+makeQwen3EmbeddingQ40LayerDtypeMap() {
+  std::map<std::string, ml::train::TensorDim::DataType> dtype_map;
+  const auto dtype = ml::train::TensorDim::DataType::Q4_0;
+
+  dtype_map["embedding0"] = dtype;
+  dtype_map["layer0_wq"] = dtype;
+  dtype_map["layer0_wk"] = dtype;
+  dtype_map["layer0_wv"] = dtype;
+  dtype_map["layer0_attention_out"] = dtype;
+  dtype_map["layer0_ffn_up"] = dtype;
+  dtype_map["layer0_ffn_gate"] = dtype;
+  dtype_map["layer0_ffn_down"] = dtype;
+
+  return dtype_map;
+}
+
+/**
+ * @brief Create a loaded tiny Qwen3 embedding model
+ */
+std::unique_ptr<TinyQwen3Embedding>
+makeLoadedQwen3Embedding(const TinyQwen3EmbeddingFiles &files) {
+  const auto fp32_data_type = causallm_test::makeTinyFp32DataType();
+  const auto q40_data_type = causallm_test::makeTinyQ40Fp32DataType();
+  auto source_model_cfg = makeTinyQwen3EmbeddingConfig();
+  auto source_generation_cfg = causallm_test::makeTinyGenerationConfig();
+  auto source_nntr_cfg =
+    makeTinyQwen3EmbeddingNntrainerConfig(files, fp32_data_type);
+
+  TinyQwen3Embedding source(source_model_cfg, source_generation_cfg,
+                            source_nntr_cfg);
+  source.initializeModel();
+  source.setDeterministicWeights();
+  source.saveWeightWithDtype(files.weight_path.string(),
+                             makeQwen3EmbeddingQ40LayerDtypeMap());
+
+  auto loaded_model_cfg = makeTinyQwen3EmbeddingConfig();
+  auto loaded_generation_cfg = causallm_test::makeTinyGenerationConfig();
+  auto loaded_nntr_cfg =
+    makeTinyQwen3EmbeddingNntrainerConfig(files, q40_data_type);
+  auto loaded = std::make_unique<TinyQwen3Embedding>(
+    loaded_model_cfg, loaded_generation_cfg, loaded_nntr_cfg);
+  loaded->initializeModel();
+  loaded->loadWeight(files.weight_path.string());
+
+  return loaded;
 }
 
 /**
@@ -329,5 +566,25 @@ INSTANTIATE_TEST_SUITE_P(
   [](const ::testing::TestParamInfo<causallm_test::TinyCausalLMCase> &info) {
     return info.param.name;
   });
+
+/**
+ * @brief Test that a tiny Qwen3 embedding model can save/load and encode
+ */
+TEST(Qwen3EmbeddingTinyModelTest,
+     WeightRoundTripEncodesPromptWithQ40VocabRemainder) {
+  const auto files = makeQwen3EmbeddingFiles();
+  auto model = makeLoadedQwen3Embedding(files);
+
+  std::vector<float> embedding;
+  ASSERT_NO_THROW(embedding = model->encodePrompt("hello tok4"));
+  ASSERT_EQ(embedding.size(), 64u);
+
+  bool has_non_zero_value = false;
+  for (float value : embedding) {
+    EXPECT_TRUE(std::isfinite(value));
+    has_non_zero_value = has_non_zero_value || std::abs(value) > 1e-5f;
+  }
+  EXPECT_TRUE(has_non_zero_value);
+}
 
 } // namespace
