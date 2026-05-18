@@ -728,7 +728,6 @@ void NeuralNetwork::load(const std::string &file_path,
         // for tensor with qparam
         size += sizeof(uint16_t);
       }
-      weight->getVariableRef().setFileOffset(start_from);
       file_offset.emplace_back(std::make_pair(start_from, size));
       start_from += size;
     }
