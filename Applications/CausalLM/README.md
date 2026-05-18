@@ -40,7 +40,7 @@ When a `tokenizer_config.json` is present in the model directory:
 - **CLI (`nntr_causallm`)**: Raw user input provided as a command-line argument is automatically wrapped with the chat template.
 - **C API**: The `apply_chat_template()` function uses the dynamic template instead of hardcoded formats.
 
-If `tokenizer_config.json` is absent or does not contain a `chat_template` field, a warning is printed and the system falls back to hardcoded per-architecture templates (Llama, Qwen, Gemma3).
+If `tokenizer_config.json` is absent or does not contain a `chat_template` field, a warning is printed and raw input is passed through unchanged.
 
 ### Supported Template Features
 
