@@ -108,6 +108,13 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
     IS_CAUSAL = cfg["is_causal"].get<bool>();
   } else if (cfg.contains("use_bidirectional_attention")) {
     IS_CAUSAL = !cfg["use_bidirectional_attention"].get<bool>();
+  } else if (nntr_cfg.contains("model_type") &&
+             strToModelType(nntr_cfg["model_type"].get<std::string>()) ==
+               ModelType::EMBEDDING &&
+             cfg.contains("architectures") && cfg["architectures"].is_array() &&
+             !cfg["architectures"].empty() &&
+             cfg["architectures"][0].get<std::string>() == "Qwen2Model") {
+    IS_CAUSAL = false;
   }
 
   NUM_VOCAB = cfg["vocab_size"];
