@@ -40,6 +40,8 @@
 #include <limits.h>
 #include <util_simd.h>
 
+#include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace causallm {
@@ -387,6 +389,18 @@ private:
 
   /****************** ROTARY EMBEDDING *****************/
   /** static variable - they are all expected to be initialized once */
+  /**
+   * @brief Rotary frequency cache for FP32 and optional FP16 lookup tables
+   */
+  struct RopeFreqCache {
+    std::vector<std::vector<float>> cos;
+    std::vector<std::vector<float>> sin;
+#ifdef ENABLE_FP16
+    std::vector<std::vector<_FP16>> cos_fp16;
+    std::vector<std::vector<_FP16>> sin_fp16;
+#endif
+  };
+  inline static std::unordered_map<std::string, RopeFreqCache> rope_freq_cache;
   inline static std::vector<std::vector<float>> *freqs_cos = {};
   inline static std::vector<std::vector<float>> *freqs_sin = {};
   inline static std::vector<float> thetas;

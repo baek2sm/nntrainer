@@ -146,9 +146,17 @@ static const char *get_model_name_from_type(ModelType type) {
 
 static std::string apply_chat_template(const std::string &architecture,
                                        const std::string &input) {
+  if (architecture == "Gemma3ForCausalLM") {
+    return "<bos><start_of_turn>user\n" + input +
+           "<end_of_turn>\n<start_of_turn>model\n";
+  }
+
   // Use dynamic chat template from tokenizer_config.json if available
   if (g_chat_template.isAvailable()) {
-    return g_chat_template.apply(input);
+    std::string formatted_input = g_chat_template.apply(input);
+    if (!formatted_input.empty()) {
+      return formatted_input;
+    }
   }
 
   // Fallback: hardcoded per-architecture templates
@@ -163,11 +171,6 @@ static std::string apply_chat_template(const std::string &architecture,
     // Qwen chat format
     // <|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n
     return "<|im_start|>user\n" + input + "<|im_end|>\n<|im_start|>assistant\n";
-  } else if (architecture == "Gemma3ForCausalLM") {
-    // Gemma chat format:
-    // <start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n
-    return "<start_of_turn>user\n" + input +
-           "<end_of_turn>\n<start_of_turn>model\n";
   }
   return input;
 }
