@@ -23,6 +23,20 @@ json &Gemma3Transformer::sanitizeConfig(json &cfg) {
   if (!cfg.contains("tie_word_embeddings")) {
     cfg["tie_word_embeddings"] = true;
   }
+  if (!cfg.contains("layer_types") && cfg.contains("sliding_window_pattern") &&
+      cfg.contains("num_hidden_layers")) {
+    const unsigned int num_layers = cfg["num_hidden_layers"];
+    const unsigned int sliding_window_pattern = cfg["sliding_window_pattern"];
+    std::vector<std::string> layer_types;
+    layer_types.reserve(num_layers);
+    for (unsigned int i = 0; i < num_layers; ++i) {
+      layer_types.push_back(sliding_window_pattern != 0 &&
+                                (i + 1) % sliding_window_pattern == 0
+                              ? "full_attention"
+                              : "sliding_attention");
+    }
+    cfg["layer_types"] = layer_types;
+  }
   return cfg;
 }
 
@@ -52,6 +66,7 @@ json &Gemma3Transformer::sanitizeGenerationConfig(json &gen_cfg,
 void Gemma3Transformer::setupParameters(json &cfg, json &generation_cfg,
                                         json &nntr_cfg) {
   Transformer::setupParameters(cfg, generation_cfg, nntr_cfg);
+  EMBEDDING_SCALE = std::sqrt(static_cast<float>(DIM));
   if (cfg.contains("layer_types")) {
     layer_types = cfg["layer_types"].get<std::vector<std::string>>();
   }

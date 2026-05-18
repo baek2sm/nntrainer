@@ -853,64 +853,71 @@ void MHACoreLayer::one_batch_incremental_forwarding(
  */
 void MHACoreLayer::precompute_freqs(int head_dim, unsigned int seq_len,
                                     float theta, bool is_fp16) {
-  // compute the freqs only when it is the first time to call this function
-#ifdef ENABLE_FP16
-  if (freqs_cos_fp16 != nullptr && freqs_cos_fp16->size() == seq_len)
-    return;
-#else
-  if (freqs_cos != nullptr && freqs_cos->size() == seq_len)
-    return;
-#endif
+  const std::string cache_key =
+    std::string(is_fp16 ? "fp16:" : "fp32:") + std::to_string(head_dim) + ":" +
+    std::to_string(seq_len) + ":" + std::to_string(theta) + ":" +
+    rope_scaling_type + ":" + std::to_string(scale) + ":" +
+    std::to_string(original_max_position_embeddings);
 
-  if (thetas.empty()) {
-    if (rope_scaling_type == "default")
-      _compute_default_parameters(head_dim, theta);
-    else if (rope_scaling_type == "yarn")
-      _compute_yarn_parameters(head_dim, theta);
-    else
-      NNTR_THROW_IF(true, std::invalid_argument) << "Unsupported rope type!";
+  auto cache_iter = rope_freq_cache.find(cache_key);
+  if (cache_iter != rope_freq_cache.end()) {
+    if (is_fp16) {
+#ifdef ENABLE_FP16
+      freqs_cos_fp16 = &cache_iter->second.cos_fp16;
+      freqs_sin_fp16 = &cache_iter->second.sin_fp16;
+#endif
+    } else {
+      freqs_cos = &cache_iter->second.cos;
+      freqs_sin = &cache_iter->second.sin;
+    }
+    return;
   }
 
+  thetas.clear();
+  if (rope_scaling_type == "default")
+    _compute_default_parameters(head_dim, theta);
+  else if (rope_scaling_type == "yarn")
+    _compute_yarn_parameters(head_dim, theta);
+  else
+    NNTR_THROW_IF(true, std::invalid_argument) << "Unsupported rope type!";
+
   unsigned int half_ = head_dim / 2;
+  auto &cache = rope_freq_cache[cache_key];
 
   if (!is_fp16) {
     // cos / sin
-    auto cos = new std::vector<std::vector<float>>();
-    cos->assign(seq_len, std::vector<float>(head_dim, 0));
-    auto sin = new std::vector<std::vector<float>>();
-    sin->assign(seq_len, std::vector<float>(head_dim, 0));
+    cache.cos.assign(seq_len, std::vector<float>(head_dim, 0));
+    cache.sin.assign(seq_len, std::vector<float>(head_dim, 0));
 
     // update cos / sin frequency
     for (unsigned int i = 0; i < seq_len; ++i) {
 
 #ifdef USE_NEON
-      nntrainer::calc_trigonometric_vals_dup(half_, thetas.data(),
-                                             (*cos)[i].data(), (*sin)[i].data(),
-                                             i, attention_scaling);
+      nntrainer::calc_trigonometric_vals_dup(
+        half_, thetas.data(), cache.cos[i].data(), cache.sin[i].data(), i,
+        attention_scaling);
 #else
       for (unsigned int j = 0; j < half_; ++j) {
         float angle = i * thetas[j];
-        (*cos)[i][j] = std::cos(angle) * attention_scaling;
-        (*cos)[i][j + half_] =
+        cache.cos[i][j] = std::cos(angle) * attention_scaling;
+        cache.cos[i][j + half_] =
           std::cos(angle) * attention_scaling; // repeated 2 times
 
-        (*sin)[i][j] = std::sin(angle) * attention_scaling;
-        (*sin)[i][j + half_] =
+        cache.sin[i][j] = std::sin(angle) * attention_scaling;
+        cache.sin[i][j + half_] =
           std::sin(angle) * attention_scaling; // repeated 2 times
       }
 #endif
     }
-    freqs_cos = cos;
-    freqs_sin = sin;
+    freqs_cos = &cache.cos;
+    freqs_sin = &cache.sin;
   }
 
 #ifdef ENABLE_FP16
   if (is_fp16) {
     // cos / sin for FP16
-    auto cos_fp16 = new std::vector<std::vector<_FP16>>();
-    cos_fp16->assign(seq_len, std::vector<_FP16>(head_dim, 0));
-    auto sin_fp16 = new std::vector<std::vector<_FP16>>();
-    sin_fp16->assign(seq_len, std::vector<_FP16>(head_dim, 0));
+    cache.cos_fp16.assign(seq_len, std::vector<_FP16>(head_dim, 0));
+    cache.sin_fp16.assign(seq_len, std::vector<_FP16>(head_dim, 0));
 
     std::vector<float> cos_tmp(head_dim);
     std::vector<float> sin_tmp(head_dim);
@@ -933,12 +940,12 @@ void MHACoreLayer::precompute_freqs(int head_dim, unsigned int seq_len,
       }
 #endif
       for (unsigned int j = 0; j < head_dim; ++j) {
-        (*cos_fp16)[i][j] = (_FP16)cos_tmp[j];
-        (*sin_fp16)[i][j] = (_FP16)sin_tmp[j];
+        cache.cos_fp16[i][j] = (_FP16)cos_tmp[j];
+        cache.sin_fp16[i][j] = (_FP16)sin_tmp[j];
       }
     }
-    freqs_cos_fp16 = cos_fp16;
-    freqs_sin_fp16 = sin_fp16;
+    freqs_cos_fp16 = &cache.cos_fp16;
+    freqs_sin_fp16 = &cache.sin_fp16;
   }
 #endif
 };
@@ -1061,11 +1068,13 @@ void MHACoreLayer::apply_rotary_emb_tensor_v2(nntrainer::Tensor &in,
     std::get<nntrainer::props::MaxTimestep>(mha_core_props).get();
 
   if (in.getDataType() == ml::train::TensorDim::DataType::FP32) {
-    if (freqs_cos == nullptr) {
+    std::vector<std::vector<float>> *freqs_cos_local = nullptr;
+    std::vector<std::vector<float>> *freqs_sin_local = nullptr;
+    {
       const std::lock_guard<std::mutex> lock(rope_init_mtx);
-      if (freqs_cos == nullptr) {
-        precompute_freqs(head_dim, max_position_embeddings, theta, false);
-      }
+      precompute_freqs(head_dim, max_position_embeddings, theta, false);
+      freqs_cos_local = freqs_cos;
+      freqs_sin_local = freqs_sin;
     }
     std::vector<float> *cos_ = nullptr;
     std::vector<float> *sin_ = nullptr;
@@ -1074,8 +1083,8 @@ void MHACoreLayer::apply_rotary_emb_tensor_v2(nntrainer::Tensor &in,
       for (unsigned int c = 0; c < in.channel(); c++) {
         for (unsigned int h = 0; h < in.height(); h++) {
           if (from < max_timestep) {
-            cos_ = &(*freqs_cos)[from + h];
-            sin_ = &(*freqs_sin)[from + h];
+            cos_ = &(*freqs_cos_local)[from + h];
+            sin_ = &(*freqs_sin_local)[from + h];
           }
           float *in_ptr = in.getData<float>() +
                           b * in.channel() * in.height() * in.width() +
@@ -1112,11 +1121,13 @@ void MHACoreLayer::apply_rotary_emb_tensor_v2(nntrainer::Tensor &in,
     }
   } else if (in.getDataType() == ml::train::TensorDim::DataType::FP16) {
 #ifdef ENABLE_FP16
-    if (freqs_cos_fp16 == nullptr) {
+    std::vector<std::vector<_FP16>> *freqs_cos_fp16_local = nullptr;
+    std::vector<std::vector<_FP16>> *freqs_sin_fp16_local = nullptr;
+    {
       const std::lock_guard<std::mutex> lock(rope_init_mtx);
-      if (freqs_cos_fp16 == nullptr) {
-        precompute_freqs(head_dim, max_position_embeddings, theta, true);
-      }
+      precompute_freqs(head_dim, max_position_embeddings, theta, true);
+      freqs_cos_fp16_local = freqs_cos_fp16;
+      freqs_sin_fp16_local = freqs_sin_fp16;
     }
     std::vector<_FP16> *cos_ = nullptr;
     std::vector<_FP16> *sin_ = nullptr;
@@ -1125,8 +1136,8 @@ void MHACoreLayer::apply_rotary_emb_tensor_v2(nntrainer::Tensor &in,
       for (unsigned int c = 0; c < in.channel(); c++) {
         for (unsigned int h = 0; h < in.height(); h++) {
           if (from < max_timestep) {
-            cos_ = &(*freqs_cos_fp16)[from + h];
-            sin_ = &(*freqs_sin_fp16)[from + h];
+            cos_ = &(*freqs_cos_fp16_local)[from + h];
+            sin_ = &(*freqs_sin_fp16_local)[from + h];
           }
           _FP16 *in_ptr = in.getData<_FP16>() +
                           b * in.channel() * in.height() * in.width() +

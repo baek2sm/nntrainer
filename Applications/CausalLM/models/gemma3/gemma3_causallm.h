@@ -12,6 +12,8 @@
 #ifndef __GEMMA3_CAUSAL_LM_H__
 #define __GEMMA3_CAUSAL_LM_H__
 
+#include <cmath>
+
 #include <causal_lm.h>
 
 namespace causallm {

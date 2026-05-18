@@ -131,6 +131,15 @@ std::string buildModelTensorType(const std::string &fc_dtype) {
 }
 
 /**
+ * @brief Return lowercase copy of a string
+ */
+std::string toLower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return value;
+}
+
+/**
  * @brief Generate a descriptive output bin filename
  */
 std::string generateOutputBinName(const std::string &original_bin,
@@ -199,6 +208,17 @@ std::string resolve_architecture(std::string model_type,
         "Unsupported architecture for embedding model: " + architecture);
   }
   return architecture;
+}
+
+/**
+ * @brief Return the final component of a dotted Python class name
+ */
+std::string getLastComponent(const std::string &type) {
+  const size_t last_dot_pos = type.find_last_of('.');
+  if (last_dot_pos == std::string::npos)
+    return type;
+
+  return type.substr(last_dot_pos + 1);
 }
 
 /**
@@ -340,7 +360,7 @@ void printUsage(const char *prog) {
  */
 std::map<std::string, DataType>
 buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
-                   DataType lmhead_dtype, bool tie_word_embeddings) {
+                   DataType lmhead_dtype, bool include_lmhead) {
 
   std::map<std::string, DataType> dtype_map;
 
@@ -368,11 +388,57 @@ buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
   }
 
   // LM Head layer
-  if (lmhead_dtype != DataType::FP32 && lmhead_dtype != DataType::NONE) {
+  if (include_lmhead && lmhead_dtype != DataType::FP32 &&
+      lmhead_dtype != DataType::NONE) {
     dtype_map["output_of_causallm"] = lmhead_dtype;
   }
 
   return dtype_map;
+}
+
+/**
+ * @brief Add SentenceTransformer module dtype overrides to the dtype map
+ */
+void addSentenceTransformerLayerDtypes(std::map<std::string, DataType> &map,
+                                       const json &nntr_cfg,
+                                       const std::string &model_path,
+                                       DataType fc_dtype) {
+  if (fc_dtype == DataType::FP32 || fc_dtype == DataType::NONE ||
+      !nntr_cfg.contains("module_config_path")) {
+    return;
+  }
+
+  std::filesystem::path modules_config_path =
+    nntr_cfg["module_config_path"].get<std::string>();
+  if (modules_config_path.is_relative()) {
+    modules_config_path =
+      std::filesystem::path(model_path) / modules_config_path;
+  }
+
+  json modules_json = causallm::LoadJsonFile(modules_config_path.string());
+  auto modules = modules_json.get<std::vector<json>>();
+  for (const auto &module : modules) {
+    if (!module.contains("type"))
+      continue;
+
+    const std::string component =
+      getLastComponent(module["type"].get<std::string>());
+    if (component != "Dense")
+      continue;
+
+    std::string layer_name;
+    if (module.contains("name")) {
+      layer_name = module["name"].get<std::string>();
+    } else if (module.contains("idx")) {
+      layer_name = "sentence_module_" +
+                   std::to_string(module["idx"].get<int>()) + "_" + component;
+    } else {
+      throw std::runtime_error(
+        "Dense SentenceTransformer module has neither name nor idx.");
+    }
+
+    map[layer_name] = fc_dtype;
+  }
 }
 
 } // anonymous namespace
@@ -485,11 +551,10 @@ int main(int argc, char *argv[]) {
     std::string dst_weight_path = output_dir + "/" + output_bin_name;
 
     int num_layers = cfg["num_hidden_layers"].get<int>();
-    bool tie_word_embeddings = cfg["tie_word_embeddings"].get<bool>();
+    std::string architecture =
+      cfg["architectures"].get<std::vector<std::string>>()[0];
 
-    std::cout << "  Architecture: "
-              << cfg["architectures"].get<std::vector<std::string>>()[0]
-              << "\n";
+    std::cout << "  Architecture: " << architecture << "\n";
     std::cout << "  Num layers:   " << num_layers << "\n";
     std::cout << "  Source:       " << src_weight_path << "\n";
     std::cout << "  Target:       " << dst_weight_path << "\n";
@@ -505,8 +570,6 @@ int main(int argc, char *argv[]) {
 
     registerAllModels();
 
-    std::string architecture =
-      cfg["architectures"].get<std::vector<std::string>>()[0];
     if (nntr_cfg.contains("model_type")) {
       std::string model_type = nntr_cfg["model_type"].get<std::string>();
       architecture = resolve_architecture(model_type, architecture);
@@ -535,8 +598,16 @@ int main(int argc, char *argv[]) {
     std::cout << "[4/5] Quantizing and saving weights to: " << dst_weight_path
               << "\n";
 
-    auto layer_dtype_map = buildLayerDtypeMap(
-      num_layers, fc_dtype, embd_dtype, lmhead_dtype, tie_word_embeddings);
+    bool include_lmhead = true;
+    if (nntr_cfg.contains("model_type") &&
+        toLower(nntr_cfg["model_type"].get<std::string>()) == "embedding") {
+      include_lmhead = false;
+    }
+
+    auto layer_dtype_map = buildLayerDtypeMap(num_layers, fc_dtype, embd_dtype,
+                                              lmhead_dtype, include_lmhead);
+    addSentenceTransformerLayerDtypes(layer_dtype_map, nntr_cfg, model_path,
+                                      fc_dtype);
 
     std::cout << "  Layer dtype mapping (" << layer_dtype_map.size()
               << " layers targeted):\n";

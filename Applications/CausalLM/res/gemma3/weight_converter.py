@@ -37,14 +37,14 @@ def save_gemma3_for_nntrainer(params, config, dtype, file, save_lm_head=True):
         save_weight(params[f"{layer_name}input_layernorm.weight"], is_rms=True)
 
         # Save in NNTrainer graph order:
-        # attention_norm -> Q -> K -> V -> q_norm -> k_norm -> O
+        # attention_norm -> Q -> q_norm -> K -> k_norm -> V -> O
         save_projection(layer_name, "self_attn.q_proj")
-        save_projection(layer_name, "self_attn.k_proj")
-        save_projection(layer_name, "self_attn.v_proj")
         if f"{layer_name}self_attn.q_norm.weight" in params:
             save_weight(params[f"{layer_name}self_attn.q_norm.weight"], is_rms=True)
+        save_projection(layer_name, "self_attn.k_proj")
         if f"{layer_name}self_attn.k_norm.weight" in params:
             save_weight(params[f"{layer_name}self_attn.k_norm.weight"], is_rms=True)
+        save_projection(layer_name, "self_attn.v_proj")
         save_projection(layer_name, "self_attn.o_proj")
 
     def save_feed_forward(layer_name):
@@ -65,7 +65,7 @@ def save_gemma3_for_nntrainer(params, config, dtype, file, save_lm_head=True):
         save_feed_forward(layer_prefix)
 
     save_weight(params["model.norm.weight"], is_rms=True)
-    if save_lm_head:
+    if save_lm_head and "lm_head.weight" in params:
         save_weight(params["lm_head.weight"].permute(1, 0))
 
 
@@ -124,7 +124,13 @@ if __name__ == "__main__":
         print(model)
 
         with open(output_name, "wb") as f_model :
-            save_gemma3_for_nntrainer(model.state_dict(), config, data_dtype, f_model)
+            save_gemma3_for_nntrainer(
+                model.state_dict(),
+                config,
+                data_dtype,
+                f_model,
+                save_lm_head=not getattr(config, "tie_word_embeddings", False),
+            )
     else:
         from sentence_transformers import SentenceTransformer
 
