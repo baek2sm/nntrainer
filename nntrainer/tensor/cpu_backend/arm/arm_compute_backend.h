@@ -1358,7 +1358,7 @@ void quantize_row_q8_K(const T *src, void *dst, int64_t k);
  * @param data_size total weight size
  * @param M number of rows
  * @param N number of columns
- * @param target target ISA for repacking (AUTO=ARM native format)
+ * @param target target ISA for repacking (DEFAULT=ARM native format)
  */
 void repack_q4_0(void *dst, void *src, size_t data_size, const unsigned int M,
                  const unsigned int N,

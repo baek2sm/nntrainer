@@ -480,6 +480,7 @@ void repack_q4_0(void *dst, void *src, size_t data_size, const unsigned int M,
   case ml::train::ISA::DEFAULT:
     // Use ARM format (q4_0x4)
     __ggml_repack_q4_0_to_q4_0_4(dst, src, data_size, M, N);
+    break;
   default:
     break;
   }

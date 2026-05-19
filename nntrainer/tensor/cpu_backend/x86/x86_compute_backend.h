@@ -1104,8 +1104,8 @@ void quantize_row_q8_K(const T *src, void *dst, int64_t k);
  * @param data_size total weight size
  * @param M number of rows
  * @param N number of columns
- * @param target target ISA format (AUTO uses current backend, X86 forces x86
- * format, ARM forces ARM format)
+ * @param target target ISA format (DEFAULT uses current backend, X86 forces
+ * x86 format, ARM forces ARM format)
  */
 
 void repack_q4_0(void *dst, void *src, size_t data_size, const unsigned int M,
