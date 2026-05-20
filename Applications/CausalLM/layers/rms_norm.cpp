@@ -83,8 +83,6 @@ void RMSNormLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
       nntrainer::rms_norm_wrt_width_fp32_intrinsic(
         in_step.getData<float>(), out_step.getData<float>(), dim.height(),
         dim.width(), epsilon);
-
-      throw std::invalid_argument("Error: enable-fp16 is not set");
 #endif
     } else {
       throw std::invalid_argument(
