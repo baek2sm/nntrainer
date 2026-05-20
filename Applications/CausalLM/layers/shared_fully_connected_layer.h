@@ -80,7 +80,7 @@ public:
             bool read_from_offset = false, int file_fd = -1) override;
 
   /**
-   * @copydic Layer::save()
+   * @copydoc Layer::save()
    */
   void save(std::ofstream &file, nntrainer::RunLayerContext &run_context,
             bool opt_var, ml::train::ExecutionMode mode, bool trainable,
