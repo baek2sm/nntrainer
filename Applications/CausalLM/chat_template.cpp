@@ -146,6 +146,9 @@ bool shouldAddGenerationPrompt(const OrderedJson &messages,
 
 } // namespace
 
+/**
+ * @brief Stores parsed template data and cached minja renderers.
+ */
 struct ChatTemplate::Impl {
   std::string model_path;
   std::string source_path;
