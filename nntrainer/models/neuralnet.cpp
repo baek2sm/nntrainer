@@ -69,6 +69,9 @@
 #define ML_TRAIN_SUMMARY_MODEL_VALID_LOSS 102
 #define ML_TRAIN_SUMMARY_MODEL_VALID_ACCURACY 103
 
+/**
+ * @brief Namespace for nntrainer core components
+ */
 namespace nntrainer {
 
 namespace {
@@ -940,7 +943,8 @@ void NeuralNetwork::load(const std::string &file_path,
       if (tensor_data_type != TensorDim::DataType::FP32 &&
           tensor_data_type != TensorDim::DataType::FP16 &&
           tensor_data_type != TensorDim::DataType::Q6_K &&
-          tensor_data_type != TensorDim::DataType::Q4_0) {
+          tensor_data_type != TensorDim::DataType::Q4_0 &&
+          tensor_data_type != TensorDim::DataType::Q8_0) {
         // for tensor with qparam
         size += sizeof(uint16_t);
       }
