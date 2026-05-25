@@ -363,7 +363,9 @@ void EmbeddingLayer::forwarding(nntrainer::RunLayerContext &context,
           input_.getAddress<float>(b * input_.getDim().getFeatureLen());
         nntrainer::Tensor batchsliced_hidden = hidden_.getBatchSlice(b, 1);
 
+#ifdef _OPENMP
 #pragma omp parallel for
+#endif
         for (int i = 0; i < (int)seq_len; ++i) {
           const size_t embed_idx = static_cast<size_t>(in_data[i]);
           if (embed_idx >= in_dim) {
@@ -419,7 +421,9 @@ void EmbeddingLayer::forwarding(nntrainer::RunLayerContext &context,
           input_.getAddress<float>(b * input_.getDim().getFeatureLen());
         nntrainer::Tensor batchsliced_hidden = hidden_.getBatchSlice(b, 1);
 
+#ifdef _OPENMP
 #pragma omp parallel for
+#endif
         for (int i = 0; i < (int)seq_len; ++i) {
           const size_t embed_idx = static_cast<size_t>(in_data[i]);
           if (embed_idx >= in_dim) {
@@ -505,7 +509,9 @@ void EmbeddingLayer::forwarding(nntrainer::RunLayerContext &context,
         input_.getAddress<float>(b * input_.getDim().getFeatureLen());
       nntrainer::Tensor batchsliced_hidden = hidden_.getBatchSlice(b, 1);
 
+#ifdef _OPENMP
 #pragma omp parallel for
+#endif
       for (int i = 0; i < (int)seq_len; ++i) {
         const size_t embed_idx = static_cast<size_t>(in_data[i]);
         if (embed_idx >= in_dim) {
@@ -608,7 +614,9 @@ void EmbeddingLayer::forwarding(nntrainer::RunLayerContext &context,
       input_.getAddress<float>(b * input_.getDim().getFeatureLen());
     nntrainer::Tensor batchsliced_hidden = hidden_.getBatchSlice(b, 1);
 
+#ifdef _OPENMP
 #pragma omp parallel for
+#endif
     for (int i = 0; i < (int)seq_len; ++i) {
       size_t embed_idx = static_cast<size_t>(in_data[i]);
       if (embed_idx >= in_dim) {
@@ -686,7 +694,9 @@ void EmbeddingLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
         nntrainer::Tensor batchsliced_hidden = hidden_.getBatchSlice(b, 1);
         const int iter = static_cast<int>(to - from);
 
+#ifdef _OPENMP
 #pragma omp parallel for
+#endif
         for (int i = 0; i < iter; ++i) {
           const size_t embed_idx = static_cast<size_t>(in_data[i]);
           if (embed_idx >= in_dim) {
@@ -731,7 +741,9 @@ void EmbeddingLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
         nntrainer::Tensor batchsliced_hidden = hidden_.getBatchSlice(b, 1);
         const int iter = static_cast<int>(to - from);
 
+#ifdef _OPENMP
 #pragma omp parallel for
+#endif
         for (int i = 0; i < iter; ++i) {
           const size_t embed_idx = static_cast<size_t>(in_data[i]);
           if (embed_idx >= in_dim) {
@@ -805,7 +817,9 @@ void EmbeddingLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
 
       const int iter = static_cast<int>(to - from);
 
+#ifdef _OPENMP
 #pragma omp parallel for
+#endif
       for (int i = 0; i < iter; ++i) {
         const size_t embed_idx = static_cast<size_t>(in_data[i]);
         if (embed_idx >= in_dim) {

@@ -429,7 +429,7 @@ void DebertaAttentionLayer::compute_kcaches(
       if (cache.getDataType() == ml::train::TensorDim::DataType::FP32) {
         const float *cache_data = cache.getData<float>();
         tm.parallel_for(
-          0, static_cast<size_t>(num_cache_head), [=](size_t head_kv) {
+          0, static_cast<size_t>(num_cache_head), [=, this](size_t head_kv) {
             compute_kcaches_fp32_reference(
               in_data, cache_data, out_data, row_to_compute, num_cache_head,
               head_dim, group_size, local_window_size, head_kv, head_kv + 1);
@@ -437,7 +437,7 @@ void DebertaAttentionLayer::compute_kcaches(
       } else {
         const uint16_t *cache_data = cache.getData<uint16_t>();
         tm.parallel_for(0, static_cast<size_t>(num_cache_head),
-                        [=](size_t head_kv) {
+                        [=, this](size_t head_kv) {
                           nntrainer::compute_kcaches<uint16_t>(
                             in_data, cache_data, out_data, row_to_compute,
                             num_cache_head, head_dim, group_size, tile_size,
@@ -611,7 +611,7 @@ void DebertaAttentionLayer::compute_fp16vcache_transposed(
       if (vcache.getDataType() == ml::train::TensorDim::DataType::FP32) {
         const float *vcache_data = vcache.getData<float>();
         tm.parallel_for(
-          0, static_cast<size_t>(num_cache_head), [=](size_t head_kv) {
+          0, static_cast<size_t>(num_cache_head), [=, this](size_t head_kv) {
             compute_vcache_fp32_transposed_reference(
               row_num, in_data, vcache_data, output_data, num_cache_head,
               gqa_size, head_dim, local_window_size, head_kv, head_kv + 1);
@@ -619,7 +619,7 @@ void DebertaAttentionLayer::compute_fp16vcache_transposed(
       } else {
         const uint16_t *vcache_data = vcache.getData<uint16_t>();
         tm.parallel_for(
-          0, static_cast<size_t>(num_cache_head), [=](size_t head_kv) {
+          0, static_cast<size_t>(num_cache_head), [=, this](size_t head_kv) {
             nntrainer::compute_fp16vcache_fp32_transposed(
               row_num, in_data, vcache_data, output_data, num_cache_head,
               gqa_size, head_dim, local_window_size, head_kv, head_kv + 1);

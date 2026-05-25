@@ -231,9 +231,9 @@ int Engine::registerContext(const std::string &library_path,
 
   LOGD("%s:%d", __FILE__, __LINE__);
 
-  void *struct__ =
-    dlsym(handle,
-          "_ZTv0_n56_N9nntrainer8QNNGraph10forwardingERNS_15RunLayerContextEb");
+  void *struct__ = DynamicLibraryLoader::loadSymbol(
+    handle,
+    "_ZTv0_n56_N9nntrainer8QNNGraph10forwardingERNS_15RunLayerContextEb");
 
   LOGD("struct: %p", struct__);
 

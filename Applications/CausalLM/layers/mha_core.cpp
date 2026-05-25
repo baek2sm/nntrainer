@@ -586,7 +586,7 @@ void MHACoreLayer::compute_kcaches(nntrainer::Tensor &in,
       if (cache.getDataType() == ml::train::TensorDim::DataType::FP32) {
         const float *cache_data = cache.getData<float>();
         tm.parallel_for(
-          0, static_cast<size_t>(num_cache_head), [=](size_t head_kv) {
+          0, static_cast<size_t>(num_cache_head), [=, this](size_t head_kv) {
             compute_kcaches_fp32_reference(
               in_data, cache_data, out_data, row_to_compute, num_cache_head,
               head_dim, group_size, local_window_size, head_kv, head_kv + 1);
@@ -594,7 +594,7 @@ void MHACoreLayer::compute_kcaches(nntrainer::Tensor &in,
       } else {
         const uint16_t *cache_data = cache.getData<uint16_t>();
         tm.parallel_for(0, static_cast<size_t>(num_cache_head),
-                        [=](size_t head_kv) {
+                        [=, this](size_t head_kv) {
                           nntrainer::compute_kcaches<uint16_t>(
                             in_data, cache_data, out_data, row_to_compute,
                             num_cache_head, head_dim, group_size, tile_size,
@@ -608,7 +608,7 @@ void MHACoreLayer::compute_kcaches(nntrainer::Tensor &in,
       int seq =
         sequence_len < local_window_size ? sequence_len : local_window_size;
       auto &tm = nntrainer::ThreadManager::Global();
-      tm.parallel_for(0, static_cast<size_t>(seq), [=](size_t i) {
+      tm.parallel_for(0, static_cast<size_t>(seq), [=, this](size_t i) {
         float *input_addr = in.getData<float>() + num_head * head_dim * i;
         int row_to_compute = is_causal ? from + i + 1 : from + sequence_len;
         // Calculate dynamic offset for the output (triangle optimization)
@@ -1192,7 +1192,7 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
         seq = row;
 
       auto &tm = nntrainer::ThreadManager::Global();
-      tm.parallel_for(0, static_cast<size_t>(seq), [=](size_t i) {
+      tm.parallel_for(0, static_cast<size_t>(seq), [=, this](size_t i) {
         size_t start_row, end_row;
         if (is_causal) {
           start_row = calc_attn_index(from + i) - calc_attn_index(from);
@@ -1286,7 +1286,7 @@ void MHACoreLayer::softmax_triangle(nntrainer::Tensor &qk_out, size_t row,
         seq = row;
 
       auto &tm = nntrainer::ThreadManager::Global();
-      tm.parallel_for(0, static_cast<size_t>(seq), [=](size_t i) {
+      tm.parallel_for(0, static_cast<size_t>(seq), [=, this](size_t i) {
         size_t start_row, end_row;
         if (is_causal) {
           start_row = calc_attn_index(i + from) - calc_attn_index(from);
@@ -1356,7 +1356,7 @@ void MHACoreLayer::compute_fp16vcache_transposed(
         seq = to - from;
 
       auto &tm = nntrainer::ThreadManager::Global();
-      tm.parallel_for(0, static_cast<size_t>(seq), [=](size_t i) {
+      tm.parallel_for(0, static_cast<size_t>(seq), [=, this](size_t i) {
         size_t start_idx;
         if (is_causal) {
           start_idx = calc_attn_index(to - seq + i) - calc_attn_index(to - seq);
@@ -1392,7 +1392,7 @@ void MHACoreLayer::compute_fp16vcache_transposed(
       if (vcache.getDataType() == ml::train::TensorDim::DataType::FP32) {
         const float *vcache_data = vcache.getData<float>();
         tm.parallel_for(
-          0, static_cast<size_t>(num_cache_head), [=](size_t head_kv) {
+          0, static_cast<size_t>(num_cache_head), [=, this](size_t head_kv) {
             compute_vcache_fp32_transposed_reference(
               row_num, in_data, vcache_data, output_data, num_cache_head,
               gqa_size, head_dim, local_window_size, head_kv, head_kv + 1);
@@ -1400,7 +1400,7 @@ void MHACoreLayer::compute_fp16vcache_transposed(
       } else {
         const uint16_t *vcache_data = vcache.getData<uint16_t>();
         tm.parallel_for(
-          0, static_cast<size_t>(num_cache_head), [=](size_t head_kv) {
+          0, static_cast<size_t>(num_cache_head), [=, this](size_t head_kv) {
             nntrainer::compute_fp16vcache_fp32_transposed(
               row_num, in_data, vcache_data, output_data, num_cache_head,
               gqa_size, head_dim, local_window_size, head_kv, head_kv + 1);

@@ -14,7 +14,9 @@ executable_src = [
 causallm_inc_abs = [meson.current_source_dir()]
 causallm_inc = [include_directories('.')]
 causallm_inc_minja_inc = include_directories('third_party/minja/include')
-causallm_inc_nlohmann_inc = include_directories('third_party')
+# Provide both 'third_party' (for "nlohmann/json.hpp") and 'third_party/nlohmann'
+# (for the bare "json.hpp"/<json.hpp> form used across CausalLM sources).
+causallm_inc_nlohmann_inc = include_directories('third_party', 'third_party/nlohmann')
 
 # Build layer dependency
 causallm_layer_dependencies = []
@@ -177,7 +179,7 @@ quantize_src = [
 
 e_quantize = executable('nntr_quantize',
     quantize_src,
-    include_directories: causallm_inc,
+    include_directories: [causallm_inc, causallm_inc_nlohmann_inc],
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_layer_dependencies, causallm_dep],
 )
 

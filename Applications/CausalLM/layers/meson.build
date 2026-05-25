@@ -1,5 +1,10 @@
 causallm_layer_inc_abs = [meson.current_source_dir()]
-causallm_layer_inc = [include_directories('.')]
+# third_party/nlohmann holds the vendored json.hpp used by some layers
+# (e.g. embedding_layer.cpp). Keep it on the include path for every layer target.
+causallm_layer_inc = [
+    include_directories('.'),
+    include_directories('../third_party/nlohmann'),
+]
 
 causallm_rms_norm_src_abs = [meson.current_source_dir() / 'rms_norm.cpp']
 causallm_swiglu_src_abs = [meson.current_source_dir() / 'swiglu.cpp']
