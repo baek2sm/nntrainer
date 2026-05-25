@@ -33,7 +33,9 @@ namespace nntrainer {
 static constexpr size_t SINGLE_INOUT_IDX = 0;
 
 InputLayer::InputLayer() :
-  Layer(), input_props(props::Normalization(), props::Standardization()) {}
+  Layer(),
+  input_props(props::Normalization(), props::Standardization(),
+              props::InputTensorDataType(), props::TensorDataType()) {}
 
 void InputLayer::setProperty(const std::vector<std::string> &values) {
   auto remain_props = loadProperties(values, input_props);
@@ -71,13 +73,11 @@ void InputLayer::exportTo(Exporter &exporter,
 }
 
 void InputLayer::finalize(InitLayerContext &context) {
-
   std::vector<TensorDim> output_dims = context.getInputDimensions();
   for (auto &d : output_dims) {
     if (d.getDataType() == ml::train::TensorDim::DataType::FP32)
       d.setDataType(context.getActivationDataType());
   }
-
   context.setOutputDimensions(output_dims);
   is_inplace = output_dims == context.getInputDimensions();
 }

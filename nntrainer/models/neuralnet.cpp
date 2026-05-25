@@ -453,6 +453,68 @@ sharedConstTensors NeuralNetwork::incremental_forwarding(
      lookahead](std::shared_ptr<LayerNode> node, bool training) -> void {
     PROFILE_MEM_ANNOTATE("Forwarding for layer: " + node->getName());
 
+    // std::cout << "\n=== Layer: " << node->getName() << " ===" << std::endl;
+    // std::cout << "From: " << from << ", To: " << to << std::endl;
+    // std::cout << "Layer type: " << node->getType() << std::endl;
+
+    // // if (from == 0) {
+    // //   auto num_weights = node->getNumWeights();
+    // //   if (static_cast<unsigned int>(num_weights) != 0) {
+    // //     std::cout << "DEBUG: NAME: >>>>>>>>>>> " << node->getName() <<
+    // "\n";
+    // //     auto num_weights = node->getNumWeights();
+    // //     std::cout << "DEBUG: num weight: " << num_weights << "\n";
+    // //     for (size_t i = 0; i < num_weights; i++) {
+    // //       auto weight = node->getWeightObject(static_cast<unsigned
+    // int>(i));
+    // //       std::cout << "DEBUG: weight: "
+    // //                 << static_cast<Weight>(weight).getVariable() <<
+    // //                 std::endl;
+    // //     }
+    // //   }
+    // // }
+
+    // // Print input tensors
+    // auto &rc = node->getRunContext();
+    // for (unsigned int i = 0; i < rc.getNumInputs(); ++i) {
+    //   auto &input = rc.getInput(i);
+    //   std::cout << "Input " << i << " shape: " << input.getDim() <<
+    //   std::endl; std::cout << "data addr: " << input.getData() << '\n';
+
+    //   if (input.getDataType() == ml::train::TensorDim::DataType::FP32) {
+    //     const float *in_data = input.getData<float>();
+    //     std::cout << "  Sample values (first 10): ";
+    //     for (int j = 0; j < std::min(10, (int)input.size()); ++j) {
+    //       std::cout << in_data[j] << " ";
+    //     }
+    //     std::cout << std::endl;
+
+    //     // std::cout << "  Sample values (last 5): ";
+    //     // for (int j = std::max(0, (int)input.size() - 5); j <
+    //     // (int)input.size(); ++j) {
+    //     //   std::cout << in_data[j] << " ";
+    //     // }
+    //     // std::cout << std::endl;
+
+    //     // Print statistics
+
+    //     int window_len = input.getDim().width()*(to -from);
+
+    //     float in_min = in_data[0], in_max = in_data[0],
+    //           in_sum = 0.0f;
+    //     for (unsigned int j = 0; j < window_len; ++j) {
+    //       in_min = std::min(in_min, in_data[j]);
+    //       in_max = std::max(in_max, in_data[j]);
+    //       in_sum += in_data[j];
+    //     }
+    //     float in_mean = in_sum / window_len;
+    //     std::cout << "  Stats - Min: " << in_min << ", Max: " << in_max
+    //               << ", Mean: " << in_mean << std::endl;
+    //   } else {
+    //     // input.print(std::cout);
+    //   }
+    // }
+
     auto f = std::get<0>(node->getExecutionOrder());
     if (exec_mode == ExecutionMode::TRAIN or
         (exec_mode == ExecutionMode::INFERENCE and !fsu_mode)) {
@@ -641,12 +703,27 @@ void NeuralNetwork::save(
     auto model_file = checkedOpenStream<std::ofstream>(
       file_path, std::ios::out | std::ios::binary | std::ios::trunc);
 
+    size_t total_saved_bytes = 0;
     for (auto iter = model_graph.cbegin(); iter != model_graph.cend(); iter++) {
       const auto &layer_node = *iter;
       auto it = layer_dtype_map.find(layer_node->getName());
       auto target_dtype = (it != layer_dtype_map.end()) ? it->second : dtype;
+
+      // Get current file position before save
+      auto pos_before = model_file.tellp();
       layer_node->save(model_file, false, exec_mode, target_dtype, target_isa);
+      // Get current file position after save
+      auto pos_after = model_file.tellp();
+      size_t bytes_written = static_cast<size_t>(pos_after - pos_before);
+      total_saved_bytes += bytes_written;
+
+      // Debug print: layer name, target dtype, and bytes written
+      std::cout << "[save] " << layer_node->getName()
+                << " | dtype: " << static_cast<int>(target_dtype)
+                << " | bytes: " << bytes_written << std::endl;
     }
+    std::cout << "[save] Total bytes written: " << total_saved_bytes
+              << std::endl;
 
     if (opt && istrequal(opt->getType(), "adam")) {
       std::string adam = "adam";
@@ -740,10 +817,46 @@ void NeuralNetwork::save(
   }
 }
 
+size_t NeuralNetwork::getTotalModelBytes() const {
+  size_t total_bytes = 0;
+
+  std::cout << "Model Weight Bytes Breakdown:" << std::endl;
+  std::cout << "=========================" << std::endl;
+
+  for (auto iter = model_graph.cbegin(); iter != model_graph.cend(); iter++) {
+    auto weights = (*iter)->getRunContext().getWeights();
+    for (auto weight : weights) {
+      size_t size = weight->getVariable().getMemoryBytes();
+      auto tensor_data_type = weight->getDim().getDataType();
+
+      // Add qparam size for quantized tensors
+      if (tensor_data_type != TensorDim::DataType::FP32 &&
+          tensor_data_type != TensorDim::DataType::FP16 &&
+          tensor_data_type != TensorDim::DataType::Q6_K &&
+          tensor_data_type != TensorDim::DataType::Q4_0) {
+        // for tensor with qparam
+        size += sizeof(uint16_t);
+      }
+
+      std::cout << (*iter)->getName() << " | " << weight->getName() << " | "
+                << size << " bytes | " << weight->getDim();
+
+      total_bytes += size;
+    }
+  }
+
+  std::cout << "=========================" << std::endl;
+  std::cout << "Total: " << total_bytes << " bytes" << std::endl;
+
+  return total_bytes;
+}
+
 void NeuralNetwork::load(const std::string &file_path,
                          ml::train::ModelFormat format) {
   /// @todo this switch case should be delegating the function call only. It's
   /// not delegating for now as required logics are manageable for now.
+
+  // getTotalModelBytes();
 
   bool fsu_mode = std::get<props::Fsu>(model_flex_props);
 
@@ -971,7 +1084,6 @@ void NeuralNetwork::load(const std::string &file_path,
   case ml::train::ModelFormat::MODEL_FORMAT_QNN: {
     // for now, we only support to QNN binary format for Inference mode.
     // expect to have the file path for qnn bin and nntrainer bin seperated by
-    // ":" QNN bin ( graph ) : NNTrainer bin (weight)
     NNTR_THROW_IF(exec_mode != ExecutionMode::INFERENCE, std::invalid_argument)
       << "Only support QNN biarny for Infernece";
     NNTR_THROW_IF(!isFileExist(props::FilePath(v[0])), std::invalid_argument)
@@ -1240,7 +1352,9 @@ sharedConstTensors NeuralNetwork::inference(sharedConstTensors X,
   if (!validateInput(X))
     throw std::invalid_argument("Input validation failed.");
 
+#ifndef ENABLE_NPU
   allocate(ExecutionMode::INFERENCE);
+#endif
 
   int nn_foward;
   PROFILE_TIME_REGISTER_EVENT(nn_foward, "nn_forward");
@@ -1260,6 +1374,90 @@ sharedConstTensors NeuralNetwork::inference(sharedConstTensors X,
   model_graph.setInputsLabels({}, {});
 
   return out;
+}
+
+std::vector<IO_TensorType>
+NeuralNetwork::inference(unsigned int batch_size,
+                         const std::vector<IO_TensorType> &input,
+                         const std::vector<IO_TensorType> &label) {
+  sharedConstTensors input_tensors, output_tensors;
+  auto in_dim = getInputDimension();
+
+  input_tensors.reserve(input.size());
+  for (unsigned int idx = 0; idx < in_dim.size(); idx++) {
+    in_dim[idx].batch(batch_size);
+    std::visit(
+      [&input_tensors, &in_dim, idx](auto &&input_ptr) {
+        input_tensors.emplace_back(MAKE_SHARED_TENSOR(
+          Tensor::Map(input_ptr, in_dim[idx].getDataLen() * sizeof(*input_ptr),
+                      in_dim[idx], 0)));
+      },
+      input[idx]);
+  }
+
+  if (!label.empty()) {
+    sharedConstTensors label_tensors;
+    auto label_dim = getOutputDimension();
+    label_tensors.reserve(label.size());
+    for (unsigned int idx = 0; idx < label_dim.size(); idx++) {
+      label_dim[idx].batch(batch_size);
+      std::visit(
+        [&label_tensors, &label_dim, idx](auto &&label_ptr) {
+          label_tensors.emplace_back(MAKE_SHARED_TENSOR(Tensor::Map(
+            label_ptr, label_dim[idx].getDataLen() * sizeof(*label_ptr),
+            label_dim[idx], 0)));
+        },
+        input[idx]);
+    }
+    output_tensors = inference(input_tensors, label_tensors, false);
+  } else {
+    output_tensors = inference(input_tensors, false);
+  }
+
+  std::vector<IO_TensorType> output;
+  output.reserve(output_tensors.size());
+
+  for (auto &out : output_tensors) {
+    auto out_t = *out.get();
+    switch (out_t.getDataType()) {
+    case ml::train::TensorDim::DataType::QINT4:
+    case ml::train::TensorDim::DataType::QINT8:
+      output.push_back(out_t.getData<int8_t>());
+      break;
+    case ml::train::TensorDim::DataType::QINT16:
+      output.push_back(out_t.getData<int16_t>());
+      break;
+    case ml::train::TensorDim::DataType::BCQ:
+      output.push_back(out_t.getData<uint32_t>());
+      break;
+    case ml::train::TensorDim::DataType::UINT4:
+    case ml::train::TensorDim::DataType::UINT8:
+      // case ml::train::TensorDim::DataType::Q4_K:
+      // case ml::train::TensorDim::DataType::Q6_K:
+      // case ml::train::TensorDim::DataType::Q4_0:
+      output.push_back(out_t.getData<uint8_t>());
+      break;
+    case ml::train::TensorDim::DataType::UINT16:
+      output.push_back(out_t.getData<uint16_t>());
+      break;
+    case ml::train::TensorDim::DataType::UINT32:
+      output.push_back(out_t.getData<uint32_t>());
+      break;
+    case ml::train::TensorDim::DataType::FP32:
+      output.push_back(out_t.getData());
+      break;
+#ifdef ENABLE_FP16
+    case ml::train::TensorDim::DataType::FP16:
+      output.push_back(out_t.getData<_FP16>());
+      break;
+#endif
+    default:
+      output.push_back(out_t.getData());
+      break;
+    }
+  }
+
+  return output;
 }
 
 std::vector<float *>
@@ -1936,8 +2134,8 @@ void NeuralNetwork::print(std::ostream &out, unsigned int flags,
   }
 
   if (flags & PRINT_GRAPH_INFO) {
-    unsigned int total_col_size = 80;
-    std::vector<unsigned int> column_size = {20, 20, 20, 20};
+    unsigned int total_col_size = 120;
+    std::vector<unsigned int> column_size = {40, 20, 20, 40};
     auto print_graph_layer_info =
       [column_size](std::ostream &out, std::vector<std::string> layer_info) {
         const auto &trim_string = [](std::string str,

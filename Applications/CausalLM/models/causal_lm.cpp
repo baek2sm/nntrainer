@@ -42,6 +42,14 @@
 #include <causal_lm.h>
 #include <llm_util.hpp>
 
+// Streamer vtable lives in the api/ directory; pulled in here so
+// registerOutputs() can push per-token deltas through streamer_put()
+// without the rest of the model headers having to know about the C API.
+// The include path is rooted at Applications/CausalLM (see the
+// CAUSALLM_COMMON_INCLUDES list in jni/Android.mk and the
+// include_directories('.') in meson.build).
+#include <streamer.h>
+
 namespace causallm {
 
 CausalLM::CausalLM(json &cfg, json &generation_cfg, json &nntr_cfg) :
@@ -65,6 +73,10 @@ void CausalLM::setupParameters(json &cfg, json &generation_cfg,
   LMHEAD_DTYPE = nntr_cfg.contains("lmhead_dtype")
                    ? nntr_cfg["lmhead_dtype"]
                    : nntr_cfg["embedding_dtype"];
+
+  SKIP_PREFILL = nntr_cfg.contains("skip_prefill")
+                   ? nntr_cfg["skip_prefill"].get<bool>()
+                   : false;
 
   USE_KVCACHE = false;
   PRE_COMPUTED_CACHE_PATH = "";
@@ -233,11 +245,28 @@ void CausalLM::registerOutputs(
                  decoded_str.compare(decoded_str.size() - 3, 3, "") == 0) {
         // ends with an incomplete token, hold on
       } else {
-        if (log_output) {
+        // Only print to stdout if we're not streaming (streamer handles output)
+        if (log_output && streamer_ == nullptr) {
+#if defined(_WIN32)
+          std::wcout << L"" << utf8_to_wstring(decoded_str);
+          std::wcout.flush();
+#else
           std::cout << decoded_str;
           std::cout.flush();
+#endif
         }
         output_list[b].append(decoded_str);
+
+        // If a streamer is attached, hand the just-completed delta to
+        // it. A non-zero return is interpreted as "please cancel",
+        // and the outer run() loop will honor it at the next token
+        // boundary. See AsyncAndStreaming.md §3.3.
+        if (streamer_ != nullptr) {
+          if (streamer_put(streamer_, decoded_str.c_str()) != 0) {
+            stop_requested_.store(true, std::memory_order_release);
+          }
+        }
+
         pending_ids_.clear();
       }
     }
@@ -347,6 +376,12 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
 
   has_run_ = false;
 
+  // Always start with a clean cancellation state — the streamer (if
+  // any) may have flipped this flag on a previous run that was
+  // cancelled, and we don't want stale state to break an unrelated
+  // subsequent run().
+  stop_requested_.store(false, std::memory_order_release);
+
   output_list.clear();
   for (unsigned int b = 0; b < BATCH_SIZE; ++b) {
     output_list.push_back("");
@@ -361,7 +396,6 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
    * Variables for Log
    */
   unsigned int generation_cnt = 0;
-  int64_t total_generation_duration = 0;
 
   /**
    * INPUT PREPARATION
@@ -514,20 +548,37 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   } else {
     SYS_PROMP_LEN = 0;
   }
-  allocateAndBindKVCache();
-  const unsigned int prefill_from = SYS_PROMP_LEN + global_token_len;
-  const unsigned int prefill_to = prefill_from + input_len;
-  setKVCachePosition(prefill_from);
-  output = model->incremental_inference(BATCH_SIZE, input, label, init_len,
-                                        prefill_from, prefill_to, false);
+  std::vector<unsigned int> id_list;
 
-  // post process of model output
-  std::vector<unsigned int> id_list(
-    generate(output[0], do_sample, 1, ids_history, init_len));
+  if (SKIP_PREFILL && init_len > 1) {
+    // Prefill only N-1 tokens; the last input token will be used as the first
+    // token in the generation phase (assigned directly, not sampled).
+    unsigned int skipped_token =
+      static_cast<unsigned int>(init_input[init_len - 1]);
 
-  if (init_len < INIT_SEQ_LEN)
-    registerOutputs(tokenizer, id_list, init_len, eos_list, log_output);
+    output = model->incremental_inference(BATCH_SIZE, input, label,
+                                          init_len - 1, SYS_PROMP_LEN,
+                                          SYS_PROMP_LEN + input_len - 1, false);
 
+    for (unsigned int b = 0; b < BATCH_SIZE; ++b)
+      id_list.push_back(skipped_token);
+
+    // Adjust lengths so the generation loop processes the skipped token
+    // at the correct KV cache position.
+    input_len -= 1;
+    init_len -= 1;
+  } else {
+    output = model->incremental_inference(BATCH_SIZE, input, label, init_len,
+                                          SYS_PROMP_LEN,
+                                          SYS_PROMP_LEN + input_len, false);
+
+    // post process of model output
+    id_list = generate_multi_tokens(output[0], NUM_VOCAB, BATCH_SIZE, 1,
+                                    ids_history, _len);
+
+    if (init_len < INIT_SEQ_LEN)
+      registerOutputs(tokenizer, id_list, init_len, eos_list, log_output);
+  }
   // output should be deallocated after use
   for (auto &out : output) {
     delete[] out;
@@ -596,6 +647,18 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
     if (is_finish) {
       break;
     }
+
+    // Cooperative cancellation: a streamer may have asked us to stop
+    // via its put() return value, or requestStop() was called from
+    // another thread. We check once per generated token so worst-case
+    // latency is a single decode step. When cancelled we still free
+    // the input buffer (the normal EOS path above does the same), exit
+    // the loop, and let the rest of run() record metrics for however
+    // many tokens we actually produced.
+    if (stop_requested_.load(std::memory_order_acquire)) {
+      free(input_sample);
+      break;
+    }
   }
 
   // Always release the input buffer after the generation loop, whether
@@ -637,6 +700,15 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   performance_metrics.generation_duration_ms = generation_duration.count();
   performance_metrics.total_duration_ms = total_duration.count();
   performance_metrics.peak_memory_kb = peak_memory;
+
+  // Notify any attached streamer that the run is fully terminated.
+  // Callers in causal_lm_api.cpp still detach the streamer after
+  // run() returns (via an RAII guard), but we fire end() first so
+  // concrete streamers can release per-run state from inside the
+  // vtable if they ever need to.
+  if (streamer_ != nullptr) {
+    streamer_end(streamer_);
+  }
 
   has_run_ = true;
 }

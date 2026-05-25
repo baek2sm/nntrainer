@@ -139,7 +139,6 @@ private:
   // Intermediate tensor indices
   unsigned int router_logits_idx;
   unsigned int expert_mask_idx;
-  bool enable_bias = false;
   std::mutex cache_mutex;
 
   float alpha = 1.702;

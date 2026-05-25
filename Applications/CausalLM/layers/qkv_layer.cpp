@@ -150,21 +150,18 @@ void QKVLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
   nntrainer::Tensor input_step =
     input_.getSharedDataTensor(input_step_dim, 0, true);
 
-  nntrainer::TensorDim Qhidden_dim = Qhidden_.getDim();
   nntrainer::TensorDim Qhidden_step_dim = Qhidden_.getDim();
   Qhidden_step_dim.batch(1);
   Qhidden_step_dim.height(to - from);
   nntrainer::Tensor Qhidden_step =
     Qhidden_.getSharedDataTensor(Qhidden_step_dim, 0, true);
 
-  nntrainer::TensorDim Khidden_dim = Khidden_.getDim();
   nntrainer::TensorDim Khidden_step_dim = Khidden_.getDim();
   Khidden_step_dim.batch(1);
   Khidden_step_dim.height(to - from);
   nntrainer::Tensor Khidden_step =
     Khidden_.getSharedDataTensor(Khidden_step_dim, 0, true);
 
-  nntrainer::TensorDim Vhidden_dim = Vhidden_.getDim();
   nntrainer::TensorDim Vhidden_step_dim = Vhidden_.getDim();
   Vhidden_step_dim.batch(1);
   Vhidden_step_dim.height(to - from);

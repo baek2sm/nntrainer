@@ -130,10 +130,8 @@ private:
   // Intermediate tensor indices
   unsigned int router_logits_idx;
   unsigned int expert_mask_idx;
-  bool enable_bias = false;
 
   float alpha = 1.702;
-  float limit = 7.0;
 
   /**
    * @brief expert forward computation without memory copies

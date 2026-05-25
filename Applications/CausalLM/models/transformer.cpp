@@ -10,14 +10,17 @@
  * @brief  This file defines Transformer's basic actions
  */
 
-#include <fstream>
+#include <algorithm>
+#include <cctype>
+#include <iostream>
+#include <vector>
 
 #include <app_context.h>
 #include <engine.h>
 #include <model.h>
 
 #include <llm_util.hpp>
-#include <tokenizers_cpp.h>
+#include <tokenizer_loader.h>
 #include <transformer.h>
 
 #include <embedding_layer.h>
@@ -169,12 +172,16 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
                              ? cfg["sliding_window_pattern"].get<unsigned int>()
                              : 1;
   MAX_POSITION_EMBEDDINGS = cfg["max_position_embeddings"].get<unsigned int>();
-  if (cfg.contains("rope_theta")) {
-    ROPE_THETA = cfg["rope_theta"].get<unsigned int>();
-  } else if (cfg.contains("rope_parameters") &&
-             cfg["rope_parameters"].contains("rope_theta")) {
-    ROPE_THETA = cfg["rope_parameters"]["rope_theta"].get<unsigned int>();
+
+  // RoPE parameters (use sliding attention defaults)
+  if (cfg.contains("rope_parameters") &&
+      cfg["rope_parameters"].contains("sliding_attention")) {
+    json &rope_cfg = cfg["rope_parameters"]["sliding_attention"];
+    ROPE_THETA = rope_cfg.value("rope_theta", 10000);
+  } else {
+    ROPE_THETA = cfg.value("rope_theta", 10000);
   }
+
   TIE_WORD_EMBEDDINGS = cfg["tie_word_embeddings"].get<bool>();
   NORM_EPS = cfg["rms_norm_eps"];
   GQA_SIZE = NUM_HEADS / NUM_KEY_VALUE_HEADS;
@@ -210,10 +217,14 @@ void Transformer::initialize() {
   }
 
   is_initialized = true;
-
 #ifdef DEBUG
   model->summarize(std::cout, ML_TRAIN_SUMMARY_MODEL);
 #endif
+}
+
+void Transformer::initialize(const std::string &native_lib_dir) {
+  native_lib_dir_ = native_lib_dir;
+  initialize();
 }
 
 /**
@@ -255,7 +266,6 @@ std::pair<Tensor, Tensor> Transformer::constructModel() {
  * @brief Load model weights from a binary nntrainer model file.
  */
 void Transformer::load_weight(const std::string &weight_path) {
-
   if (!is_initialized) {
     throw std::runtime_error(
       "Transformer model is not initialized. Please call "
@@ -326,6 +336,15 @@ void Transformer::run(const WSTR prompt, bool do_sample,
   }
   ///@note This part should be filled in.
   /// The run action can be defined by the precedent classes.
+}
+
+multimodal_pointer
+Transformer::run_image(const WSTR prompt, multimodal_pointer image,
+                       int image_height, int image_width, bool do_sample,
+                       const WSTR system_prompt, const WSTR tail_prompt,
+                       bool log_output) {
+  ///@note Override this if your model supports image input
+  return std::make_pair(nullptr, 0);
 }
 
 /**

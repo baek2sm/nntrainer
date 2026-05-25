@@ -1,9 +1,9 @@
 causallm_src = [
     meson.current_source_dir() / 'chat_template.cpp',
-    meson.current_source_dir() / 'huggingface_tokenizer.cpp',
+    meson.current_source_dir() / 'tokenizers' / 'huggingface_tokenizer.cpp',
+    meson.current_source_dir() / 'tokenizers' / 'bpe_tokenizer.cpp',
+    meson.current_source_dir() / 'tokenizers' / 'wordpiece_tokenizer.cpp',
     meson.current_source_dir() / 'llm_util.cpp',
-    meson.current_source_dir() / 'api' / 'causal_lm_api.cpp',
-    meson.current_source_dir() / 'api' / 'model_config.cpp',
     meson.current_source_dir() / 'kv_cache_manager.cpp',
 ]
 
@@ -33,6 +33,9 @@ causallm_layer_dependencies += [
     causallm_qkv_layer_dep,
     causallm_embedding_pooling_layer_dep,
     causallm_embedding_normalize_layer_dep,
+    causallm_per_layer_slice_dep,
+    causallm_scalar_multiply_dep,
+    causallm_logit_softcapping_dep,
     causallm_deberta_attention_layer_dep,
     causallm_shared_fully_connected_layer_dep,
 ]
@@ -176,19 +179,6 @@ e_quantize = executable('nntr_quantize',
     quantize_src,
     include_directories: causallm_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_layer_dependencies, causallm_dep],
-)
-
-
-test_api_src = [
-    meson.current_source_dir() / 'api' / 'test_api.cpp',
-]
-
-test_api = executable('test_api',
-    test_api_src,
-    include_directories: causallm_inc,
-    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_layer_dependencies, causallm_dep],
-    build_by_default: true,
-    install: false,
 )
 
 # KVCacheManager unit tests

@@ -25,6 +25,7 @@
 #include <connection.h>
 #include <context.h>
 #include <engine.h>
+#include <input_layer.h>
 #include <layer_node.h>
 #include <nntrainer_error.h>
 #include <nntrainer_log.h>
@@ -36,6 +37,30 @@
 
 #if defined(ENABLE_OPENCL) && ENABLE_OPENCL == 1
 #include <cl_context.h>
+#endif
+
+/* LOGD macro for QNN context if not defined */
+#if defined(__ANDROID__)
+#include <android/log.h>
+#ifndef LOG_TAG
+#define LOG_TAG "qnn_context"
+#endif
+#ifndef LOGD
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#endif
+#else
+#ifndef LOG_TAG
+#define LOG_TAG "qnn_context"
+#endif
+#ifndef LOGD
+#include <cstdio>
+#define LOGD(...)                                                              \
+  do {                                                                         \
+    fprintf(stderr, "[DEBUG][%s] ", LOG_TAG);                                  \
+    fprintf(stderr, __VA_ARGS__);                                              \
+    fprintf(stderr, "\n");                                                     \
+  } while (0)
+#endif
 #endif
 
 namespace nntrainer {
@@ -165,6 +190,7 @@ std::unique_ptr<LayerNode>
 createLayerNode(const ml::train::LayerType &type,
                 const std::vector<std::string> &properties) {
   auto &eg = nntrainer::Engine::Global();
+  //  LOGD("%s:%d, eg: %p type: %d", __FILE__, __LINE__, &eg, type);
   return createLayerNode(eg.createLayerObject(type, properties), properties);
 }
 
@@ -175,6 +201,7 @@ std::unique_ptr<LayerNode>
 createLayerNode(const std::string &type,
                 const std::vector<std::string> &properties) {
   auto &eg = nntrainer::Engine::Global();
+  //  LOGD("%s:%d, eg: %p type: %s", __FILE__, __LINE__, &eg, type.c_str());
   return createLayerNode(eg.createLayerObject(type, properties), properties);
 }
 
@@ -199,11 +226,11 @@ LayerNode::LayerNode(std::unique_ptr<nntrainer::Layer> &&l) :
 
   output_connections(),
   run_context(nullptr),
-  layer_node_props(
-    new PropsType(props::Name(), props::Distribute(), props::Trainable(), {},
-                  {}, props::SharedFrom(), props::ClipGradByGlobalNorm(),
-                  props::Packed(), props::WeightDtype(), props::InputDtype(),
-                  props::LossScaleForMixed(), props::ComputeEngine())),
+  layer_node_props(new PropsType(
+    props::Name(), props::Distribute(), props::Trainable(), {}, {},
+    props::SharedFrom(), props::ClipGradByGlobalNorm(), props::Packed(),
+    props::WeightDtype(), props::InputDtype(), props::LossScaleForMixed(),
+    props::ComputeEngine(), props::InputTensorDataType())),
   layer_node_props_realization(
     new RealizationPropsType(props::Flatten(), props::Activation())),
   loss(new props::Loss()),
@@ -519,6 +546,17 @@ void LayerNode::read(ReadSource src, bool opt_var,
                    file_fd);
 }
 
+void LayerNode::read_quantization_info(std::ifstream &file, bool opt_var,
+                                       ml::train::ExecutionMode mode,
+                                       bool swap) {
+  NNTR_THROW_IF(!run_context, std::runtime_error)
+    << __func__ << " layer needs to be finalized first!";
+  getLayer()->read_quantization_info(
+    file, *run_context, opt_var, mode,
+    (getTrainable() && mode == ml::train::ExecutionMode::TRAIN),
+    getWeightDataType());
+}
+
 void LayerNode::save(std::ofstream &file, bool opt_var,
                      ml::train::ExecutionMode mode,
                      TensorDim::DataType target_dtype,
@@ -528,6 +566,16 @@ void LayerNode::save(std::ofstream &file, bool opt_var,
   getLayer()->save(file, *run_context, opt_var, mode,
                    (getTrainable() && mode == ml::train::ExecutionMode::TRAIN),
                    target_dtype, target_isa);
+}
+
+void LayerNode::save_quantization_info(std::ofstream &file, bool opt_var,
+                                       ml::train::ExecutionMode mode) const {
+  NNTR_THROW_IF(!run_context, std::runtime_error)
+    << __func__ << " layer needs to be finalized first!";
+  getLayer()->save_quantization_info(
+    file, *run_context, opt_var, mode,
+    (getTrainable() && mode == ml::train::ExecutionMode::TRAIN),
+    getWeightDataType());
 }
 
 void LayerNode::clearOptVar() {
@@ -575,8 +623,12 @@ InitLayerContext LayerNode::finalize(const std::vector<TensorDim> &input_dims,
            "property";
       for (auto &d : actual_prop_dims) {
         d.setDataType(
-          str_converter<enum_class_prop_tag, nntrainer::TensorDataTypeInfo>::
-            from_string(tensor_type[2]));
+          std::get<props::InputTensorDataType>(*layer_node_props).empty()
+            ? str_converter<
+                enum_class_prop_tag,
+                nntrainer::TensorDataTypeInfo>::from_string(tensor_type[2])
+            : (TensorDim::DataType)std::get<props::InputTensorDataType>(
+                *layer_node_props));
         d.setFormat(
           str_converter<enum_class_prop_tag, nntrainer::TensorFormatInfo>::
             from_string(tensor_type[0]));
@@ -606,6 +658,15 @@ InitLayerContext LayerNode::finalize(const std::vector<TensorDim> &input_dims,
       d.setFormat(
         str_converter<enum_class_prop_tag, nntrainer::TensorFormatInfo>::
           from_string(tensor_type[0]));
+
+      if (getType() == InputLayer::type &&
+          !dynamic_cast<InputLayer *>(layer.get())
+             ->getInputTensorDataType()
+             .empty()) {
+        TensorDim::DataType input_dtype =
+          dynamic_cast<InputLayer *>(layer.get())->getInputTensorDataType();
+        d.setDataType(input_dtype);
+      }
     }
   }
 
@@ -825,9 +886,20 @@ void LayerNode::forwarding(bool training) {
 void LayerNode::incremental_forwarding(unsigned int from, unsigned int to,
                                        bool training) {
   loss->set(run_context->getRegularizationLoss());
+
   PROFILE_TIME_START(forward_event_key);
   // std::cerr << getType() << "\n";
+
+  auto start_prefill = std::chrono::high_resolution_clock::now();
   layer->incremental_forwarding(*run_context, from, to, training);
+
+  auto finish_prefill = std::chrono::high_resolution_clock::now();
+  auto prefill_duration = std::chrono::duration_cast<std::chrono::microseconds>(
+    finish_prefill - start_prefill);
+
+  // LOGD("layer name: %s, time: %lld us", getName().c_str(),
+  // prefill_duration.count());
+
   PROFILE_TIME_END(forward_event_key);
   TRACE_MEMORY() << getName() + ": F";
   TRACE_TIME() << getName() + ": F";

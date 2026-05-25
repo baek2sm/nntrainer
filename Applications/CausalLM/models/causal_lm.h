@@ -39,8 +39,22 @@
 #define WCHAR_P std::string &
 #endif
 
+#include <atomic>
 #include <kv_cache_manager.h>
 #include <transformer.h>
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
+// Forward-declare the C streamer type from api/streamer.h. We keep this
+// a bare forward declaration so causal_lm.h does not pull the API
+// header into the rest of the CausalLM models tree — the full
+// definition is only needed in causal_lm.cpp where the vtable is
+// actually invoked.
+extern "C" {
+struct BaseStreamer;
+}
 
 namespace causallm {
 
@@ -80,6 +94,58 @@ public:
    * @return Generated text string
    */
   std::string getOutput(int batch_idx = 0) const;
+
+  /**
+   * @brief Attach (or detach) a BaseStreamer to intercept per-token
+   *        output during the next call to run().
+   *
+   * Passing @c nullptr detaches any currently-attached streamer.
+   *
+   * The streamer pointer is NOT owned by this class — the caller is
+   * responsible for keeping the storage alive for the full duration of
+   * the run() call and for detaching before the storage is destroyed.
+   *
+   * The high-level C API `runModelHandleStreaming` in
+   * causal_lm_api.{h,cpp} uses a stack-allocated CallbackStreamer and
+   * an RAII detach guard, which keeps this contract trivially safe.
+   * See AsyncAndStreaming.md §3.3 at the repo root for the full
+   * design.
+   */
+  void setStreamer(::BaseStreamer *streamer) { streamer_ = streamer; }
+
+  /**
+   * @brief Request cancellation of the current run().
+   *
+   * Thread-safe: sets the stop flag atomically, causing the token
+   * generation loop to exit at the next token boundary. Safe to call
+   * from any thread (e.g., from a UI cancel button handler).
+   */
+  void requestStop() override {
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_DEBUG, "CausalLM",
+                        "requestStop: setting stop_requested_ to true");
+#else
+    std::cout << "[DEBUG] requestStop: setting stop_requested_ to true"
+              << std::endl;
+#endif
+    stop_requested_.store(true, std::memory_order_release);
+  }
+
+  /**
+   * @brief Check if stop has been requested.
+   * Thread-safe: can be called from any thread.
+   */
+  bool isStopRequested() const {
+    return stop_requested_.load(std::memory_order_acquire);
+  }
+
+  /**
+   * @brief Clear the stop request flag.
+   * Thread-safe: can be called from any thread.
+   */
+  void clearStopRequest() {
+    stop_requested_.store(false, std::memory_order_release);
+  }
 
 protected:
   /**
@@ -146,7 +212,28 @@ protected:
   std::string PRE_COMPUTED_CACHE_PATH;
   bool SAVE_KVCACHE;
   bool USE_KVCACHE;
+  bool SKIP_PREFILL;
   unsigned int global_token_len;
+
+  /**
+   * @brief Optional streamer that receives each decoded token as it is
+   *        produced during run(). Set via setStreamer(); nullptr means
+   *        "no streaming, behave exactly like the pre-streaming code
+   *        path". See AsyncAndStreaming.md §3.3.
+   */
+  ::BaseStreamer *streamer_ = nullptr;
+
+  /**
+   * @brief Cooperative cancellation flag set by registerOutputs() when
+   *        the attached streamer's put() returns non-zero, or by
+   *        requestStop() from any thread. The token generation loop in
+   *        run() checks this once per iteration and breaks out at the
+   *        next safe boundary.
+   *
+   * Uses std::atomic for thread-safe access from any thread (e.g.,
+   * cancel button handler in UI thread).
+   */
+  std::atomic<bool> stop_requested_{false};
 
   std::mt19937 rng; /**< Random Number Gen */
 

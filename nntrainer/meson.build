@@ -153,9 +153,17 @@ endif
 
 # Build QNN context plugin after nntrainer_dep is available.
 # libqnn_context.so links against libnntrainer, so it must be built after it.
-if get_option('enable-npu')
-  subdir('qnn')
-endif
+#
+# DISABLED: Quick.AI supplies its own QNN backend from the root project's
+# qnn/ tree (origin design); libqnn_context.so is produced there and loaded
+# dynamically by Engine via registerContext("libqnn_context.so"). The
+# upstream-merged nntrainer-internal qnn/ backend (which requires an external
+# -Dqnn-sdk-root) is intentionally not built to avoid a duplicate QNN backend.
+# ENABLE_NPU stays defined so RpcMemAllocator (mem_allocator.cpp, dlopen-based)
+# and the Engine dynamic-load path remain active.
+# if get_option('enable-npu')
+#   subdir('qnn')
+# endif
 
 # Install headers
 install_headers(nntrainer_headers,

@@ -192,6 +192,21 @@ public:
   setWeightOffset(std::vector<std::pair<size_t, size_t>> offsets){};
 
   /**
+   * @brief Set the backing allocator before allocation.
+   *
+   * @param alloc allocator to use; must be non-null. Throws if the pool
+   *              is already allocated. Used by TensorPool to inject the
+   *              NPU (RpcMemAllocator) or CPU allocator selected at runtime.
+   */
+  void setAllocator(std::shared_ptr<MemAllocator> alloc) {
+    if (mem_pool != nullptr)
+      throw std::runtime_error("Cannot change allocator after allocation");
+    if (alloc == nullptr)
+      throw std::invalid_argument("Allocator must not be null");
+    allocator_ = std::move(alloc);
+  }
+
+  /**
    * @brief Get the allocator used by this pool.
    *
    * @return shared_ptr<MemAllocator>

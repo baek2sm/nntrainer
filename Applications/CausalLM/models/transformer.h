@@ -49,7 +49,15 @@
 #include <tokenizers_c.h>
 #include <tokenizers_cpp.h>
 
+// Forward declaration for BaseStreamer (used by setStreamer)
+extern "C" {
+struct BaseStreamer;
+}
+
 namespace causallm {
+
+// Forward declaration for XGrammar (grammar-constrained generation)
+class XGrammar;
 
 /*** ALIAS ****/
 using LayerHandle = ml::train::LayerHandle;
@@ -57,6 +65,9 @@ using Tensor = ml::train::Tensor;
 using ModelHandle = std::unique_ptr<ml::train::Model>;
 
 using json = nlohmann::json;
+
+// Memory pointer and its size
+typedef std::pair<void *, size_t> multimodal_pointer;
 
 /**
  * @brief Model Type Enum
@@ -80,6 +91,13 @@ public:
               ModelType model_type = ModelType::MODEL);
 
   /**
+   * @brief Empty constructor for Transformer.
+   * @brief Child Class Needs to implement all features of the original
+   * Transformer constructor
+   */
+  Transformer() {}
+
+  /**
    * @brief Destroy the Transformer object
    */
   virtual ~Transformer() {}
@@ -88,6 +106,14 @@ public:
    * @brief Initialize and Construct the Transformer model
    */
   virtual void initialize();
+
+  /**
+   * @brief Initialize and Construct the Transformer model with native library
+   * directory
+   * @param native_lib_dir Native library directory path (from Android
+   * ApplicationInfo.nativeLibraryDir)
+   */
+  virtual void initialize(const std::string &native_lib_dir);
 
   /**
    * @brief Load the model weights from a file
@@ -112,12 +138,29 @@ public:
                 &layer_dtype_map = {},
               ml::train::ISA target_isa = ml::train::ISA::DEFAULT);
 
+  tokenizers::Tokenizer *getTokenizer() { return tokenizer.get(); }
+
+  /**
+   * @brief Get vocabulary size
+   */
+  unsigned int getVocabSize() const { return NUM_VOCAB; }
+
   /**
    * @brief run the Transformer model
    */
   virtual void run(const WSTR prompt, bool do_sample = false,
                    const WSTR system_prompt = WSTR(),
                    const WSTR tail_prompt = WSTR(), bool log_output = true);
+
+  /**
+   * @brief run the Transformer model, but with multimodal input and arbitrary
+   * output
+   */
+  virtual multimodal_pointer
+  run_image(const WSTR prompt, multimodal_pointer image, int image_height,
+            int image_width, bool do_sample = false,
+            const WSTR system_prompt = "", const WSTR tail_prompt = "",
+            bool log_output = true);
 
   /**
    * @brief Get TransformerPerformanceMetrics
@@ -130,6 +173,44 @@ public:
    * @brief get the status of run
    */
   bool hasRun() const { return has_run_; }
+
+  /**
+   * @brief Attach (or detach) a BaseStreamer to intercept per-token
+   *        output during the next call to run().
+   *        Default implementation does nothing - subclasses can override.
+   */
+  virtual void setStreamer(::BaseStreamer *streamer) { (void)streamer; }
+
+  /**
+   * @brief Get the generated output text.
+   *        Default implementation returns empty string - subclasses can
+   * override.
+   */
+  virtual std::string getOutput(int batch_idx = 0) const {
+    (void)batch_idx;
+    return "";
+  }
+
+  /**
+   * @brief Request cancellation of the current run().
+   *        Thread-safe: can be called from any thread.
+   *        Default implementation does nothing - subclasses can override.
+   */
+  virtual void requestStop() { /* no-op by default */
+  }
+
+  /**
+   * @brief Attach an XGrammar instance for grammar-constrained generation.
+   *        Default implementation does nothing - subclasses can override.
+   */
+  virtual void setXGrammar(XGrammar *grammar) { (void)grammar; }
+
+  /**
+   * @brief Reset the XGrammar matcher state after generation.
+   *        Default implementation does nothing - subclasses can override.
+   */
+  virtual void resetXGrammar() { /* no-op by default */
+  }
 
 protected:
   /**
@@ -241,6 +322,10 @@ protected:
   TransformerPerformanceMetrics performance_metrics;
 
   bool has_run_ = false;
+
+  /** Native library directory for loading shared libraries (e.g., QNN context)
+   */
+  std::string native_lib_dir_;
 };
 /**
  * Loads JSON data from a file with detailed error handling

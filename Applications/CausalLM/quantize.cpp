@@ -69,6 +69,8 @@
 #include "causal_lm.h"
 #include "embedding_gemma.h"
 #include "gemma3_causallm.h"
+// #include "gemma4_causallm.h"  // disabled: gemma4 excluded pending interface
+// port
 #if !defined(_WIN32)
 #include "gptoss_cached_slim_causallm.h"
 #endif
@@ -179,7 +181,8 @@ std::string toLower(std::string value) {
  */
 std::string generateOutputBinName(const std::string &original_bin,
                                   const std::string &fc_dtype,
-                                  const std::string &embd_dtype) {
+                                  const std::string &embd_dtype,
+                                  const std::string &target_isa) {
   // Extract model name from original (e.g., "nntr_qwen3_4b_fp32.bin" ->
   // "nntr_qwen3_4b")
   std::string base = original_bin;
@@ -217,9 +220,10 @@ std::string generateOutputBinName(const std::string &original_bin,
                    embd_clean.end());
 
   if (embd_clean == fc_clean) {
-    return base + "_" + fc_clean + ".bin";
+    return base + "_" + fc_clean + "_" + target_isa + ".bin";
   }
-  return base + "_" + fc_clean + "_embd" + embd_clean + ".bin";
+  return base + "_" + fc_clean + "_embd" + embd_clean + "_" + target_isa +
+         ".bin";
 }
 
 /**
@@ -323,6 +327,12 @@ void registerAllModels() {
                           return std::make_unique<causallm::Gemma3CausalLM>(
                             cfg, generation_cfg, nntr_cfg);
                         });
+  // gemma4 disabled (interface port pending):
+  // factory.registerModel("Gemma4ForCausalLM",
+  //                       [](json cfg, json generation_cfg, json nntr_cfg) {
+  //                         return std::make_unique<causallm::Gemma4CausalLM>(
+  //                           cfg, generation_cfg, nntr_cfg);
+  //                       });
   factory.registerModel("EmbeddingGemma",
                         [](json cfg, json generation_cfg, json nntr_cfg) {
                           return std::make_unique<causallm::EmbeddingGemma>(
@@ -415,6 +425,11 @@ buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
     dtype_map["embedding0"] = embd_dtype;
   }
 
+  // Gemma4 PLE layers - set to Q4_0 first
+  dtype_map["per_layer_input_embedding"] = fc_dtype;
+  // Gemma4 PLE projection
+  dtype_map["per_layer_input_projection"] = fc_dtype;
+
   // Transformer decoder layers
   for (int i = 0; i < num_layers; ++i) {
     std::string prefix = "layer" + std::to_string(i);
@@ -426,10 +441,30 @@ buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
       dtype_map[prefix + "_wv"] = fc_dtype;
       dtype_map[prefix + "_attention_out"] = fc_dtype;
 
-      // FFN FC layers
-      dtype_map[prefix + "_ffn_up"] = fc_dtype;
+      // Attention Gates
+      dtype_map[prefix + "_attention_gate_down"] = fc_dtype;
+      dtype_map[prefix + "_attention_gate_up"] = fc_dtype;
+
+      // FFN FC layers - version3
       dtype_map[prefix + "_ffn_gate"] = fc_dtype;
+      dtype_map[prefix + "_ffn_up"] = fc_dtype;
       dtype_map[prefix + "_ffn_down"] = fc_dtype;
+
+      // FFN FC layers - version4
+      dtype_map[prefix + "_ffn_gate_up"] = fc_dtype;
+      dtype_map[prefix + "_ffn_gate_down"] = fc_dtype;
+      dtype_map[prefix + "_ffn_linear_up"] = fc_dtype;
+
+      dtype_map[prefix + "_ffn_output"] = fc_dtype;
+
+      // PLE layers - version4
+      if (embd_dtype != DataType::FP32 && embd_dtype != DataType::NONE) {
+        dtype_map[prefix + "_ple"] = fc_dtype;
+      }
+
+      // PLE - gemma4
+      dtype_map[prefix + "_per_layer_input_gate"] = fc_dtype;
+      dtype_map[prefix + "_per_layer_input_proj"] = fc_dtype;
     }
   }
 
@@ -595,8 +630,9 @@ int main(int argc, char *argv[]) {
     // Determine output bin filename
     std::string original_bin = nntr_cfg["model_file_name"].get<std::string>();
     if (output_bin_name.empty()) {
-      output_bin_name = generateOutputBinName(
-        original_bin, dataTypeToStr(fc_dtype), dataTypeToStr(embd_dtype));
+      output_bin_name =
+        generateOutputBinName(original_bin, dataTypeToStr(fc_dtype),
+                              dataTypeToStr(embd_dtype), isa_str);
     }
 
     std::string src_weight_path = model_path + "/" + original_bin;

@@ -491,7 +491,6 @@ inline void CachedSlimGptOssMoELayer::compute_expert_forward(
   nntrainer::Tensor token_expert_output(token_output_dim);
 
   unsigned token_idx = token_assignments[0].first;
-  float weight = token_assignments[0].second;
 
   if (num_tokens > 1) {
     /** if prefill, copy data to make a batch */

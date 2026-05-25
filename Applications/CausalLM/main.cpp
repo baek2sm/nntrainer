@@ -36,6 +36,8 @@
 #include "deberta_v2.h"
 #include "embedding_gemma.h"
 #include "gemma3_causallm.h"
+// #include "gemma4_causallm.h"  // disabled: gemma4 excluded pending interface
+// port
 #if !defined(_WIN32)
 #include "gptoss_cached_slim_causallm.h"
 #endif
@@ -258,6 +260,12 @@ int main(int argc, char *argv[]) {
       return std::make_unique<causallm::Gemma3CausalLM>(cfg, generation_cfg,
                                                         nntr_cfg);
     });
+  // gemma4 disabled (interface port pending):
+  // causallm::Factory::Instance().registerModel(
+  //   "Gemma4ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
+  //     return std::make_unique<causallm::Gemma4CausalLM>(cfg, generation_cfg,
+  //                                                       nntr_cfg);
+  //   });
   causallm::Factory::Instance().registerModel(
     "EmbeddingGemma", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::EmbeddingGemma>(cfg, generation_cfg,
@@ -390,7 +398,22 @@ int main(int argc, char *argv[]) {
     model->run(input_text.c_str(), do_sample, system_head_prompt.c_str(),
                system_tail_prompt.c_str());
 #else
-    model->run(input_text, do_sample, system_head_prompt, system_tail_prompt);
+    if (architecture.find("Visual") != std::string::npos) {
+      // Temp code for testing multimodal input
+      int my_image_height = 1024;
+      int my_image_width = 1024;
+      int my_image_size = 5 * 512 * 512 * 3 * sizeof(uint16_t);
+      void *my_image = malloc(my_image_size);
+      causallm::multimodal_pointer image =
+        std::make_pair(my_image, my_image_size);
+      auto output =
+        model->run_image(input_text, image, my_image_height, my_image_width,
+                         do_sample, system_head_prompt, system_tail_prompt);
+      free(my_image);
+      std::cout << output.second; // To avoid unused variable warning
+    } else {
+      model->run(input_text, do_sample, system_head_prompt, system_tail_prompt);
+    }
 #endif
 #ifdef PROFILE
     stop_and_print_peak();
