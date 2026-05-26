@@ -469,7 +469,9 @@ void DebertaAttentionLayer::compute_kcaches(
     }
 
   } else if (in.getDataType() == ml::train::TensorDim::DataType::FP16) {
-#ifdef ENABLE_FP16
+#if defined(ENABLE_FP16) &&                                                    \
+  (defined(__aarch64__) || defined(__ARM_ARCH_7A__) || defined(__ANDROID__) || \
+   defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64))
     if (sequence_len == 1) {
       const int num_rows = from + sequence_len;
       const unsigned int num_cache_head = num_head / group_size;
@@ -628,7 +630,9 @@ void DebertaAttentionLayer::compute_fp16vcache_transposed(
     }
 
   } else if (in.getDataType() == ml::train::TensorDim::DataType::FP16) {
-#ifdef ENABLE_FP16
+#if defined(ENABLE_FP16) &&                                                    \
+  (defined(__aarch64__) || defined(__ARM_ARCH_7A__) || defined(__ANDROID__) || \
+   defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64))
     if ((to - from) != 1) {
       const int seq = to - from;
 
