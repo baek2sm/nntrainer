@@ -20,8 +20,14 @@
 #include <unordered_map>
 #include <utility>
 
+/**
+ * @brief Namespace for CausalLM application components
+ */
 namespace causallm {
 
+/**
+ * @brief Anonymous namespace for chat template helpers
+ */
 namespace {
 
 using OrderedJson = nlohmann::ordered_json;

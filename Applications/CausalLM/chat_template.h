@@ -17,6 +17,9 @@
 #include <memory>
 #include <string>
 
+/**
+ * @brief Namespace for CausalLM application components
+ */
 namespace causallm {
 
 /**

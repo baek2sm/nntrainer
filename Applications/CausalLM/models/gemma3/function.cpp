@@ -17,7 +17,13 @@
 #include <unordered_map>
 #include <vector>
 
+/**
+ * @brief Namespace for CausalLM application components
+ */
 namespace causallm {
+/**
+ * @brief Namespace for Gemma3 chat formatting helpers
+ */
 namespace gemma3 {
 
 // Helper to escape string values

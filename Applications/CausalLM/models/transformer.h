@@ -198,6 +198,14 @@ protected:
   virtual void registerCustomLayers();
 
   /**
+   * @brief Get model format from weight file extension.
+   * @param weight_path Path to the weight file.
+   * @return Model format for the given file extension.
+   */
+  virtual ml::train::ModelFormat
+  formatFromExtension(const std::string &weight_path);
+
+  /**
    * @brief register Outputs
    */
   bool is_initialized = false; /**< Flag to check if the model is initialized */
