@@ -632,7 +632,9 @@ void MHACoreLayer::compute_kcaches(nntrainer::Tensor &in,
       });
     }
   } else if (in.getDataType() == ml::train::TensorDim::DataType::FP16) {
-#ifdef ENABLE_FP16
+#if defined(ENABLE_FP16) &&                                                    \
+  (defined(__aarch64__) || defined(__ARM_ARCH_7A__) || defined(__ANDROID__) || \
+   defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64))
     if (sequence_len == 1) {
       // Single token processing (common during generation)
       // Parallelize over KV heads for decoding since Q direction is always 1
@@ -1124,7 +1126,9 @@ void MHACoreLayer::apply_rotary_emb_tensor_v2(nntrainer::Tensor &in,
       }
     }
   } else if (in.getDataType() == ml::train::TensorDim::DataType::FP16) {
-#ifdef ENABLE_FP16
+#if defined(ENABLE_FP16) &&                                                    \
+  (defined(__aarch64__) || defined(__ARM_ARCH_7A__) || defined(__ANDROID__) || \
+   defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64))
     std::vector<std::vector<_FP16>> *freqs_cos_fp16_local = nullptr;
     std::vector<std::vector<_FP16>> *freqs_sin_fp16_local = nullptr;
     {
@@ -1408,7 +1412,9 @@ void MHACoreLayer::compute_fp16vcache_transposed(
       }
     }
   } else if (in.getDataType() == ml::train::TensorDim::DataType::FP16) {
-#ifdef ENABLE_FP16
+#if defined(ENABLE_FP16) &&                                                    \
+  (defined(__aarch64__) || defined(__ARM_ARCH_7A__) || defined(__ANDROID__) || \
+   defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64))
     if ((to - from) != 1) {
       int seq = (to - from) < local_window_size ? to - from : local_window_size;
       if (!is_causal)

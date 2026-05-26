@@ -113,6 +113,7 @@ LOCAL_SRC_FILES := \
     ../models/lfm2/lfm2_causallm.cpp \
     ../layers/causal_conv1d_layer.cpp \
     ../layers/custom_multiply.cpp \
+    ../api/streamer.cpp \
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_STATIC_LIBRARIES := tokenizers_c
