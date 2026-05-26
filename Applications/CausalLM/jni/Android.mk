@@ -29,6 +29,7 @@ CAUSALLM_COMMON_INCLUDES := \
     $(LOCAL_PATH)/../models/bert \
     $(LOCAL_PATH)/../models/timm_vit \
     $(LOCAL_PATH)/../models/deberta_v2 \
+    $(LOCAL_PATH)/../models/lfm2 \
     $(LOCAL_PATH)/../api \
     $(LOCAL_PATH)/../third_party/minja/include \
     $(LOCAL_PATH)/../third_party \
@@ -109,6 +110,9 @@ LOCAL_SRC_FILES := \
     ../models/deberta_v2/deberta_v2.cpp \
     ../layers/deberta_attention_layer.cpp \
     ../layers/shared_fully_connected_layer.cpp \
+    ../models/lfm2/lfm2_causallm.cpp \
+    ../layers/causal_conv1d_layer.cpp \
+    ../layers/custom_multiply.cpp \
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_STATIC_LIBRARIES := tokenizers_c
