@@ -306,6 +306,15 @@ int main(int argc, char *argv[]) {
       generation_cfg = causallm::LoadJsonFile(generation_config_path);
     }
     json nntr_cfg = causallm::LoadJsonFile(model_path + "/nntr_config.json");
+    if (nntr_cfg.contains("tokenizer_file") &&
+        nntr_cfg["tokenizer_file"].is_string()) {
+      std::filesystem::path tokenizer_file(
+        nntr_cfg["tokenizer_file"].get<std::string>());
+      if (tokenizer_file.is_relative()) {
+        nntr_cfg["tokenizer_file"] =
+          (std::filesystem::path(model_path) / tokenizer_file).string();
+      }
+    }
 
     if (nntr_cfg.contains("system_prompt")) {
       system_head_prompt =
