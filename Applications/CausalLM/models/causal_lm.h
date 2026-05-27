@@ -42,7 +42,20 @@
 #include <kv_cache_manager.h>
 #include <transformer.h>
 
+#include <functional>
+#include <optional>
+
 namespace causallm {
+
+/**
+ * @brief Optional generation settings for a single CausalLM run
+ */
+struct GenerationOverrides {
+  std::optional<float> temperature;       /**< Temporary sampling temperature */
+  std::optional<float> top_p;             /**< Temporary nucleus sampling */
+  std::optional<unsigned int> top_k;      /**< Temporary top-k sampling */
+  std::optional<unsigned int> max_tokens; /**< Temporary generation limit */
+};
 
 /**
  * @brief CausalLM Class
@@ -50,6 +63,11 @@ namespace causallm {
 WIN_EXPORT class CausalLM : virtual public Transformer {
 
 public:
+  /**
+   * @brief Callback invoked with each decoded text piece
+   */
+  using TokenCallback = std::function<bool(const std::string &)>;
+
   /**
    * @brief Construct a new CausalLM object
    * @param cfg Configuration for the model (config.json)
@@ -80,6 +98,33 @@ public:
    * @return Generated text string
    */
   std::string getOutput(int batch_idx = 0) const;
+
+  /**
+   * @brief Reset generated text and KV-cache cursor for an independent request
+   */
+  void resetGenerationState();
+
+  /**
+   * @brief Set callback invoked whenever visible decoded text is flushed
+   * @param callback Returns false to request generation cancellation
+   */
+  void setOnToken(TokenCallback callback);
+
+  /**
+   * @brief Clear token callback and any pending cancellation request
+   */
+  void clearOnToken();
+
+  /**
+   * @brief Apply temporary generation settings for the next run
+   * @param overrides Optional per-request generation settings
+   */
+  void setGenerationOverrides(const GenerationOverrides &overrides);
+
+  /**
+   * @brief Restore generation settings loaded from model configuration
+   */
+  void clearGenerationOverrides();
 
 protected:
   /**
@@ -138,6 +183,10 @@ protected:
   float TEMPERATURE;
   unsigned int TOP_K;
   float TOP_P;
+  float DEFAULT_TEMPERATURE = 0.0F;
+  unsigned int DEFAULT_TOP_K = 0;
+  float DEFAULT_TOP_P = 0.0F;
+  int DEFAULT_NUM_TO_GENERATE = 0;
 
   std::vector<unsigned int> BAD_WORD_IDS; /**< List of bad word IDs */
   unsigned int NUM_BADWORDS;              /**< Number of bad words */
@@ -147,6 +196,9 @@ protected:
   bool SAVE_KVCACHE;
   bool USE_KVCACHE;
   unsigned int global_token_len;
+  TokenCallback on_token_;
+  bool cancel_requested_ = false;
+  bool generation_overrides_active_ = false;
 
   std::mt19937 rng; /**< Random Number Gen */
 

@@ -2,6 +2,7 @@ causallm_src = [
     meson.current_source_dir() / 'chat_template.cpp',
     meson.current_source_dir() / 'huggingface_tokenizer.cpp',
     meson.current_source_dir() / 'llm_util.cpp',
+    meson.current_source_dir() / 'rest_api' / 'openai_protocol.cpp',
     meson.current_source_dir() / 'api' / 'causal_lm_api.cpp',
     meson.current_source_dir() / 'api' / 'model_config.cpp',
     meson.current_source_dir() / 'kv_cache_manager.cpp',
@@ -11,8 +12,13 @@ executable_src = [
     meson.current_source_dir() / 'main.cpp',
 ]
 
+openai_server_src = [
+    meson.current_source_dir() / 'rest_api' / 'openai_server.cpp',
+]
+
 causallm_inc_abs = [meson.current_source_dir()]
 causallm_inc = [include_directories('.')]
+causallm_rest_api_inc = [include_directories('rest_api')]
 causallm_inc_minja_inc = include_directories('third_party/minja/include')
 causallm_inc_nlohmann_inc = include_directories('third_party')
 
@@ -128,6 +134,7 @@ if get_option('platform') == 'windows'
         ],
         include_directories: [
             causallm_inc,
+            causallm_rest_api_inc,
             causallm_inc_minja_inc,
             causallm_inc_nlohmann_inc
         ],
@@ -145,6 +152,7 @@ else
         ],
         include_directories: [
             causallm_inc,
+            causallm_rest_api_inc,
             causallm_inc_minja_inc,
             causallm_inc_nlohmann_inc
         ],
@@ -157,13 +165,19 @@ endif
 
 causallm_dep = declare_dependency(
     link_with: [causallm],
-    include_directories: causallm_inc,
+    include_directories: causallm_inc + causallm_rest_api_inc,
     link_args: get_option('platform') == 'windows' ? tokenizer_link_args : []
 )
 
 e = executable('nntr_causallm',
     executable_src,
     include_directories: [causallm_inc, causallm_inc_minja_inc, causallm_inc_nlohmann_inc],
+    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_layer_dependencies, causallm_dep],
+)
+
+e_openai_server = executable('nntr_causallm_openai_server',
+    openai_server_src,
+    include_directories: [causallm_inc, causallm_rest_api_inc],
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_layer_dependencies, causallm_dep],
 )
 
@@ -221,6 +235,7 @@ if get_option('enable-test')
       'unittest_causallm_models',
       [
         meson.source_root() / 'test' / 'unittest' / 'models' / 'causallm_test_utils.cpp',
+        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_openai_protocol.cpp',
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_gemma3.cpp',
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen2.cpp',
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3.cpp',

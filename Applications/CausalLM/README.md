@@ -81,21 +81,23 @@ To use chat templates, ensure `tokenizer_config.json` is in your model directory
 
 ### Multi-turn Conversations (API)
 
-The C API supports multi-turn conversations through `ChatMessage`:
+The chat template helper supports multi-turn conversations through JSON input:
 
 ```cpp
 #include "chat_template.h"
 
-causallm::ChatTemplate tmpl = causallm::ChatTemplate::fromFile("tokenizer_config.json");
+causallm::ChatTemplate tmpl = causallm::ChatTemplate::Load("/path/to/model");
 
-std::vector<causallm::ChatMessage> messages = {
-  {"system", "You are a helpful assistant."},
-  {"user", "Hello!"},
-  {"assistant", "Hi there!"},
-  {"user", "How are you?"}
+nlohmann::json input = {
+  {"messages",
+   {{{"role", "system"}, {"content", "You are a helpful assistant."}},
+    {{"role", "user"}, {"content", "Hello!"}},
+    {{"role", "assistant"}, {"content", "Hi there!"}},
+    {{"role", "user"}, {"content", "How are you?"}}}},
+  {"add_generation_prompt", true},
 };
 
-std::string formatted = tmpl.apply(messages);
+std::string formatted = tmpl.apply(input);
 ```
 
 ## How to run
@@ -184,6 +186,31 @@ PS> $env:PATH = (($dllDirs + @($build, "$build\Applications\CausalLM")) -join ";
 PS> $env:NNTR_NUM_THREADS = "4"
 PS> .\build-causallm-win\Applications\CausalLM\nntr_causallm.exe C:\path\to\model "Hello from Windows"
 ```
+
+#### OpenAI-compatible REST server
+
+CausalLM can also be built as a local OpenAI-compatible REST server:
+
+```powershell
+PS> ninja -C build-causallm-win nntr_causallm_openai_server
+PS> $build = Resolve-Path build-causallm-win
+PS> $dllDirs = Get-ChildItem $build -Filter *.dll -Recurse | ForEach-Object { Split-Path -Parent $_.FullName } | Sort-Object -Unique
+PS> $env:PATH = (($dllDirs + @($build, "$build\Applications\CausalLM")) -join ";") + ";" + $env:PATH
+PS> .\build-causallm-win\Applications\CausalLM\nntr_causallm_openai_server.exe C:\path\to\model --port 8000 --model qwen3-0.6b
+```
+
+Supported endpoints:
+
+- `GET /health`
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+- `POST /v1/completions`
+
+Chat completions support OpenAI-style SSE streaming with `stream=true`.
+Streaming text completions are rejected for now. The server disables Qwen
+thinking mode by default and strips reasoning tags from the returned OpenAI
+`content` or `text` field. Pass `--enable-thinking` to keep the model's
+thinking template enabled.
 
 ### 4. Android Build & Test
 

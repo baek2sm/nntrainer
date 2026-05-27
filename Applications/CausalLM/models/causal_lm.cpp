@@ -42,6 +42,9 @@
 #include <causal_lm.h>
 #include <llm_util.hpp>
 
+/**
+ * @brief Namespace for CausalLM application components
+ */
 namespace causallm {
 
 CausalLM::CausalLM(json &cfg, json &generation_cfg, json &nntr_cfg) :
@@ -102,6 +105,10 @@ void CausalLM::setupParameters(json &cfg, json &generation_cfg,
   TEMPERATURE = generation_cfg.contains("temperature")
                   ? generation_cfg["temperature"].get<float>()
                   : 0.7;
+  DEFAULT_TEMPERATURE = TEMPERATURE;
+  DEFAULT_TOP_K = TOP_K;
+  DEFAULT_TOP_P = TOP_P;
+  DEFAULT_NUM_TO_GENERATE = NUM_TO_GENERATE;
   global_token_len = 0;
 }
 
@@ -238,6 +245,9 @@ void CausalLM::registerOutputs(
           std::cout.flush();
         }
         output_list[b].append(decoded_str);
+        if (on_token_ && !on_token_(decoded_str)) {
+          cancel_requested_ = true;
+        }
         pending_ids_.clear();
       }
     }
@@ -346,6 +356,7 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   allocateAndBindKVCache();
 
   has_run_ = false;
+  cancel_requested_ = false;
 
   output_list.clear();
   for (unsigned int b = 0; b < BATCH_SIZE; ++b) {
@@ -355,6 +366,9 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   if (MAX_SEQ_LEN < INIT_SEQ_LEN) {
     throw std::invalid_argument(
       "MAX_SEQ_LEN must be greater than or equal to INIT_SEQ_LEN");
+  }
+  if (MAX_SEQ_LEN < 2) {
+    throw std::invalid_argument("MAX_SEQ_LEN must be at least 2");
   }
 
   /**
@@ -403,7 +417,13 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
 
   std::vector<int64_t> init_input;
   unsigned int _len = _input.size();
-  unsigned int num_allow_str = MAX_SEQ_LEN - NUM_TO_GENERATE;
+  const unsigned int configured_generation =
+    NUM_TO_GENERATE > 0
+      ? std::min(static_cast<unsigned int>(NUM_TO_GENERATE), MAX_SEQ_LEN - 1)
+      : 0U;
+  const unsigned int num_allow_str = MAX_SEQ_LEN > configured_generation + 1
+                                       ? MAX_SEQ_LEN - configured_generation - 1
+                                       : 1U;
   unsigned int text_len = _len;
 
   if (_len > num_allow_str)
@@ -525,8 +545,14 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   std::vector<unsigned int> id_list(
     generate(output[0], do_sample, 1, ids_history, init_len));
 
-  if (init_len < INIT_SEQ_LEN)
+  const unsigned int requested_generation_limit =
+    NUM_TO_GENERATE > 0 ? static_cast<unsigned int>(NUM_TO_GENERATE) : 0U;
+  unsigned int prefill_generated_tokens = 0;
+  if (requested_generation_limit > 0 && init_len < INIT_SEQ_LEN) {
     registerOutputs(tokenizer, id_list, init_len, eos_list, log_output);
+    ++generation_cnt;
+    prefill_generated_tokens = 1;
+  }
 
   // output should be deallocated after use
   for (auto &out : output) {
@@ -550,8 +576,18 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
 
   auto start_generation = std::chrono::high_resolution_clock::now();
 
+  const unsigned int remaining_generation_limit =
+    requested_generation_limit > prefill_generated_tokens
+      ? requested_generation_limit - prefill_generated_tokens
+      : 0U;
+  const unsigned int generation_limit =
+    (remaining_generation_limit > 0 && input_len + 1 < MAX_SEQ_LEN)
+      ? std::min(remaining_generation_limit, MAX_SEQ_LEN - input_len - 1)
+      : 0U;
+
   for (unsigned int token_generation_idx = input_len + 1;
-       token_generation_idx < input_len + 1 + NUM_TO_GENERATE;
+       token_generation_idx < input_len + 1 + generation_limit &&
+       !cancel_requested_;
        ++token_generation_idx) {
 
     allocateAndBindKVCache();
@@ -575,6 +611,10 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
     // output should be deallocated after use
     for (auto out : output_interval) {
       delete[] out;
+    }
+
+    if (cancel_requested_) {
+      break;
     }
 
     // check FINISH
@@ -646,6 +686,70 @@ std::string CausalLM::getOutput(int batch_idx) const {
     return "";
   }
   return output_list[batch_idx];
+}
+
+void CausalLM::resetGenerationState() {
+  global_token_len = 0;
+  pending_ids_.clear();
+  output_list.clear();
+  for (unsigned int b = 0; b < BATCH_SIZE; ++b) {
+    output_list.push_back("");
+  }
+
+  if (is_initialized && kv_cache.isAllocated()) {
+    setKVCachePosition(0);
+  }
+}
+
+void CausalLM::setOnToken(TokenCallback callback) {
+  on_token_ = std::move(callback);
+  cancel_requested_ = false;
+}
+
+void CausalLM::clearOnToken() {
+  on_token_ = nullptr;
+  cancel_requested_ = false;
+}
+
+void CausalLM::setGenerationOverrides(const GenerationOverrides &overrides) {
+  clearGenerationOverrides();
+
+  if (overrides.temperature.has_value()) {
+    TEMPERATURE = *overrides.temperature;
+    generation_overrides_active_ = true;
+  }
+  if (overrides.top_p.has_value()) {
+    TOP_P = *overrides.top_p;
+    generation_overrides_active_ = true;
+  }
+  if (overrides.top_k.has_value()) {
+    TOP_K = *overrides.top_k;
+    generation_overrides_active_ = true;
+  }
+  if (overrides.max_tokens.has_value()) {
+    const unsigned int max_allowed_by_sequence =
+      MAX_SEQ_LEN > 1 ? MAX_SEQ_LEN - 1 : 0;
+    const unsigned int max_allowed_by_graph =
+      DEFAULT_NUM_TO_GENERATE > 0
+        ? static_cast<unsigned int>(DEFAULT_NUM_TO_GENERATE)
+        : 0U;
+    const unsigned int max_allowed =
+      std::min(max_allowed_by_sequence, max_allowed_by_graph);
+    NUM_TO_GENERATE =
+      static_cast<int>(std::min(*overrides.max_tokens, max_allowed));
+    generation_overrides_active_ = true;
+  }
+}
+
+void CausalLM::clearGenerationOverrides() {
+  if (!generation_overrides_active_)
+    return;
+
+  TEMPERATURE = DEFAULT_TEMPERATURE;
+  TOP_K = DEFAULT_TOP_K;
+  TOP_P = DEFAULT_TOP_P;
+  NUM_TO_GENERATE = DEFAULT_NUM_TO_GENERATE;
+  generation_overrides_active_ = false;
 }
 
 } // namespace causallm

@@ -178,6 +178,21 @@ public:
   bool hasRun() const override { return causallm::CausalLM::hasRun(); }
 
   /**
+   * @brief Get current generation limit used by CausalLM
+   */
+  unsigned int currentGenerationLimit() const {
+    return NUM_TO_GENERATE > 0 ? static_cast<unsigned int>(NUM_TO_GENERATE)
+                               : 0U;
+  }
+
+  /**
+   * @brief Get generated token count reported by CausalLM
+   */
+  unsigned int generatedTokenCount() const {
+    return getPerformanceMetrics().generation_tokens;
+  }
+
+  /**
    * @brief Read one token from the Qwen3 input/output history
    */
   unsigned int tokenAt(size_t idx) const override { return ids_history[idx]; }
@@ -557,6 +572,47 @@ TEST_P(CausalLMTinyModelTest, WeightRoundTripProducesSameLogits) {
 TEST_P(CausalLMTinyModelTest, PromptProducesExpectedLogits) {
   const auto files = makeFiles();
   causallm_test::expectPromptProducesExpectedLogits(GetParam(), files);
+}
+
+/**
+ * @brief Test that max_tokens cannot exceed the initialized graph window
+ */
+TEST(Qwen3CausalLMTinyModelTest, MaxTokensOverrideIsClampedToGraphWindow) {
+  const auto files = causallm_test::makeTinyCausalLMFiles(
+    "Qwen3CausalLMTinyModelTest", "MaxTokensOverrideIsClampedToGraphWindow",
+    "Qwen3_FP32");
+  auto test_case = makeQwen3Case(causallm_test::makeTinyFp32DataType());
+  auto config =
+    causallm_test::makeTinyCausalLMConfig(test_case, files.tokenizer_path);
+  TinyQwen3CausalLM model(config.model, config.generation, config.nntrainer);
+
+  causallm::GenerationOverrides overrides;
+  overrides.max_tokens = 7U;
+  model.setGenerationOverrides(overrides);
+
+  EXPECT_EQ(model.currentGenerationLimit(), 1U);
+}
+
+/**
+ * @brief Test that max_tokens counts the token emitted from prefill
+ */
+TEST(Qwen3CausalLMTinyModelTest, MaxTokensIncludesPrefillToken) {
+  const auto files = causallm_test::makeTinyCausalLMFiles(
+    "Qwen3CausalLMTinyModelTest", "MaxTokensIncludesPrefillToken",
+    "Qwen3_FP32");
+  auto test_case = makeQwen3Case(causallm_test::makeTinyFp32DataType());
+  auto config =
+    causallm_test::makeTinyCausalLMConfig(test_case, files.tokenizer_path);
+  TinyQwen3CausalLM model(config.model, config.generation, config.nntrainer);
+  model.initializeModel();
+  model.setDeterministicWeights();
+
+  causallm::GenerationOverrides overrides;
+  overrides.max_tokens = 1U;
+  model.setGenerationOverrides(overrides);
+  model.run("hello", false, "", "", false);
+
+  EXPECT_EQ(model.generatedTokenCount(), 1U);
 }
 
 INSTANTIATE_TEST_SUITE_P(
