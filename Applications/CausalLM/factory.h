@@ -20,12 +20,20 @@
 #ifdef __ANDROID__
 #include <android/log.h>
 #define LOG_TAG "QuickAI"
+#ifndef LOGD
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#endif
+#ifndef LOGE
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#endif
 #else
 #include <cstdio>
+#ifndef LOGD
 #define LOGD(fmt, ...) fprintf(stdout, fmt "\n", ##__VA_ARGS__)
+#endif
+#ifndef LOGE
 #define LOGE(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
+#endif
 #endif
 
 namespace causallm {

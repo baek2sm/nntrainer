@@ -5,6 +5,7 @@ causallm_src = [
     meson.current_source_dir() / 'tokenizers' / 'wordpiece_tokenizer.cpp',
     meson.current_source_dir() / 'llm_util.cpp',
     meson.current_source_dir() / 'kv_cache_manager.cpp',
+    meson.current_source_dir() / 'api' / 'streamer.cpp',
 ]
 
 executable_src = [
@@ -12,7 +13,7 @@ executable_src = [
 ]
 
 causallm_inc_abs = [meson.current_source_dir()]
-causallm_inc = [include_directories('.')]
+causallm_inc = [include_directories('.'), include_directories('api')]
 causallm_inc_minja_inc = include_directories('third_party/minja/include')
 # Provide both 'third_party' (for "nlohmann/json.hpp") and 'third_party/nlohmann'
 # (for the bare "json.hpp"/<json.hpp> form used across CausalLM sources).
