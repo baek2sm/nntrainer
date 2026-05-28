@@ -25,7 +25,11 @@
 
 #pragma once
 #ifdef _WIN32
+#ifdef NNTRAINER_CAUSALLM_HIDE_INTERNAL_EXPORTS
+#define WIN_EXPORT
+#else
 #define WIN_EXPORT __declspec(dllexport)
+#endif
 #define WSTR std::string
 #define WCHAR_P std::string &
 #else
@@ -130,6 +134,31 @@ public:
    * @brief get the status of run
    */
   bool hasRun() const { return has_run_; }
+
+  /**
+   * @brief Get maximum sequence length
+   */
+  unsigned int getMaxSeqLen() const { return MAX_SEQ_LEN; }
+
+  /**
+   * @brief Get initial sequence length
+   */
+  unsigned int getInitSeqLen() const { return INIT_SEQ_LEN; }
+
+  /**
+   * @brief Get number of tokens to generate
+   */
+  int getNumToGenerate() const { return NUM_TO_GENERATE; }
+
+  /**
+   * @brief Get model batch size
+   */
+  unsigned int getBatchSize() const { return BATCH_SIZE; }
+
+  /**
+   * @brief Get hidden dimension
+   */
+  int getHiddenDim() const { return DIM; }
 
 protected:
   /**

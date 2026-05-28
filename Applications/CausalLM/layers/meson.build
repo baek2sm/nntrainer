@@ -14,11 +14,12 @@ causallm_embedding_normalize_src_abs = [meson.current_source_dir() / 'embedding_
 causallm_deberta_attention_src_abs = [meson.current_source_dir() / 'deberta_attention_layer.cpp']
 causallm_shared_fully_connected_src_abs = [meson.current_source_dir() / 'shared_fully_connected_layer.cpp']
 
-causallm_rms_norm = shared_library(
+causallm_rms_norm = library(
     'rms_norm_layer', 
     causallm_rms_norm_src_abs, 
     include_directories: causallm_layer_inc, 
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
@@ -27,11 +28,12 @@ causallm_rms_norm_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-causallm_swiglu = shared_library(
+causallm_swiglu = library(
     'swiglu_layer',
     causallm_swiglu_src_abs,
     include_directories: causallm_layer_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
@@ -40,11 +42,12 @@ causallm_swiglu_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-causallm_tie_word_embedding = shared_library(
+causallm_tie_word_embedding = library(
     'tie_word_embedding_layer',
     causallm_tie_word_embedding_src_abs,
     include_directories: causallm_layer_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
@@ -53,11 +56,12 @@ causallm_tie_word_embedding_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-causallm_lm_head = shared_library(
+causallm_lm_head = library(
     'lm_head',
     causallm_lmhead_src_abs,
     include_directories: causallm_layer_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
@@ -66,11 +70,12 @@ causallm_lm_head_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-causallm_mha_core = shared_library(
+causallm_mha_core = library(
     'mha_core_layer',
     causallm_mha_core_abs,
     include_directories: causallm_layer_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
@@ -79,11 +84,12 @@ causallm_mha_core_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-causallm_embedding_layer = shared_library(
+causallm_embedding_layer = library(
     'embedding_layer',
     causallm_embedding_src_abs,
     include_directories: causallm_layer_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
@@ -92,11 +98,12 @@ causallm_embedding_layer_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-causallm_embedding_pooling_layer = shared_library(
+causallm_embedding_pooling_layer = library(
     'embedding_pooling_layer',
     causallm_embedding_pooling_src_abs,
     include_directories: causallm_layer_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
@@ -105,11 +112,12 @@ causallm_embedding_pooling_layer_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-causallm_embedding_normalize_layer = shared_library(
+causallm_embedding_normalize_layer = library(
     'embedding_normalize_layer',
     causallm_embedding_normalize_src_abs,
     include_directories: causallm_layer_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
@@ -119,11 +127,12 @@ causallm_embedding_normalize_layer_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-causallm_reshaped_rms_norm = shared_library(
+causallm_reshaped_rms_norm = library(
     'reshaped_rms_norm_layer', 
     causallm_reshaped_rms_norm_src_abs, 
     include_directories: causallm_layer_inc, 
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
@@ -132,11 +141,12 @@ causallm_reshaped_rms_norm_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-causallm_qkv_layer = shared_library(
+causallm_qkv_layer = library(
     'qkv_layer',
     causallm_qkv_layer_src_abs,
     include_directories: causallm_layer_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
@@ -146,11 +156,12 @@ causallm_qkv_layer_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-causallm_deberta_attention_layer = shared_library(
+causallm_deberta_attention_layer = library(
     'deberta_attention_layer',
     causallm_deberta_attention_src_abs,
     include_directories: causallm_layer_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
@@ -160,11 +171,12 @@ causallm_deberta_attention_layer_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-causallm_shared_fully_connected_layer = shared_library(
+causallm_shared_fully_connected_layer = library(
     'shared_fully_connected_layer',
     causallm_shared_fully_connected_src_abs,
     include_directories: causallm_layer_inc,
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )

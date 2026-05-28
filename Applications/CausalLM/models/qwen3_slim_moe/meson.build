@@ -6,11 +6,12 @@ qwen3_slim_moe_inc = include_directories('.')
 
 causallm_slim_moe_layer_src_abs = [meson.current_source_dir() / 'qwen_moe_layer_fsu.cpp']
 
-causallm_slim_moe_layer = shared_library(
+causallm_slim_moe_layer = library(
     'qwen_moe_layer_fsu',
     causallm_slim_moe_layer_src_abs,
     include_directories: [causallm_layer_inc, qwen3_slim_moe_inc],
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )

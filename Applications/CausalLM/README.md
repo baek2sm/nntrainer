@@ -212,6 +212,24 @@ thinking mode by default and strips reasoning tags from the returned OpenAI
 `content` or `text` field. Pass `--enable-thinking` to keep the model's
 thinking template enabled.
 
+#### Single-DLL C ABI
+
+For in-process hosts that cannot run the REST server, build
+`nntrainer_causallm.dll` with the static-library and static CRT options:
+
+```powershell
+PS> meson setup build-causallm-abi -Dplatform=windows -Denable-transformer=true -Denable-test=false -Ddefault_library=static -Db_vscrt=mt
+PS> ninja -C build-causallm-abi nntrainer_causallm nntrainer_causallm_sample
+```
+
+The package contract is one `nntrainer_causallm.dll`, the public
+`Applications\CausalLM\capi\nntrainer_causallm.h` header, and a `model/`
+directory. The ABI uses `nntr_ctx_create`, `nntr_generate` streaming callbacks,
+`nntr_cancel`, and `nntr_ctx_free`; it does not require an executable, HTTP
+port, `PATH` edits, or runtime plugin DLL discovery. See
+`Applications\CausalLM\capi\README.md` and `MODEL_PACKAGE.md` for the ABI,
+threading contract, and model layout.
+
 ### 4. Android Build & Test
 
 The Android build process is modularized to support building the core library, API library, and test applications independently.

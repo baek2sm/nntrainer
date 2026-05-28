@@ -7,7 +7,8 @@
 
 param (
     [string]$BuildDir = "build",
-    [string]$RustTarget = ""
+    [string]$RustTarget = "",
+    [switch]$StaticCrt
 )
 
 $ErrorActionPreference = "Stop"
@@ -61,25 +62,32 @@ Write-Output "  target: $TargetDir"
 $PreviousRustFlags = $env:RUSTFLAGS
 $PreviousCFlags = $env:CFLAGS
 $PreviousCxxFlags = $env:CXXFLAGS
-$DynamicCrtFlag = "-C target-feature=-crt-static"
+if ($StaticCrt) {
+    $CrtRustFlag = "-C target-feature=+crt-static"
+    $CrtCFlag = "/MT"
+} else {
+    $CrtRustFlag = "-C target-feature=-crt-static"
+    $CrtCFlag = "/MD"
+}
+$TokenizerCFlag = "$CrtCFlag /DONIG_STATIC"
 
 try {
     if ([string]::IsNullOrWhiteSpace($PreviousRustFlags)) {
-        $env:RUSTFLAGS = $DynamicCrtFlag
+        $env:RUSTFLAGS = $CrtRustFlag
     } else {
-        $env:RUSTFLAGS = "$PreviousRustFlags $DynamicCrtFlag"
+        $env:RUSTFLAGS = "$PreviousRustFlags $CrtRustFlag"
     }
 
     if ([string]::IsNullOrWhiteSpace($PreviousCFlags)) {
-        $env:CFLAGS = "/MD"
+        $env:CFLAGS = $TokenizerCFlag
     } else {
-        $env:CFLAGS = "$PreviousCFlags /MD"
+        $env:CFLAGS = "$PreviousCFlags $TokenizerCFlag"
     }
 
     if ([string]::IsNullOrWhiteSpace($PreviousCxxFlags)) {
-        $env:CXXFLAGS = "/MD"
+        $env:CXXFLAGS = $TokenizerCFlag
     } else {
-        $env:CXXFLAGS = "$PreviousCxxFlags /MD"
+        $env:CXXFLAGS = "$PreviousCxxFlags $TokenizerCFlag"
     }
 
     & cargo @CargoArgs

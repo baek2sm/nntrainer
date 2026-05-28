@@ -421,13 +421,21 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
     NUM_TO_GENERATE > 0
       ? std::min(static_cast<unsigned int>(NUM_TO_GENERATE), MAX_SEQ_LEN - 1)
       : 0U;
-  const unsigned int num_allow_str = MAX_SEQ_LEN > configured_generation + 1
-                                       ? MAX_SEQ_LEN - configured_generation - 1
-                                       : 1U;
+  const unsigned int context_prompt_limit =
+    MAX_SEQ_LEN > configured_generation ? MAX_SEQ_LEN - configured_generation
+                                        : 1U;
+  const unsigned int max_prefill_len =
+    std::min(INIT_SEQ_LEN, context_prompt_limit);
   unsigned int text_len = _len;
 
-  if (_len > num_allow_str)
-    text_len = num_allow_str;
+  if (_len > max_prefill_len) {
+    throw std::invalid_argument(
+      "prompt token length " + std::to_string(_len) +
+      " exceeds configured prefill limit " + std::to_string(max_prefill_len) +
+      " for init_seq_len=" + std::to_string(INIT_SEQ_LEN) +
+      ", max_seq_len=" + std::to_string(MAX_SEQ_LEN) +
+      ", num_to_generate=" + std::to_string(configured_generation));
+  }
 
   // feed only available length
   // if _input is allowed, it feeds all of the _input
@@ -548,7 +556,7 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   const unsigned int requested_generation_limit =
     NUM_TO_GENERATE > 0 ? static_cast<unsigned int>(NUM_TO_GENERATE) : 0U;
   unsigned int prefill_generated_tokens = 0;
-  if (requested_generation_limit > 0 && init_len < INIT_SEQ_LEN) {
+  if (requested_generation_limit > 0 && init_len < MAX_SEQ_LEN) {
     registerOutputs(tokenizer, id_list, init_len, eos_list, log_output);
     ++generation_cnt;
     prefill_generated_tokens = 1;

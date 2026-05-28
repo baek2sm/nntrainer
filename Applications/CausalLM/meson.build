@@ -22,6 +22,18 @@ causallm_rest_api_inc = [include_directories('rest_api')]
 causallm_inc_minja_inc = include_directories('third_party/minja/include')
 causallm_inc_nlohmann_inc = include_directories('third_party')
 
+cpp_args = []
+
+if get_option('default_library') == 'shared'
+    cpp_args += [ '-DPLUGGABLE' ]
+endif
+
+enable_causallm_single_dll_abi = get_option('enable-causallm-single-dll-abi')
+
+if enable_causallm_single_dll_abi and (get_option('platform') == 'windows') and (get_option('default_library') == 'static')
+    cpp_args += [ '-DNNTRAINER_CAUSALLM_HIDE_INTERNAL_EXPORTS' ]
+endif
+
 # Build layer dependency
 causallm_layer_dependencies = []
 subdir('layers')
@@ -84,7 +96,7 @@ generate_windows_tokenizer = generate_windows_tokenizer and build_machine.system
 generate_windows_tokenizer = generate_windows_tokenizer and not fs.exists(tokenizer_path)
 
 if generate_windows_tokenizer
-    run_command(
+    tokenizer_build_args = [
         powershell_prog,
         '-ExecutionPolicy',
         'Bypass',
@@ -94,6 +106,12 @@ if generate_windows_tokenizer
         meson.build_root(),
         '-RustTarget',
         tokenizer_rust_target,
+    ]
+    if get_option('b_vscrt') in ['mt', 'mtd', 'static_from_buildtype']
+        tokenizer_build_args += '-StaticCrt'
+    endif
+    run_command(
+        tokenizer_build_args,
         check: true
     )
 endif
@@ -115,12 +133,6 @@ if get_option('platform') == 'windows'
         'userenv.lib',
         'ws2_32.lib'
     ]
-endif
-
-cpp_args = []
-
-if get_option('default_library') == 'shared'
-    cpp_args += [ '-DPLUGGABLE' ]
 endif
 
 if get_option('platform') == 'windows'
@@ -168,6 +180,46 @@ causallm_dep = declare_dependency(
     include_directories: causallm_inc + causallm_rest_api_inc,
     link_args: get_option('platform') == 'windows' ? tokenizer_link_args : []
 )
+
+if enable_causallm_single_dll_abi
+    capi_inc = include_directories('capi')
+    capi_src = [
+        meson.current_source_dir() / 'capi' / 'quick_ai.cpp',
+    ]
+
+    quick_ai_dll = shared_library('quick_ai',
+        capi_src,
+        include_directories: [
+            capi_inc,
+            causallm_inc,
+            causallm_rest_api_inc,
+            causallm_inc_minja_inc,
+            causallm_inc_nlohmann_inc
+        ],
+        dependencies: [
+            nntrainer_dep,
+            nntrainer_ccapi_dep,
+            causallm_layer_dependencies,
+            causallm_dep
+        ],
+        install: true,
+        install_dir: application_install_dir,
+        cpp_args: cpp_args
+    )
+
+    quick_ai_sample = executable('quick_ai_sample',
+        meson.current_source_dir() / 'capi' / 'sample' / 'quick_ai_sample.c',
+        include_directories: capi_inc,
+        dependencies: host_machine.system() == 'windows' ? [] : libdl_dep,
+        install: false,
+        override_options: ['c_std=c11']
+    )
+
+    install_headers(
+        meson.current_source_dir() / 'capi' / 'quick_ai.h',
+        install_dir: nntrainer_includedir
+    )
+endif
 
 e = executable('nntr_causallm',
     executable_src,

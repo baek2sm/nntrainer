@@ -20,6 +20,11 @@
 #include <map>
 #include <transformer.h>
 
+#if defined(_WIN32) && defined(NNTRAINER_CAUSALLM_HIDE_INTERNAL_EXPORTS)
+#undef WIN_EXPORT
+#define WIN_EXPORT
+#endif
+
 namespace causallm {
 
 /**

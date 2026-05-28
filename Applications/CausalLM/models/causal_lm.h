@@ -30,7 +30,11 @@
 
 #pragma once
 #ifdef _WIN32
+#ifdef NNTRAINER_CAUSALLM_HIDE_INTERNAL_EXPORTS
+#define WIN_EXPORT
+#else
 #define WIN_EXPORT __declspec(dllexport)
+#endif
 #define WSTR std::string
 #define WCHAR_P std::string &
 #else

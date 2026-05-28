@@ -70,6 +70,8 @@ option('nnstreamer-subplugin-install-path', type: 'string', value: 'lib/nnstream
 option('enable-transformer', type: 'boolean', value: false)
 option('causallm-tokenizer-lib', type: 'string', value: '',
        description: 'Windows-only path to tokenizers_c.lib for CausalLM. The default is generated under <builddir>/tokenizers_c_win/target.')
+option('enable-causallm-single-dll-abi', type: 'boolean', value: false,
+       description: 'Build the optional CausalLM single-DLL C ABI target.')
 
 # ARM architecture options
 option('arm-arch', type: 'combo',

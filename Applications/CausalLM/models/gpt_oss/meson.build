@@ -7,11 +7,12 @@ gpt_oss_inc = include_directories('.')
 # Define Layers
 causallm_gptoss_moe_layer_src_abs = [meson.current_source_dir() / 'gpt_oss_moe_layer.cpp']
 
-causallm_gptoss_moe_layer = shared_library(
+causallm_gptoss_moe_layer = library(
     'gptoss_moe_layer',
     causallm_gptoss_moe_layer_src_abs,
     include_directories: [causallm_layer_inc, gpt_oss_inc],
     dependencies: [nntrainer_dep, nntrainer_ccapi_dep],
+    cpp_args: cpp_args,
     install: true,
     install_dir: application_install_dir
 )
