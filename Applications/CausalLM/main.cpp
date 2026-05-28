@@ -264,12 +264,6 @@ int main(int argc, char *argv[]) {
       return std::make_unique<causallm::Gemma3CausalLM>(cfg, generation_cfg,
                                                         nntr_cfg);
     });
-  // gemma4 disabled (interface port pending):
-  // causallm::Factory::Instance().registerModel(
-  //   "Gemma4ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-  //     return std::make_unique<causallm::Gemma4CausalLM>(cfg, generation_cfg,
-  //                                                       nntr_cfg);
-  //   });
   causallm::Factory::Instance().registerModel(
     "Gemma4ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::Gemma4CausalLM>(cfg, generation_cfg,
