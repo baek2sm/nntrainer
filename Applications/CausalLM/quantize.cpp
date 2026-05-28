@@ -69,8 +69,7 @@
 #include "causal_lm.h"
 #include "embedding_gemma.h"
 #include "gemma3_causallm.h"
-// #include "gemma4_causallm.h"  // disabled: gemma4 excluded pending interface
-// port
+#include "gemma4_causallm.h"
 #if !defined(_WIN32)
 #include "gptoss_cached_slim_causallm.h"
 #endif
@@ -246,6 +245,11 @@ std::string resolve_architecture(std::string model_type,
       throw std::invalid_argument(
         "Unsupported architecture for embedding model: " + architecture);
   }
+
+  if (architecture == "Gemma4ForConditionalGeneration") {
+    return "Gemma4ForCausalLM";
+  }
+
   return architecture;
 }
 
@@ -327,12 +331,11 @@ void registerAllModels() {
                           return std::make_unique<causallm::Gemma3CausalLM>(
                             cfg, generation_cfg, nntr_cfg);
                         });
-  // gemma4 disabled (interface port pending):
-  // factory.registerModel("Gemma4ForCausalLM",
-  //                       [](json cfg, json generation_cfg, json nntr_cfg) {
-  //                         return std::make_unique<causallm::Gemma4CausalLM>(
-  //                           cfg, generation_cfg, nntr_cfg);
-  //                       });
+  factory.registerModel("Gemma4ForCausalLM",
+                        [](json cfg, json generation_cfg, json nntr_cfg) {
+                          return std::make_unique<causallm::Gemma4CausalLM>(
+                            cfg, generation_cfg, nntr_cfg);
+                        });
   factory.registerModel("EmbeddingGemma",
                         [](json cfg, json generation_cfg, json nntr_cfg) {
                           return std::make_unique<causallm::EmbeddingGemma>(
@@ -445,26 +448,29 @@ buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
       dtype_map[prefix + "_attention_gate_down"] = fc_dtype;
       dtype_map[prefix + "_attention_gate_up"] = fc_dtype;
 
-      // FFN FC layers - version3
-      dtype_map[prefix + "_ffn_gate"] = fc_dtype;
-      dtype_map[prefix + "_ffn_up"] = fc_dtype;
-      dtype_map[prefix + "_ffn_down"] = fc_dtype;
-
       // FFN FC layers - version4
       dtype_map[prefix + "_ffn_gate_up"] = fc_dtype;
       dtype_map[prefix + "_ffn_gate_down"] = fc_dtype;
       dtype_map[prefix + "_ffn_linear_up"] = fc_dtype;
 
+      // FFN FC layers - version3
+      dtype_map[prefix + "_ffn_gate"] = fc_dtype;
+      dtype_map[prefix + "_ffn_up"] = fc_dtype;
+      dtype_map[prefix + "_ffn_down"] = fc_dtype;
+
+
       dtype_map[prefix + "_ffn_output"] = fc_dtype;
 
-      // PLE layers - version4
+      // for PLE
+      dtype_map[prefix + "_per_layer_input_gate"] = fc_dtype;
+      dtype_map[prefix + "_per_layer_input_proj"] = fc_dtype;
       if (embd_dtype != DataType::FP32 && embd_dtype != DataType::NONE) {
         dtype_map[prefix + "_ple"] = fc_dtype;
       }
 
       // PLE - gemma4
-      dtype_map[prefix + "_per_layer_input_gate"] = fc_dtype;
-      dtype_map[prefix + "_per_layer_input_proj"] = fc_dtype;
+      dtype_map[prefix + "_ple_projection"] = fc_dtype;
+      dtype_map[prefix + "_ple_input_gate"] = fc_dtype;
     }
   }
 

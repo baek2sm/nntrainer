@@ -554,6 +554,8 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   } else {
     SYS_PROMP_LEN = 0;
   }
+  allocateAndBindKVCache();
+  const unsigned int prefill_from = SYS_PROMP_LEN + global_token_len;
   std::vector<unsigned int> id_list;
 
   if (SKIP_PREFILL && init_len > 1) {
@@ -562,9 +564,10 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
     unsigned int skipped_token =
       static_cast<unsigned int>(init_input[init_len - 1]);
 
-    output = model->incremental_inference(BATCH_SIZE, input, label,
-                                          init_len - 1, SYS_PROMP_LEN,
-                                          SYS_PROMP_LEN + input_len - 1, false);
+    const unsigned int prefill_to = prefill_from + input_len - 1;
+    setKVCachePosition(prefill_from);
+    output = model->incremental_inference(
+      BATCH_SIZE, input, label, init_len - 1, prefill_from, prefill_to, false);
 
     for (unsigned int b = 0; b < BATCH_SIZE; ++b)
       id_list.push_back(skipped_token);
@@ -574,13 +577,13 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
     input_len -= 1;
     init_len -= 1;
   } else {
+    const unsigned int prefill_to = prefill_from + input_len;
+    setKVCachePosition(prefill_from);
     output = model->incremental_inference(BATCH_SIZE, input, label, init_len,
-                                          SYS_PROMP_LEN,
-                                          SYS_PROMP_LEN + input_len, false);
+                                          prefill_from, prefill_to, false);
 
     // post process of model output
-    id_list = generate_multi_tokens(output[0], NUM_VOCAB, BATCH_SIZE, 1,
-                                    ids_history, _len);
+    id_list = generate(output[0], do_sample, 1, ids_history, init_len);
 
     if (init_len < INIT_SEQ_LEN)
       registerOutputs(tokenizer, id_list, init_len, eos_list, log_output);

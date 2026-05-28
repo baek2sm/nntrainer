@@ -31,6 +31,7 @@ CAUSALLM_COMMON_INCLUDES := \
     $(LOCAL_PATH)/../models/deberta_v2 \
     $(LOCAL_PATH)/../models/lfm2 \
     $(LOCAL_PATH)/../api \
+    $(LOCAL_PATH)/../models/gemma4 \
     $(LOCAL_PATH)/../third_party/minja/include \
     $(LOCAL_PATH)/../third_party \
     $(LOCAL_PATH)/../third_party/nlohmann \
@@ -103,9 +104,11 @@ LOCAL_SRC_FILES := \
     ../models/gpt_oss/gpt_oss_moe_layer.cpp \
     ../models/gpt_oss_cached_slim/gpt_oss_moe_layer_cached.cpp \
     ../models/gemma3/gemma3_causallm.cpp \
-    ../models/gemma3/embedding_gemma.cpp \    ../models/gemma3/function.cpp \
     ../models/bert/bert_transformer.cpp \
     ../models/bert/multilingual_tinybert_16mb.cpp \
+    ../models/gemma3/embedding_gemma.cpp \
+    ../models/gemma4/gemma4_causallm.cpp \
+    ../models/gemma3/function.cpp \
     ../models/timm_vit/timm_vit_transformer.cpp \
     ../models/deberta_v2/deberta_v2.cpp \
     ../layers/deberta_attention_layer.cpp \
@@ -198,6 +201,7 @@ LOCAL_SRC_FILES := ../quantize.cpp \
     ../api/streamer.cpp \
     ../models/bert/bert_transformer.cpp \
     ../models/bert/multilingual_tinybert_16mb.cpp \
+    ../models/gemma4/gemma4_causallm.cpp \
     ../models/gemma3/function.cpp \
     ../models/deberta_v2/deberta_v2.cpp \
     ../layers/deberta_attention_layer.cpp \

@@ -34,7 +34,9 @@
 namespace causallm {
 
 namespace props {
-/** @brief layer index to slice from the packed per-layer embedding tensor */
+/**
+ * @brief Layer index used to select a per-layer tensor slice.
+ */
 class LayerIndex : public nntrainer::Property<unsigned int> {
 public:
   static constexpr const char *key = "layer_index";
@@ -43,37 +45,41 @@ public:
 };
 } // namespace props
 
-/** @brief layer that selects a per-layer input chunk from a packed tensor */
-class PerLayerSliceLayer final : public nntrainer::Layer {
+/**
+ * @brief Layer that selects one layer-specific chunk from packed input.
+ */
+WIN_EXPORT class PerLayerSliceLayer final : public nntrainer::Layer {
 public:
-  PerLayerSliceLayer() :
+  WIN_EXPORT PerLayerSliceLayer() :
     Layer(),
     slice_props(props::FeatureSize(), props::LayerIndex(),
                 nntrainer::props::SkipPrefill()) {}
 
-  ~PerLayerSliceLayer() {}
+  WIN_EXPORT ~PerLayerSliceLayer() {}
 
-  void finalize(nntrainer::InitLayerContext &context) override;
-  void forwarding(nntrainer::RunLayerContext &context, bool training) override;
-  void incremental_forwarding(nntrainer::RunLayerContext &context,
-                              unsigned int from, unsigned int to,
-                              bool training) override;
-  void calcDerivative(nntrainer::RunLayerContext &context) override;
-  bool supportBackwarding() const override { return false; }
+  WIN_EXPORT void finalize(nntrainer::InitLayerContext &context) override;
+  WIN_EXPORT void forwarding(nntrainer::RunLayerContext &context,
+                             bool training) override;
+  WIN_EXPORT void incremental_forwarding(nntrainer::RunLayerContext &context,
+                                         unsigned int from, unsigned int to,
+                                         bool training) override;
+  WIN_EXPORT void calcDerivative(nntrainer::RunLayerContext &context) override;
+  WIN_EXPORT bool supportBackwarding() const override { return false; }
 
-  void exportTo(nntrainer::Exporter &exporter,
-                const ml::train::ExportMethods &method) const override{};
+  WIN_EXPORT void
+  exportTo(nntrainer::Exporter &exporter,
+           const ml::train::ExportMethods &method) const override{};
 
-  const std::string getType() const override { return type; }
+  WIN_EXPORT const std::string getType() const override { return type; }
 
-  void setProperty(const std::vector<std::string> &values) override {
+  WIN_EXPORT void setProperty(const std::vector<std::string> &values) override {
     auto remain_props = loadProperties(values, slice_props);
     NNTR_THROW_IF(!remain_props.empty(), std::invalid_argument)
       << "[per_layer_slice] Unknown Layer Properties count " +
            std::to_string(values.size());
   }
 
-  void updateTensorsByInputDimensions(
+  WIN_EXPORT void updateTensorsByInputDimensions(
     nntrainer::RunLayerContext &context,
     std::vector<nntrainer::TensorDim> input_dimensions) override;
 

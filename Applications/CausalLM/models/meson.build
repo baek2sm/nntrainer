@@ -15,10 +15,8 @@ subdir('qwen3_moe')
 subdir('qwen3_slim_moe')
 subdir('gemma3')
 subdir('timm_vit')
-# subdir('gemma4')  # disabled: gemma4 still uses the old layer-list Transformer
-# interface (vector<LayerHandle>); the merge adopted upstream's symbolic-graph
-# interface (Tensor). Needs a separate port (mirror gemma3) before re-enabling.
 subdir('lfm2')
+subdir('gemma4')
 if get_option('platform') != 'windows'
     subdir('bert')
     subdir('gpt_oss_cached_slim')

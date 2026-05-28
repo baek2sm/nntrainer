@@ -142,7 +142,8 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
 
   if (cfg.contains("is_causal")) {
     IS_CAUSAL = cfg["is_causal"].get<bool>();
-  } else if (cfg.contains("use_bidirectional_attention")) {
+  } else if (cfg.contains("use_bidirectional_attention") &&
+             !cfg["use_bidirectional_attention"].is_null()) {
     IS_CAUSAL = !cfg["use_bidirectional_attention"].get<bool>();
   } else if (nntr_cfg.contains("model_type") &&
              strToModelType(nntr_cfg["model_type"].get<std::string>()) ==
@@ -173,10 +174,13 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
                              ? cfg["sliding_window_pattern"].get<unsigned int>()
                              : 1;
   MAX_POSITION_EMBEDDINGS = cfg["max_position_embeddings"].get<unsigned int>();
-
-  // RoPE parameters (use sliding attention defaults)
-  if (cfg.contains("rope_parameters") &&
-      cfg["rope_parameters"].contains("sliding_attention")) {
+  if (cfg.contains("rope_theta")) {
+    ROPE_THETA = cfg["rope_theta"].get<unsigned int>();
+  } else if (cfg.contains("rope_parameters") &&
+             cfg["rope_parameters"].contains("rope_theta")) {
+    ROPE_THETA = cfg["rope_parameters"]["rope_theta"].get<unsigned int>();
+  } else if (cfg.contains("rope_parameters") &&
+             cfg["rope_parameters"].contains("sliding_attention")) {
     json &rope_cfg = cfg["rope_parameters"]["sliding_attention"];
     ROPE_THETA = rope_cfg.value("rope_theta", 10000);
   } else {
