@@ -2763,6 +2763,11 @@ inline std::shared_ptr<Context> Context::builtins() {
   };
   globals.set("lower", char_transform_function("lower", ::tolower));
   globals.set("upper", char_transform_function("upper", ::toupper));
+  globals.set("capitalize", simple_function("capitalize", { "text" }, [](const std::shared_ptr<Context> &, Value & args) {
+    auto & text = args.at("text");
+    if (!text.is_string()) throw std::runtime_error("capitalize filter expects a string");
+    return Value(capitalize(text.get<std::string>()));
+  }));
   globals.set("default", Value::callable([=](const std::shared_ptr<Context> &, ArgumentsValue & args) {
     args.expectArgs("default", {2, 3}, {0, 1});
     auto & value = args.args[0];
