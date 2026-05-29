@@ -75,9 +75,18 @@ void RMSNormLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
     if (in_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
       const auto &dim = in_step.getDim();
 #ifdef ENABLE_FP16
-      nntrainer::rms_norm_wrt_width_fp16_intrinsic(
+
+
+      nntrainer::rms_norm_wrt_width_fp32_intrinsic(
         in_step.getData<float>(), out_step.getData<float>(), dim.height(),
         dim.width(), epsilon);
+
+      // rms_norm_wrt_width_fp16_intrinsic causes overflow errors.
+      // DO NOT USE
+
+      // nntrainer::rms_norm_wrt_width_fp16_intrinsic(
+      //   in_step.getData<float>(), out_step.getData<float>(), dim.height(),
+      //   dim.width(), epsilon);
 #else
 
       nntrainer::rms_norm_wrt_width_fp32_intrinsic(
