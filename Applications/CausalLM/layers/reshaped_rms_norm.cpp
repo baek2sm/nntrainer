@@ -99,6 +99,8 @@ void ReshapedRMSNormLayer::incremental_forwarding(
         in_step.getData<float>(), out_step.getData<float>(),
         in_step.getDim().height(), in_step.getDim().width(), epsilon);
 
+      // DO NOT USE rms_norm_wrt_width_fp16_intrinsic. It causes overflow!
+
       // nntrainer::rms_norm_wrt_width_fp16_intrinsic(
       //   in_step.getData<float>(), out_step.getData<float>(),
       //   in_step.getDim().height(), in_step.getDim().width(), epsilon);

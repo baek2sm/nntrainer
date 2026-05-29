@@ -458,7 +458,6 @@ buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
       dtype_map[prefix + "_ffn_up"] = fc_dtype;
       dtype_map[prefix + "_ffn_down"] = fc_dtype;
 
-
       dtype_map[prefix + "_ffn_output"] = fc_dtype;
 
       // for PLE

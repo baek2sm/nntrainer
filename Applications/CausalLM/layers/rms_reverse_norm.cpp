@@ -86,6 +86,7 @@ void RMSReverseNormLayer::incremental_forwarding(
   ml::train::TensorDim in_step_dim = in_dim;
   ml::train::TensorDim out_step_dim = out_dim;
 
+  unsigned int _from = from;
   bool is_prefill = !from;
   if (from) {
     NNTR_THROW_IF(to - from != 1, std::invalid_argument)
@@ -125,6 +126,7 @@ void RMSReverseNormLayer::incremental_forwarding(
       // Step 4: Apply output scale (AFTER normalization)
       out_step.multiply_i(out_scale);
 
+      // TODO : Implement Fast Route for FP16
     } else if (in_step.getDataType() == ml::train::TensorDim::DataType::FP16) {
 #ifdef ENABLE_FP16
       ml::train::TensorDim instep_dim = in_step_dim;

@@ -243,7 +243,6 @@ causallm_custom_multiply_dep = declare_dependency(
     include_directories: causallm_layer_inc
 )
 
-
 causallm_scalar_multiply = shared_library(
     'scalar_multiply_layer',
     causallm_scalar_multiply_src_abs,
