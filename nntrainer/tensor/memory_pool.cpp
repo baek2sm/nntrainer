@@ -105,23 +105,69 @@ void MemoryPool::allocate() {
   if (pool_size == 0)
     throw std::runtime_error("Allocating memory pool with size 0");
 
-  if (mem_pool != nullptr)
+  if (mem_pool != nullptr || !owned_buffers_.empty())
     throw std::runtime_error("Memory pool is already allocated");
 
   ml_logi("MemoryPool::allocate size: %zu allocator: %s", pool_size,
           allocator_->getName().c_str());
 
-  // Single contiguous buffer routed through the per-vendor allocator.
-  // For ClSVMAllocator this returns SVM memory directly addressable
-  // by both host and device; for QNNRpcManager it returns rpcmem; the
-  // base allocator returns page-aligned, zero-initialised host memory.
-  allocator_->alloc(&mem_pool, pool_size, system_page_size());
-  owned_buffers_.push_back(mem_pool);
+  // DMA allocators (rpcmem) cannot subdivide a single backing pool,
+  // so we allocate a separate buffer per distinct offset and share
+  // it across all tokens that map to that offset.  This matches the
+  // old pre-refactor behaviour and fixes rpcmem_to_fd failures for
+  // QNN graphs because every pointer handed out is an exact
+  // rpcmem_alloc base address.
+  if (allocator_->getName() == "qnn" || allocator_->getName() == "npu") {
+    std::map<size_t, void *> offset_ptr;     // offset : ptr
+    std::map<size_t, size_t> allocated_size; // offset : memory size
+    std::map<size_t, std::vector<int>>
+      offset_indices; // offset : indices that share this offset
 
-  // Hand out per-token slices off the same buffer at planned offsets.
-  for (size_t i = 0; i < memory_offset.size(); ++i) {
-    char *ptr = static_cast<char *>(mem_pool) + memory_offset[i];
-    memory_ptrs.push_back(ptr);
+    const size_t alignment = system_page_size();
+
+    for (size_t i = 0; i < memory_offset.size(); ++i) {
+      size_t current_size = memory_size.at(i);
+      auto it = offset_ptr.find(memory_offset[i]);
+      if (it == offset_ptr.end()) {
+        void *ptr = nullptr;
+        allocator_->alloc(&ptr, current_size, alignment);
+        memory_ptrs.push_back(ptr);
+        owned_buffers_.push_back(ptr);
+        offset_ptr[memory_offset[i]] = ptr;
+        allocated_size[memory_offset[i]] = current_size;
+        offset_indices[memory_offset[i]].push_back(i);
+      } else {
+        void *existing_ptr = it->second;
+        size_t max_size = allocated_size[memory_offset[i]];
+        if (max_size < current_size) {
+          // A larger request lands on the same offset — reallocate the
+          // shared buffer and remap every aliasing entry.
+          void *new_ptr = nullptr;
+          allocator_->alloc(&new_ptr, current_size, alignment);
+          for (int idx : offset_indices[memory_offset[i]]) {
+            memory_ptrs[idx] = new_ptr;
+          }
+          auto pos = std::find(owned_buffers_.begin(), owned_buffers_.end(),
+                               existing_ptr);
+          if (pos != owned_buffers_.end())
+            *pos = new_ptr;
+          allocator_->free(existing_ptr);
+          offset_ptr[memory_offset[i]] = new_ptr;
+          allocated_size[memory_offset[i]] = current_size;
+        }
+        memory_ptrs.push_back(offset_ptr[memory_offset[i]]);
+        offset_indices[memory_offset[i]].push_back(i);
+      }
+    }
+  } else {
+    // Single contiguous buffer for CPU / SVM allocators.
+    allocator_->alloc(&mem_pool, pool_size, system_page_size());
+    owned_buffers_.push_back(mem_pool);
+
+    for (size_t i = 0; i < memory_offset.size(); ++i) {
+      char *ptr = static_cast<char *>(mem_pool) + memory_offset[i];
+      memory_ptrs.push_back(ptr);
+    }
   }
 
 #ifdef PROFILE
