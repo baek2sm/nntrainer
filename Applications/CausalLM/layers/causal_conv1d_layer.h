@@ -41,42 +41,49 @@
 #include <layer_impl.h>
 #include <tensor_dim.h>
 
+#ifdef _WIN32
+#define WIN_EXPORT __declspec(dllexport)
+#else
+#define WIN_EXPORT
+#endif
+
 namespace causallm {
 
-class CausalConv1DLayer : public nntrainer::LayerImpl {
+WIN_EXPORT class CausalConv1DLayer : public nntrainer::LayerImpl {
 public:
-  CausalConv1DLayer();
+  WIN_EXPORT CausalConv1DLayer();
   ~CausalConv1DLayer() override = default;
 
-  void finalize(nntrainer::InitLayerContext &context) override;
+  WIN_EXPORT void finalize(nntrainer::InitLayerContext &context) override;
 
   /** Full forwarding is unused; use incremental_forwarding. */
-  void forwarding(nntrainer::RunLayerContext &context, bool training) override;
+  WIN_EXPORT void forwarding(nntrainer::RunLayerContext &context,
+                             bool training) override;
 
   /**
    * @brief Incremental forward.
    *  - Prefill  (to - from > 1): compute positions [0, to) and save state.
    *  - Decode   (to - from == 1): O(1) single-token using cached state.
    */
-  void incremental_forwarding(nntrainer::RunLayerContext &context,
-                               unsigned int from, unsigned int to,
-                               bool training) override;
+  WIN_EXPORT void incremental_forwarding(nntrainer::RunLayerContext &context,
+                                         unsigned int from, unsigned int to,
+                                         bool training) override;
 
-  void calcDerivative(nntrainer::RunLayerContext &context) override;
-  void calcGradient(nntrainer::RunLayerContext &context) override;
+  WIN_EXPORT void calcDerivative(nntrainer::RunLayerContext &context) override;
+  WIN_EXPORT void calcGradient(nntrainer::RunLayerContext &context) override;
 
-  void updateTensorsByInputDimensions(
+  WIN_EXPORT void updateTensorsByInputDimensions(
     nntrainer::RunLayerContext &context,
     std::vector<nntrainer::TensorDim> input_dimensions) override;
 
-  const std::string getType() const override { return type; }
+  WIN_EXPORT const std::string getType() const override { return type; }
 
-  void exportTo(nntrainer::Exporter &exporter,
-                const ml::train::ExportMethods &method) const override;
+  WIN_EXPORT void exportTo(nntrainer::Exporter &exporter,
+                           const ml::train::ExportMethods &method) const override;
 
-  void setProperty(const std::vector<std::string> &values) override;
+  WIN_EXPORT void setProperty(const std::vector<std::string> &values) override;
 
-  bool supportBackwarding() const override { return false; }
+  WIN_EXPORT bool supportBackwarding() const override { return false; }
 
   inline static const std::string type = "causal_conv1d";
 

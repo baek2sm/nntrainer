@@ -15,6 +15,7 @@ public:
   static constexpr const char *architectures = "Lfm2VlProjector";
 
   Lfm2VlProjector(json &cfg, json &generation_cfg, json &nntr_cfg) :
+    Transformer(cfg, generation_cfg, nntr_cfg, ModelType::MODEL),
     VjepaProjector(cfg, generation_cfg, nntr_cfg) {
     setupParameters(cfg, generation_cfg, nntr_cfg);
   }

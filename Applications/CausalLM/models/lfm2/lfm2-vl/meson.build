@@ -6,6 +6,7 @@ lfm2_vl_inc = include_directories('.')
 
 causallm_src += lfm2_vl_src
 causallm_inc += lfm2_vl_inc
+causallm_inc += include_directories('..' / '..' / 'vjepa2_vit')
 
 # LFM2.5-VL multimodal model (vision tower + LLM + multimodal projector).
 # Each component is wired in below. Future additions (integrated top-level

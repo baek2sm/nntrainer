@@ -111,7 +111,7 @@ protected:
    */
   void registerCustomLayers() override;
 
-private:
+protected:
   unsigned int VISION_DIM = 768;       /**< Vision encoder hidden size */
   unsigned int DOWNSAMPLE_FACTOR = 2;  /**< Pixel unshuffle factor */
   unsigned int MERGER_HIDDEN_1 = 3072; /**< Merger FC1 hidden size */
@@ -125,6 +125,7 @@ private:
   unsigned int SPATIAL_H = 24;         /**< H = img_size / patch_size */
   unsigned int SPATIAL_W = 24;         /**< W = img_size / patch_size */
 
+private:
   /** Output from the last run() call. */
   std::vector<float> last_output_;
 
