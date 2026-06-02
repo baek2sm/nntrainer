@@ -1,3 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 SeungBaek Hong <sb92.hong@samsung.com>
+#
+# @file convert_weights.py
+# @brief Weight conversion script for LFM2-350M to nntrainer format.
+# @package convert_weights
+# @author SeungBaek Hong <sb92.hong@samsung.com>
 """Auto-generated weight conversion script."""
 import torch
 import sys

@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (C) 2026 SeungBaek Hong <sb92.hong@samsung.com>
-// @file lfm2_vl_projector.h
-// @brief LFM2.5-VL multi_modal_projector: pixel_unshuffle + FC + GELU + FC
+/**
+ * Copyright (C) 2026 SeungBaek Hong <sb92.hong@samsung.com>
+ *
+ * @file   lfm2_vl_projector.h
+ * @date   1 June 2026
+ * @see    https://github.com/nnstreamer/nntrainer
+ * @author SeungBaek Hong <sb92.hong@samsung.com>
+ * @bug    No known bugs except for NYI items
+ * @brief  LFM2.5-VL multi_modal_projector: pixel_unshuffle + FC + GELU + FC
+ */
 
 #ifndef __LFM2_VL_PROJECTOR_H__
 #define __LFM2_VL_PROJECTOR_H__
@@ -10,6 +17,9 @@
 
 namespace causallm {
 
+/**
+ * @brief LFM2.5-VL multimodal projector connecting vision encoder to language model.
+ */
 class Lfm2VlProjector : public VjepaProjector {
 public:
   static constexpr const char *architectures = "Lfm2VlProjector";

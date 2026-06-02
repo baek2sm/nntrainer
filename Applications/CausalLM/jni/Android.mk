@@ -30,6 +30,8 @@ CAUSALLM_COMMON_INCLUDES := \
     $(LOCAL_PATH)/../models/vjepa2_vit \
     $(LOCAL_PATH)/../models/deberta_v2 \
     $(LOCAL_PATH)/../models/lfm2 \
+    $(LOCAL_PATH)/../models/lfm2/lfm2-vl \
+    $(LOCAL_PATH)/../models/lfm2/lfm2-vl/vision \
     $(LOCAL_PATH)/../third_party/minja/include \
     $(LOCAL_PATH)/../third_party \
 
@@ -107,6 +109,9 @@ LOCAL_SRC_FILES := \
     ../layers/deberta_attention_layer.cpp \
     ../layers/shared_fully_connected_layer.cpp \
     ../models/lfm2/lfm2_causallm.cpp \
+    ../models/lfm2/lfm2-vl/lfm2_vl_projector.cpp \
+    ../models/lfm2/lfm2-vl/vision/lfm2_vl_vision_transformer.cpp \
+    ../models/vjepa2_vit/vjepa_projector.cpp \
     ../layers/causal_conv1d_layer.cpp \
     ../layers/custom_multiply.cpp \
 

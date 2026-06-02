@@ -49,6 +49,9 @@
 
 namespace causallm {
 
+/**
+ * @brief Causal depthwise Conv1D layer with conv-state cache for CausalLM inference.
+ */
 WIN_EXPORT class CausalConv1DLayer : public nntrainer::LayerImpl {
 public:
   WIN_EXPORT CausalConv1DLayer();

@@ -10,10 +10,12 @@
  * @brief  End-to-end test: Image -> SigLIP2 ViT -> Projector -> LFM2 -> Text
  *
  * Pipeline:
- *   1. Load preprocessed [1,3,256,256] fp32 image .bin (SigLIP2 processor output)
+ *   1. Load preprocessed [1,3,256,256] fp32 image .bin (SigLIP2 processor
+ * output)
  *   2. Lfm2VlVisionTransformer: image -> [NUM_PATCHES,768] features
  *   3. Lfm2VlProjector: [NUM_PATCHES,768] -> [OUTPUT_TOKENS,1024]
- *   4. Merge with text token embeddings (single image placeholder = OUTPUT_TOKENS tokens)
+ *   4. Merge with text token embeddings (single image placeholder =
+ * OUTPUT_TOKENS tokens)
  *   5. Lfm2CausalLM::run_with_embeddings()
  *
  * Usage:
@@ -47,9 +49,9 @@
 #include <model.h>
 #include <tokenizers_cpp.h>
 
-#include "lfm2_causallm.h"
 #include "lfm2-vl/vision/lfm2_vl_vision_transformer.h"
 #include "lfm2/lfm2-vl/lfm2_vl_projector.h"
+#include "lfm2_causallm.h"
 
 using json = nlohmann::json;
 
@@ -92,8 +94,7 @@ apply_chat_template_image(const std::string &prompt) {
 /**
  * @brief Merge text token embeddings and vision embeddings into inputs_embeds.
  */
-static std::pair<std::vector<float>, unsigned int>
-merge_text_image_embeddings(
+static std::pair<std::vector<float>, unsigned int> merge_text_image_embeddings(
   const std::vector<std::string> &text_segments,
   const std::unique_ptr<tokenizers::Tokenizer> &tokenizer,
   const std::unique_ptr<causallm::Lfm2CausalLM> &lfm2,
@@ -109,8 +110,8 @@ merge_text_image_embeddings(
 
   for (size_t seg_i = 0; seg_i < text_segments.size(); ++seg_i) {
     if (!text_segments[seg_i].empty()) {
-      auto enc =
-        tokenizer->Encode(text_segments[seg_i], /*add_special_token=*/false);
+      auto enc = tokenizer->Encode(text_segments[seg_i],
+                                   false); // add_special_token=false
       for (auto id : enc) {
         std::vector<float> embed =
           lfm2->lookupEmbedding(static_cast<unsigned int>(id));
@@ -160,8 +161,7 @@ int main(int argc, char *argv[]) {
     // Step 1: Load configuration files
     printSection("Step 1: Load Configuration");
 
-    json siglip_cfg =
-      causallm::LoadJsonFile(model_dir + "/siglip_config.json");
+    json siglip_cfg = causallm::LoadJsonFile(model_dir + "/siglip_config.json");
     json siglip_nntr_cfg =
       causallm::LoadJsonFile(model_dir + "/siglip_nntr_config.json");
 
@@ -179,8 +179,7 @@ int main(int argc, char *argv[]) {
     lfm2_nntr_cfg["use_embedding"] = true;
 
     const std::string siglip_weight =
-      model_dir + "/" +
-      siglip_nntr_cfg["model_file_name"].get<std::string>();
+      model_dir + "/" + siglip_nntr_cfg["model_file_name"].get<std::string>();
     const std::string proj_weight =
       model_dir + "/" + proj_nntr_cfg["model_file_name"].get<std::string>();
     const std::string lfm2_weight =
@@ -202,15 +201,14 @@ int main(int argc, char *argv[]) {
     {
       std::ifstream fin(image_bin_path, std::ios::binary);
       if (!fin) {
-        throw std::runtime_error("Failed to open image .bin: " + image_bin_path);
+        throw std::runtime_error("Failed to open image .bin: " +
+                                 image_bin_path);
       }
       fin.read(reinterpret_cast<char *>(image_data.data()),
                static_cast<std::streamsize>(n_elems * sizeof(float)));
-      if (static_cast<size_t>(fin.gcount()) !=
-          n_elems * sizeof(float)) {
-        throw std::runtime_error(
-          "Image .bin is smaller than expected (" +
-          std::to_string(n_elems) + " fp32 elements).");
+      if (static_cast<size_t>(fin.gcount()) != n_elems * sizeof(float)) {
+        throw std::runtime_error("Image .bin is smaller than expected (" +
+                                 std::to_string(n_elems) + " fp32 elements).");
       }
     }
     std::cout << "  Loaded image: [1, " << NUM_CHANNELS << ", " << IMAGE_SIZE
@@ -237,7 +235,7 @@ int main(int argc, char *argv[]) {
     auto t_vit_end = std::chrono::high_resolution_clock::now();
     const long long vit_ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(t_vit_end -
-                                                             t_vit_start)
+                                                            t_vit_start)
         .count();
 
     std::cout << "  Vision features: [" << NUM_PATCHES << ", " << VIT_DIM
@@ -255,12 +253,11 @@ int main(int argc, char *argv[]) {
     std::cout << "  Projector weights loaded.\n";
 
     auto t_proj_start = std::chrono::high_resolution_clock::now();
-    auto [proj_ptr, proj_size] =
-      projector->run(vision_ptr, NUM_PATCHES, true);
+    auto [proj_ptr, proj_size] = projector->run(vision_ptr, NUM_PATCHES, true);
     auto t_proj_end = std::chrono::high_resolution_clock::now();
     const long long proj_ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(t_proj_end -
-                                                             t_proj_start)
+                                                            t_proj_start)
         .count();
 
     const unsigned int DOWNSAMPLE_FACTOR =
@@ -315,14 +312,14 @@ int main(int argc, char *argv[]) {
     const float *proj_data = static_cast<const float *>(proj_ptr);
 
     auto [inputs_embeds, actual_total_tokens] = merge_text_image_embeddings(
-      text_segments, tokenizer, lfm2, proj_data, num_image_tags,
-      OUTPUT_TOKENS, TEXT_DIM, init_seq_len, batch_size);
+      text_segments, tokenizer, lfm2, proj_data, num_image_tags, OUTPUT_TOKENS,
+      TEXT_DIM, init_seq_len, batch_size);
 
     std::vector<int> seed_tokens;
     for (size_t seg_i = 0; seg_i < text_segments.size(); ++seg_i) {
       if (!text_segments[seg_i].empty()) {
         auto enc = tokenizer->Encode(text_segments[seg_i],
-                                     /*add_special_token=*/false);
+                                     false); // add_special_token=false
         for (auto id : enc)
           seed_tokens.push_back(id);
       }
@@ -338,11 +335,11 @@ int main(int argc, char *argv[]) {
 
     auto t_lfm2_start = std::chrono::high_resolution_clock::now();
     lfm2->run_with_embeddings(inputs_embeds.data(), actual_total_tokens,
-                               seed_tokens, do_sample, /*log_output=*/true);
+                              seed_tokens, do_sample, true); // log_output=true
     auto t_lfm2_end = std::chrono::high_resolution_clock::now();
     const long long lfm2_ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(t_lfm2_end -
-                                                             t_lfm2_start)
+                                                            t_lfm2_start)
         .count();
 
     // Step 8: Results
@@ -354,7 +351,7 @@ int main(int argc, char *argv[]) {
 
     if (!generated_ids.empty()) {
       std::vector<int32_t> gen_ids_i32(generated_ids.begin(),
-                                        generated_ids.end());
+                                       generated_ids.end());
       std::string decoded = tokenizer->Decode(gen_ids_i32);
       std::cout << "  Decoded output: " << decoded << "\n";
     }

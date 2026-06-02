@@ -354,17 +354,15 @@ Lfm2VlVisionTransformer::runBuffer(const float *image_data) {
 
   std::vector<float *> in_ptrs = {const_cast<float *>(image_data)};
   std::vector<float *> label;
-  auto out_ptrs =
-    model->incremental_inference(BATCH_SIZE, in_ptrs, label, NUM_PATCHES, 0,
-                                 NUM_PATCHES, false);
+  auto out_ptrs = model->incremental_inference(
+    BATCH_SIZE, in_ptrs, label, NUM_PATCHES, 0, NUM_PATCHES, false);
 
   if (out_ptrs.empty() || out_ptrs[0] == nullptr) {
     throw std::runtime_error(
       "Lfm2VlVisionTransformer::runBuffer: inference returned null output.");
   }
 
-  const size_t n_out =
-    static_cast<size_t>(BATCH_SIZE) * NUM_PATCHES * DIM;
+  const size_t n_out = static_cast<size_t>(BATCH_SIZE) * NUM_PATCHES * DIM;
   last_buffer_output_.assign(out_ptrs[0], out_ptrs[0] + n_out);
   return {last_buffer_output_.data(), n_out * sizeof(float)};
 }
