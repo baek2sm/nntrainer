@@ -54,6 +54,7 @@
 #include "qwen3_slim_moe_causallm.h"
 #include "timm_vit/timm_vit_transformer.h"
 #include "vjepa2_vit/vjepa2_vit.h"
+#include "lfm2-vl/vision/lfm2_vl_vision_transformer.h"
 #include "lfm2_causallm.h"
 #include <models/gemma3/function.h>
 #if !defined(_WIN32)
@@ -191,6 +192,11 @@ std::string resolve_architecture(std::string model_type,
     return "VJEPA2ViT";
   }
 
+  if (architecture == "Lfm2VlVisionTransformer" ||
+      architecture == "siglip2_vit_so400m_patch14_256") {
+    return "Lfm2VlVisionTransformer";
+  }
+
   return architecture;
 }
 
@@ -290,6 +296,12 @@ int main(int argc, char *argv[]) {
     "VJEPA2ViT", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::VJEPA2ViT>(cfg, generation_cfg,
                                                    nntr_cfg);
+    });
+  causallm::Factory::Instance().registerModel(
+    "Lfm2VlVisionTransformer",
+    [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::Lfm2VlVisionTransformer>(
+        cfg, generation_cfg, nntr_cfg);
     });
   causallm::Factory::Instance().registerModel(
     "Lfm2ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {

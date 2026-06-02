@@ -6,3 +6,5 @@ lfm2_inc = include_directories('.')
 
 causallm_src += lfm2_src
 causallm_inc += lfm2_inc
+
+subdir('lfm2-vl')

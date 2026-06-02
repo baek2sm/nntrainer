@@ -28,6 +28,12 @@ Applications/CausalLM/res/deberta_v2/*
 Applications/CausalLM/res/lfm2_vl/*
 !Applications/CausalLM/res/lfm2_vl/README.md
 !Applications/CausalLM/res/lfm2_vl/*.py
+!Applications/CausalLM/res/lfm2-vl/
+Applications/CausalLM/res/lfm2-vl/*
+!Applications/CausalLM/res/lfm2-vl/*.py
+!Applications/CausalLM/res/lfm2-vl/vision/
+Applications/CausalLM/res/lfm2-vl/vision/*
+!Applications/CausalLM/res/lfm2-vl/vision/*.py
 Applications/**/tokenizers-cpp-build/*
 
 # CTag
