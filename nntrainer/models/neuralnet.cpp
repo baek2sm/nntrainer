@@ -24,13 +24,13 @@
 #include "layer_context.h"
 #include "model.h"
 #include "model_common_properties.h"
-#include <safetensors_header.h>
 #include <cmath>
 #include <compute_ops.h>
 #include <cstring>
 #include <fstream>
 #include <future>
 #include <iomanip>
+#include <safetensors_header.h>
 #include <sstream>
 
 #include <activation_realizer.h>
@@ -73,12 +73,11 @@ namespace nntrainer {
 NeuralNetwork::NeuralNetwork() :
   model_props(props::LossType(), {}, {}, props::ClipGradByGlobalNorm(),
               props::LossScale()),
-  model_flex_props(props::Epochs(), props::TrainingBatchSize(),
-                   props::SavePath(), props::ContinueTrain(),
-                   props::SaveBestPath(), props::MemoryOptimization(),
-                   props::Fsu(), props::FsuPath(), props::FsuLookahead(),
-                   props::TensorFormat(), props::ModelTensorDataType(),
-                   props::WeightSource()),
+  model_flex_props(
+    props::Epochs(), props::TrainingBatchSize(), props::SavePath(),
+    props::ContinueTrain(), props::SaveBestPath(), props::MemoryOptimization(),
+    props::Fsu(), props::FsuPath(), props::FsuLookahead(),
+    props::TensorFormat(), props::ModelTensorDataType(), props::WeightSource()),
   load_path(std::string()),
   epoch_idx(0),
   iter(0),
@@ -93,12 +92,11 @@ NeuralNetwork::NeuralNetwork() :
 NeuralNetwork::NeuralNetwork(const Engine *ct_engine_) :
   model_props(props::LossType(), {}, {}, props::ClipGradByGlobalNorm(),
               props::LossScale()),
-  model_flex_props(props::Epochs(), props::TrainingBatchSize(),
-                   props::SavePath(), props::ContinueTrain(),
-                   props::SaveBestPath(), props::MemoryOptimization(),
-                   props::Fsu(), props::FsuPath(), props::FsuLookahead(),
-                   props::TensorFormat(), props::ModelTensorDataType(),
-                   props::WeightSource()),
+  model_flex_props(
+    props::Epochs(), props::TrainingBatchSize(), props::SavePath(),
+    props::ContinueTrain(), props::SaveBestPath(), props::MemoryOptimization(),
+    props::Fsu(), props::FsuPath(), props::FsuLookahead(),
+    props::TensorFormat(), props::ModelTensorDataType(), props::WeightSource()),
   load_path(std::string()),
   epoch_idx(0),
   iter(0),
@@ -210,9 +208,8 @@ int NeuralNetwork::compile(ExecutionMode mode) {
   // optimizer state of a HF checkpoint) we don't care about.
   std::map<std::string, std::map<std::string, std::string>>
     per_layer_role_dtype;
-  if (const auto &ws =
-        std::get<props::WeightSource>(model_flex_props); !ws.empty() &&
-                                                          !ws.get().empty()) {
+  if (const auto &ws = std::get<props::WeightSource>(model_flex_props);
+      !ws.empty() && !ws.get().empty()) {
     const std::string &path = ws.get();
     try {
       auto hdr = parseSafetensorsHeaderFromFile(path);
@@ -233,8 +230,8 @@ int NeuralNetwork::compile(ExecutionMode mode) {
         per_layer_role_dtype[layer_name][role] = nntr_str;
       }
     } catch (const std::exception &e) {
-      throw std::invalid_argument(
-        "weight_source: failed to parse '" + path + "': " + e.what());
+      throw std::invalid_argument("weight_source: failed to parse '" + path +
+                                  "': " + e.what());
     }
   }
 

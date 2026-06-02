@@ -257,7 +257,8 @@ SafetensorsHeader parseSafetensorsHeader(const void *data, size_t size) {
   hdr.header_size = header_size;
   hdr.data_block_offset = 8 + header_size;
 
-  Cursor c{reinterpret_cast<const char *>(p + 8), 0, header_size};
+  Cursor c{reinterpret_cast<const char *>(p + 8), 0,
+           static_cast<size_t>(header_size)};
   expect(c, '{');
   while (true) {
     skipWs(c);

@@ -51,7 +51,8 @@ using TensorDim = ml::train::TensorDim;
  */
 struct SafetensorsTensorInfo {
   /** Parsed nntrainer dtype. May be NONE if the safetensors dtype is one we
-   *  don't translate (e.g. I32 / BOOL) — callers must check before consuming. */
+   *  don't translate (e.g. I32 / BOOL) — callers must check before consuming.
+   */
   TensorDim::DataType dtype = TensorDim::DataType::NONE;
   /** Raw dtype string straight out of the JSON header (e.g. "F32"). Useful
    *  for diagnostics when @c dtype is NONE. */

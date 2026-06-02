@@ -4,6 +4,9 @@
  *
  * @file   vjepa_layernorm_layer.cpp
  * @date   22 May 2026
+ * @see    https://github.com/nnstreamer/nntrainer
+ * @author Jijoong Moon <jijoong.moon@samsung.com>
+ * @bug    No known bugs except for NYI items
  * @brief  Per-token-parallel LayerNorm over the width axis.
  */
 

@@ -664,8 +664,8 @@ InitLayerContext::getDataTypeForRole(const std::string &role,
     const std::string &raw = weight_dtype_map_str;
     while (pos < raw.size()) {
       size_t comma = raw.find(',', pos);
-      std::string pair = trim(
-        raw.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos));
+      std::string pair = trim(raw.substr(
+        pos, comma == std::string::npos ? std::string::npos : comma - pos));
       if (!pair.empty()) {
         size_t colon = pair.find(':');
         if (colon == std::string::npos) {
@@ -675,8 +675,8 @@ InitLayerContext::getDataTypeForRole(const std::string &role,
         std::string key = trim(pair.substr(0, colon));
         std::string val = trim(pair.substr(colon + 1));
         auto dt =
-          str_converter<enum_class_prop_tag, nntrainer::TensorDataTypeInfo>::
-            from_string(val);
+          str_converter<enum_class_prop_tag,
+                        nntrainer::TensorDataTypeInfo>::from_string(val);
         weight_dtype_map_cache[key] = dt;
       }
       if (comma == std::string::npos)

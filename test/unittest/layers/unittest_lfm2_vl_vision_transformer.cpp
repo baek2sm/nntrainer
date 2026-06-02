@@ -4,8 +4,8 @@
  *
  * @file   unittest_lfm2_vl_vision_transformer.cpp
  * @date   13 May 2026
- * @brief  Unit tests for Lfm2VlVisionTransformer (CLIP/SigLIP-style ViT encoder).
- *         These tests exercise structure-only behavior: config parsing,
+ * @brief  Unit tests for Lfm2VlVisionTransformer (CLIP/SigLIP-style ViT
+ * encoder). These tests exercise structure-only behavior: config parsing,
  *         parameter defaults, and that initialize() builds + compiles the
  *         symbolic graph without throwing on a tiny toy configuration.
  *         No GGUF / pretrained weights are required.
@@ -56,14 +56,10 @@ struct ToyConfig {
 
 ToyConfig makeToyConfig() {
   ToyConfig c;
-  c.cfg = {{"hidden_size", 16},
-           {"num_attention_heads", 2},
-           {"num_hidden_layers", 2},
-           {"intermediate_size", 32},
-           {"image_size", 32},
-           {"patch_size", 16},
-           {"num_channels", 3},
-           {"layer_norm_eps", 1e-6}};
+  c.cfg = {{"hidden_size", 16},      {"num_attention_heads", 2},
+           {"num_hidden_layers", 2}, {"intermediate_size", 32},
+           {"image_size", 32},       {"patch_size", 16},
+           {"num_channels", 3},      {"layer_norm_eps", 1e-6}};
   c.generation_cfg = causallm::json::object();
   // Provide every field the base Transformer::setupParameters() reads from
   // nntr_cfg via the unchecked [] operator (it will throw otherwise).
@@ -115,7 +111,8 @@ TEST(Lfm2VlVisionTransformer, setup_parameters_picks_up_overrides) {
   EXPECT_EQ(vit.initSeqLen(), 4u);
 }
 
-TEST(Lfm2VlVisionTransformer, setup_parameters_uses_defaults_when_fields_missing) {
+TEST(Lfm2VlVisionTransformer,
+     setup_parameters_uses_defaults_when_fields_missing) {
   // Empty cfg: every field must fall back to the LFM2.5-VL / SigLIP2 defaults
   // baked into setupParameters().
   causallm::json cfg = causallm::json::object();
@@ -153,14 +150,10 @@ TEST(Lfm2VlVisionTransformer, initialize_builds_graph_without_exception) {
 TEST(Lfm2VlVisionTransformer, initialize_supports_larger_grid) {
   // A slightly larger grid (4x4 patches, 4 heads, 3 layers) to catch
   // regressions that only manifest at non-trivial NUM_HEADS / NUM_LAYERS.
-  causallm::json cfg = {{"hidden_size", 32},
-                        {"num_attention_heads", 4},
-                        {"num_hidden_layers", 3},
-                        {"intermediate_size", 64},
-                        {"image_size", 64},
-                        {"patch_size", 16},
-                        {"num_channels", 3},
-                        {"layer_norm_eps", 1e-6}};
+  causallm::json cfg = {{"hidden_size", 32},      {"num_attention_heads", 4},
+                        {"num_hidden_layers", 3}, {"intermediate_size", 64},
+                        {"image_size", 64},       {"patch_size", 16},
+                        {"num_channels", 3},      {"layer_norm_eps", 1e-6}};
   causallm::json generation_cfg = causallm::json::object();
   causallm::json nntr_cfg = makeFullNntrCfg();
   nntr_cfg["init_seq_len"] = 16;

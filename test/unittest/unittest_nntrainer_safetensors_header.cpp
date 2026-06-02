@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <string>
@@ -45,7 +46,8 @@ std::vector<uint8_t> buildBlob(const std::string &json_header,
 
 TEST(SafetensorsHeader, parses_single_tensor_minimal) {
   // One tensor, F32, 2x3 shape, 24 bytes of data offsets.
-  const std::string h = R"({"weight":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}})";
+  const std::string h =
+    R"({"weight":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}})";
   auto blob = buildBlob(h, 24);
 
   auto hdr = nntrainer::parseSafetensorsHeader(blob.data(), blob.size());
@@ -103,8 +105,8 @@ TEST(SafetensorsHeader, dtype_mapping_known_tokens) {
   using DT = nntrainer::TensorDim::DataType;
   EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("F32"), DT::FP32);
   EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("F16"), DT::FP16);
-  EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("I8"),  DT::QINT8);
-  EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("U8"),  DT::UINT8);
+  EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("I8"), DT::QINT8);
+  EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("U8"), DT::UINT8);
   EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("U16"), DT::UINT16);
   EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("U32"), DT::UINT32);
 }
@@ -115,8 +117,8 @@ TEST(SafetensorsHeader, dtype_mapping_unknown_is_NONE) {
   // Parser must surface them as NONE (caller can decide what to do — usually
   // dequantise / re-quantise via the converter pipeline).
   EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("BF16"), DT::NONE);
-  EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("F64"),  DT::NONE);
-  EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("I32"),  DT::NONE);
+  EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("F64"), DT::NONE);
+  EXPECT_EQ(nntrainer::safetensorsDtypeToNntrainer("I32"), DT::NONE);
 }
 
 TEST(SafetensorsHeader, header_keeps_dtype_raw_even_when_unknown) {
@@ -129,16 +131,14 @@ TEST(SafetensorsHeader, header_keeps_dtype_raw_even_when_unknown) {
 
   auto hdr = nntrainer::parseSafetensorsHeader(blob.data(), blob.size());
   ASSERT_EQ(hdr.tensors.size(), 1u);
-  EXPECT_EQ(hdr.tensors.at("w").dtype,
-            nntrainer::TensorDim::DataType::NONE);
+  EXPECT_EQ(hdr.tensors.at("w").dtype, nntrainer::TensorDim::DataType::NONE);
   EXPECT_EQ(hdr.tensors.at("w").dtype_raw, "BF16");
 }
 
 TEST(SafetensorsHeader, throws_on_too_small_buffer) {
   std::vector<uint8_t> tiny(4, 0);
-  EXPECT_THROW(
-    nntrainer::parseSafetensorsHeader(tiny.data(), tiny.size()),
-    std::runtime_error);
+  EXPECT_THROW(nntrainer::parseSafetensorsHeader(tiny.data(), tiny.size()),
+               std::runtime_error);
 }
 
 TEST(SafetensorsHeader, throws_on_header_overflow) {
@@ -149,18 +149,17 @@ TEST(SafetensorsHeader, throws_on_header_overflow) {
     bad[i] = static_cast<uint8_t>((huge >> (8 * i)) & 0xFF);
   // Even if the bytes inside happened to be valid JSON, header_size>file
   // must be rejected before parsing.
-  EXPECT_THROW(
-    nntrainer::parseSafetensorsHeader(bad.data(), bad.size()),
-    std::runtime_error);
+  EXPECT_THROW(nntrainer::parseSafetensorsHeader(bad.data(), bad.size()),
+               std::runtime_error);
 }
 
 TEST(SafetensorsHeader, throws_on_malformed_json) {
-  const std::string h = R"({"w":{"dtype":"F32","shape":[1]"data_offsets":[0,4]}})";
+  const std::string h =
+    R"({"w":{"dtype":"F32","shape":[1]"data_offsets":[0,4]}})";
   // missing comma after "shape":[1]
   auto blob = buildBlob(h, 4);
-  EXPECT_THROW(
-    nntrainer::parseSafetensorsHeader(blob.data(), blob.size()),
-    std::runtime_error);
+  EXPECT_THROW(nntrainer::parseSafetensorsHeader(blob.data(), blob.size()),
+               std::runtime_error);
 }
 
 TEST(SafetensorsHeader, parses_from_file_round_trip) {
@@ -170,7 +169,9 @@ TEST(SafetensorsHeader, parses_from_file_round_trip) {
     R"({"weight":{"dtype":"F32","shape":[2,2],"data_offsets":[0,16]}})";
   auto blob = buildBlob(h, 16);
 
-  const std::string tmp = "/tmp/nntrainer_safetensors_test.bin";
+  const std::string tmp =
+    (std::filesystem::temp_directory_path() / "nntrainer_safetensors_test.bin")
+      .string();
   {
     std::ofstream out(tmp, std::ios::binary);
     out.write(reinterpret_cast<const char *>(blob.data()),

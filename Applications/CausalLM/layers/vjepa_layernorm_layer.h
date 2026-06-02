@@ -42,6 +42,13 @@ public:
 };
 } // namespace props
 
+/**
+ * @brief Per-token-parallel LayerNorm over the width axis.
+ *
+ *        Splits tokens across the ThreadManager pool and computes
+ *        y = (x - mean) / sqrt(var + eps) * gamma + beta per token.
+ *        Numerically matches core layer_normalization (axis=3).
+ */
 WIN_EXPORT class VjepaLayerNormLayer final : public nntrainer::Layer {
 public:
   VjepaLayerNormLayer() : layernorm_props(props::VjepaLnEpsilon()) {}

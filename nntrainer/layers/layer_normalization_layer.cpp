@@ -90,12 +90,12 @@ void LayerNormalizationLayer::finalize(InitLayerContext &context) {
     beta_dim.setTensorDim(axis, input_dim.getTensorDim(axis));
   }
 
-  wt_idx[LNParams::gamma] = context.requestWeight(
-    gamma_dim, gamma_initializer, WeightRegularizer::NONE, 1.0f, weight_decay,
-    "gamma", true);
-  wt_idx[LNParams::beta] = context.requestWeight(
-    beta_dim, beta_initializer, WeightRegularizer::NONE, 1.0f, bias_decay,
-    "beta", true);
+  wt_idx[LNParams::gamma] =
+    context.requestWeight(gamma_dim, gamma_initializer, WeightRegularizer::NONE,
+                          1.0f, weight_decay, "gamma", true);
+  wt_idx[LNParams::beta] =
+    context.requestWeight(beta_dim, beta_initializer, WeightRegularizer::NONE,
+                          1.0f, bias_decay, "beta", true);
 
   TensorDim remain_dim(context.getFormat(), context.getWeightDataType());
   std::vector<unsigned int> total_axes;

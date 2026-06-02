@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <memory>
@@ -78,15 +79,16 @@ TEST(WeightSource, compile_picks_up_per_layer_dtype_from_safetensors) {
   const std::string h =
     R"({"fc1.weight":{"dtype":"F32","shape":[4,8],"data_offsets":[0,128]},)"
     R"("fc1.bias":{"dtype":"F32","shape":[8],"data_offsets":[128,160]}})";
-  const std::string tmp = "/tmp/nntrainer_weight_source_test.safetensors";
+  const std::string tmp = (std::filesystem::temp_directory_path() /
+                           "nntrainer_weight_source_test.safetensors")
+                            .string();
   writeSyntheticSafetensors(tmp, h, /*data_bytes=*/160);
 
   auto nn = createModel(ModelType::NEURAL_NET, {"loss=mse"});
   nn->addLayer(createLayer("input", {"name=in", "input_shape=1:1:4"}));
   nn->addLayer(createLayer("fully_connected", {"name=fc1", "unit=8"}));
-  nn->setProperty({"batch_size=1",
-                   "model_tensor_type=FP32-FP32",
-                   "weight_source=" + tmp});
+  nn->setProperty(
+    {"batch_size=1", "model_tensor_type=FP32-FP32", "weight_source=" + tmp});
 
   // compile() should:
   //   1. parse the safetensors header
@@ -111,15 +113,16 @@ TEST(WeightSource, ignores_extras_in_safetensors) {
     R"("fc1.bias":{"dtype":"F32","shape":[8],"data_offsets":[128,160]},)"
     R"("optimizer.fc1.weight":{"dtype":"F32","shape":[4,8],"data_offsets":[160,288]},)"
     R"("unrelated.layer.weight":{"dtype":"F32","shape":[1],"data_offsets":[288,292]}})";
-  const std::string tmp = "/tmp/nntrainer_weight_source_extras.safetensors";
+  const std::string tmp = (std::filesystem::temp_directory_path() /
+                           "nntrainer_weight_source_extras.safetensors")
+                            .string();
   writeSyntheticSafetensors(tmp, h, /*data_bytes=*/292);
 
   auto nn = createModel(ModelType::NEURAL_NET, {"loss=mse"});
   nn->addLayer(createLayer("input", {"name=in", "input_shape=1:1:4"}));
   nn->addLayer(createLayer("fully_connected", {"name=fc1", "unit=8"}));
-  nn->setProperty({"batch_size=1",
-                   "model_tensor_type=FP32-FP32",
-                   "weight_source=" + tmp});
+  nn->setProperty(
+    {"batch_size=1", "model_tensor_type=FP32-FP32", "weight_source=" + tmp});
 
   ASSERT_EQ(nn->compile(ExecutionMode::INFERENCE), ML_ERROR_NONE);
   ASSERT_EQ(nn->initialize(ExecutionMode::INFERENCE), ML_ERROR_NONE);
@@ -131,8 +134,7 @@ TEST(WeightSource, missing_file_throws_clearly) {
   auto nn = createModel(ModelType::NEURAL_NET, {"loss=mse"});
   nn->addLayer(createLayer("input", {"name=in", "input_shape=1:1:4"}));
   nn->addLayer(createLayer("fully_connected", {"name=fc1", "unit=8"}));
-  nn->setProperty({"batch_size=1",
-                   "model_tensor_type=FP32-FP32",
+  nn->setProperty({"batch_size=1", "model_tensor_type=FP32-FP32",
                    "weight_source=/nonexistent/path.safetensors"});
 
   // compile() should surface the parse failure as a clean error rather

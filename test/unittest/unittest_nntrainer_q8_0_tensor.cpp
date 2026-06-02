@@ -7,7 +7,8 @@
  *         ModelTensorDataTypeInfo::WQ80A32). Mirrors what Q4_0_Tensor
  *         already provides for the 4-bit path.
  * @see    https://github.com/nntrainer/nntrainer
- * @author Jijoong Moon <jijoong.moon@samsung.com> (mirror of q4_0 plumbing by Donghyeon Jeong)
+ * @author Jijoong Moon <jijoong.moon@samsung.com> (mirror of q4_0 plumbing by
+ * Donghyeon Jeong)
  * @bug    No known bugs except for NYI items
  */
 
@@ -34,8 +35,8 @@ nntrainer::TensorDim q80_dim() {
     {nntrainer::Tformat::NCHW, nntrainer::TensorDim::DataType::Q8_0});
 }
 
-// Build a deterministic Q8_0 buffer where each block has scale=1.0 (fp16 0x3C00)
-// and qs[i] = (block_idx + i) % 256 cast to int8.
+// Build a deterministic Q8_0 buffer where each block has scale=1.0 (fp16
+// 0x3C00) and qs[i] = (block_idx + i) % 256 cast to int8.
 std::vector<uint8_t> makeSyntheticQ80Buffer() {
   std::vector<uint8_t> buf(EXPECTED_BYTES, 0);
   for (unsigned int b = 0; b < NUM_BLOCKS; ++b) {
@@ -71,31 +72,28 @@ TEST(Q8_0_Tensor, qscheme_value) {
 
 TEST(Q8_0_Tensor, rejects_invalid_dim) {
   // batch != 1
-  EXPECT_THROW(
-    nntrainer::Q8_0_Tensor(
-      nntrainer::TensorDim(
-        2, 1, H, W,
-        {nntrainer::Tformat::NCHW, nntrainer::TensorDim::DataType::Q8_0}),
-      false),
-    std::invalid_argument);
+  EXPECT_THROW(nntrainer::Q8_0_Tensor(
+                 nntrainer::TensorDim(2, 1, H, W,
+                                      {nntrainer::Tformat::NCHW,
+                                       nntrainer::TensorDim::DataType::Q8_0}),
+                 false),
+               std::invalid_argument);
 
   // channel != 1
-  EXPECT_THROW(
-    nntrainer::Q8_0_Tensor(
-      nntrainer::TensorDim(
-        1, 2, H, W,
-        {nntrainer::Tformat::NCHW, nntrainer::TensorDim::DataType::Q8_0}),
-      false),
-    std::invalid_argument);
+  EXPECT_THROW(nntrainer::Q8_0_Tensor(
+                 nntrainer::TensorDim(1, 2, H, W,
+                                      {nntrainer::Tformat::NCHW,
+                                       nntrainer::TensorDim::DataType::Q8_0}),
+                 false),
+               std::invalid_argument);
 
   // width not divisible by 32
-  EXPECT_THROW(
-    nntrainer::Q8_0_Tensor(
-      nntrainer::TensorDim(
-        1, 1, H, 17,
-        {nntrainer::Tformat::NCHW, nntrainer::TensorDim::DataType::Q8_0}),
-      false),
-    std::invalid_argument);
+  EXPECT_THROW(nntrainer::Q8_0_Tensor(
+                 nntrainer::TensorDim(1, 1, H, 17,
+                                      {nntrainer::Tformat::NCHW,
+                                       nntrainer::TensorDim::DataType::Q8_0}),
+                 false),
+               std::invalid_argument);
 }
 
 TEST(Q8_0_Tensor, allocate_and_size_accounting) {
