@@ -270,7 +270,7 @@ Tensor Lfm2VlVisionTransformer::createVitMlp(int layer_id, Tensor x) {
 
   LayerHandle act(createLayer(
     "activation", {withKey("name", blkName(layer_id, "ffn_act")),
-                   withKey("activation", "gelu")}));
+                   withKey("activation", "tanh_gelu")}));
   h = act(h);
 
   LayerHandle down(createLayer(
@@ -351,9 +351,6 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool /*do_sample
 
   // NOTE: inference() output buffers are not owned here; deleting them
   // double-frees (pre-existing). Left to process teardown for this debug path.
-  for (auto p : (std::vector<float *>){}) {
-    delete[] p;
-  }
 }
 
 } // namespace causallm

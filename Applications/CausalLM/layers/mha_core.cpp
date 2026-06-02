@@ -822,7 +822,8 @@ static inline float32x4_t vjepa_expq_f32(float32x4_t x) {
 }
 #endif
 
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) ||            \
+  defined(_M_IX86)
 #include <immintrin.h>
 #endif
 
@@ -834,7 +835,8 @@ static inline float32x4_t vjepa_expq_f32(float32x4_t x) {
 static inline void mha_convert_fp16bits_to_fp32(unsigned int N,
                                                 const uint16_t *src,
                                                 float *dst) {
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) ||            \
+  defined(_M_IX86)
   unsigned int i = 0;
   for (; i + 16 <= N; i += 16) {
     __m256 a =
@@ -865,7 +867,8 @@ static inline void mha_convert_fp16bits_to_fp32(unsigned int N,
 #endif
 }
 
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) ||            \
+  defined(_M_IX86)
 
 // Fused FP32 x FP16-bits -> FP32 GEMM for x86 (AVX2 + F16C). Equivalent of ARM
 // shgemm but reads FP16-bits (uint16_t) directly without materializing an FP32
@@ -983,9 +986,10 @@ mha_hsgemm_avx2(unsigned int M, unsigned int N, unsigned int K, float alpha,
   }
 }
 
-#endif // __x86_64__ || __i386__
+#endif // x86
 
-#if !defined(__x86_64__) && !defined(__i386__) && defined(__ARM_NEON)
+#if !defined(__x86_64__) && !defined(__i386__) && !defined(_M_X64) &&         \
+  !defined(_M_IX86) && defined(__ARM_NEON)
 } // namespace causallm
 
 // libnntrainer.so is built with ENABLE_FP16=1 and exports these symbols. The
@@ -1302,7 +1306,8 @@ void MHACoreLayer::gemm_attention(
 #endif // ARM NEON q_fp16 branch
         {
           // FP32 Q path: QK -> FP32 S, fused FP16 softmax store to Sp16, AV.
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) ||            \
+  defined(_M_IX86)
           mha_hsgemm_avx2(bq, bk, d, inv_sqrt, Qp_fp32 + (size_t)qb * d, d,
                           Kp + (size_t)kb * d, d, /*TransB=*/true, S.data(),
                           bk);
@@ -1413,7 +1418,8 @@ void MHACoreLayer::gemm_attention(
               ol[x] *= c;
           }
 
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) ||            \
+  defined(_M_IX86)
           mha_hsgemm_avx2(bq, d, bk, 1.0f, S.data(), bk,
                           Vp + (size_t)kb * d, d, /*TransB=*/false,
                           Pacc.data(), d);
