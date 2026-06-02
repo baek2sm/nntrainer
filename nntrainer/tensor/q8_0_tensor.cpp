@@ -25,7 +25,8 @@ Q8_0_Tensor::Q8_0_Tensor(const TensorDim &d, bool alloc_now, Initializer init,
   NNTR_THROW_IF(d.batch() != 1 || d.channel() != 1 || d.width() % QK8_0 != 0,
                 std::invalid_argument)
     << "Q8_0_Tensor must be 2-dimensional with batch=1, channel=1 and "
-       "width divisible by " << QK8_0;
+       "width divisible by "
+    << QK8_0;
 
   if (alloc_now)
     allocate();

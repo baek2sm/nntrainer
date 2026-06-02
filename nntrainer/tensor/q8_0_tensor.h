@@ -4,7 +4,8 @@
  * @date        14 May 2026
  * @brief       Q8_0_Tensor class for Q8_0 quantised weights.
  * @see         https://github.com/nntrainer/nntrainer
- * @author      Jijoong Moon <jijoong.moon@samsung.com> (mirror of q4_0_tensor by Donghyeon Jeong)
+ * @author      Jijoong Moon <jijoong.moon@samsung.com> (mirror of q4_0_tensor
+ * by Donghyeon Jeong)
  * @bug         No known bugs except for NYI items
  *
  * Q8_0 layout (matches llama.cpp / GGML):
@@ -35,8 +36,8 @@ namespace nntrainer {
  * @note  This struct is reference-only; the tensor buffer is a flat byte array.
  */
 struct block_q8_0 {
-  uint16_t d;           // fp16 scale
-  int8_t qs[QK8_0];     // 32 signed int8 quants
+  uint16_t d;       // fp16 scale
+  int8_t qs[QK8_0]; // 32 signed int8 quants
 };
 
 #define Q8_0_SIZE sizeof(struct block_q8_0)
@@ -97,7 +98,8 @@ public:
   void setZero() override;
 
   void initialize(Initializer init) override {
-    throw std::invalid_argument("Q8_0_Tensor::initialize(init) is not supported.");
+    throw std::invalid_argument(
+      "Q8_0_Tensor::initialize(init) is not supported.");
   }
 
   void initialize() override;

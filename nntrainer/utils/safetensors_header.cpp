@@ -103,13 +103,27 @@ static std::string parseString(Cursor &c) {
       // safetensors spec which only uses tensor names and dtype tokens.
       char e = c.buf[c.pos + 1];
       switch (e) {
-      case '"':  out.push_back('"');  break;
-      case '\\': out.push_back('\\'); break;
-      case '/':  out.push_back('/');  break;
-      case 'n':  out.push_back('\n'); break;
-      case 't':  out.push_back('\t'); break;
-      case 'r':  out.push_back('\r'); break;
-      default:   out.push_back(e);    break;
+      case '"':
+        out.push_back('"');
+        break;
+      case '\\':
+        out.push_back('\\');
+        break;
+      case '/':
+        out.push_back('/');
+        break;
+      case 'n':
+        out.push_back('\n');
+        break;
+      case 't':
+        out.push_back('\t');
+        break;
+      case 'r':
+        out.push_back('\r');
+        break;
+      default:
+        out.push_back(e);
+        break;
       }
       c.pos += 2;
     } else {
@@ -117,8 +131,7 @@ static std::string parseString(Cursor &c) {
     }
   }
   if (c.pos >= c.end) {
-    throw std::runtime_error(
-      "safetensors header: unterminated string");
+    throw std::runtime_error("safetensors header: unterminated string");
   }
   ++c.pos; // closing quote
   return out;
@@ -127,11 +140,13 @@ static std::string parseString(Cursor &c) {
 static uint64_t parseUInt(Cursor &c) {
   skipWs(c);
   uint64_t v = 0;
-  if (c.pos >= c.end || !std::isdigit(static_cast<unsigned char>(c.buf[c.pos]))) {
+  if (c.pos >= c.end ||
+      !std::isdigit(static_cast<unsigned char>(c.buf[c.pos]))) {
     throw std::runtime_error("safetensors header: expected integer at offset " +
                              std::to_string(c.pos));
   }
-  while (c.pos < c.end && std::isdigit(static_cast<unsigned char>(c.buf[c.pos]))) {
+  while (c.pos < c.end &&
+         std::isdigit(static_cast<unsigned char>(c.buf[c.pos]))) {
     v = v * 10 + static_cast<uint64_t>(c.buf[c.pos] - '0');
     ++c.pos;
   }

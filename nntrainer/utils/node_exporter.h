@@ -247,13 +247,17 @@ class LayerNode;
  * @copydoc template <typename PropsType, typename NodeType> void
  * Exporter::saveTflResult(const PropsType &props, const NodeType *self);
  */
+namespace props {
+class WeightDtypeMap;
+}
+
 template <>
 void Exporter::saveTflResult(
   const std::tuple<props::Name, props::Distribute, props::Trainable,
                    std::vector<props::InputConnection>,
                    std::vector<props::InputShape>, props::SharedFrom,
                    props::ClipGradByGlobalNorm, props::Packed,
-                   props::WeightDtype, props::InputDtype,
+                   props::WeightDtype, props::WeightDtypeMap, props::InputDtype,
                    props::LossScaleForMixed, props::ComputeEngine> &props,
   const LayerNode *self);
 
