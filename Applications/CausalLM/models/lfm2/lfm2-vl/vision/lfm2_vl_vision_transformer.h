@@ -24,6 +24,8 @@
  *           [post_ln]
  *                 |
  *           [Image features B,N,DIM]
+ * @author Jijoong Moon <jijoong.moon@samsung.com>
+ * @bug    No known bugs except for NYI items
  */
 
 #ifndef __LFM2_VL_VISION_TRANSFORMER_H__
@@ -33,6 +35,7 @@
 
 namespace causallm {
 
+/** @brief CLIP/SigLIP-style Vision Transformer for LFM2-VL (SigLIP2 86M). */
 class Lfm2VlVisionTransformer : public Transformer {
 public:
   static constexpr const char *architectures = "Lfm2VlVisionTransformer";

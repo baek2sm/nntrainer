@@ -3,6 +3,8 @@
  * @file   lfm2_vl_vision_transformer.cpp
  * @date   13 May 2026
  * @brief  CLIP/SigLIP-style Vision Transformer encoder.
+ * @author Jijoong Moon <jijoong.moon@samsung.com>
+ * @bug    No known bugs except for NYI items
  */
 
 #include <lfm2_vl_vision_transformer.h>
@@ -66,14 +68,14 @@ json &Lfm2VlVisionTransformer::sanitizeConfig(json &cfg) {
 }
 
 void Lfm2VlVisionTransformer::setupParameters(json &cfg, json &generation_cfg,
-                                         json &nntr_cfg) {
+                                              json &nntr_cfg) {
   // Vision Transformer parameters. Defaults follow LFM2.5-VL's vision tower
   // (SigLIP2-style, 86M).
   DIM = cfg.value("hidden_size", 768);
   NUM_HEADS = cfg.value("num_attention_heads", 12);
   NUM_KEY_VALUE_HEADS = cfg.value("num_key_value_heads", NUM_HEADS);
-  HEAD_DIM = cfg.contains("head_dim") ? cfg["head_dim"].get<int>()
-                                      : DIM / NUM_HEADS;
+  HEAD_DIM =
+    cfg.contains("head_dim") ? cfg["head_dim"].get<int>() : DIM / NUM_HEADS;
   NUM_LAYERS = cfg.value("num_hidden_layers", 12);
   INTERMEDIATE_SIZE = cfg.value("intermediate_size", 3072);
   GQA_SIZE = NUM_HEADS / NUM_KEY_VALUE_HEADS;
@@ -138,25 +140,24 @@ std::pair<Tensor, Tensor> Lfm2VlVisionTransformer::constructModel() {
   // proper token sequence [B, 1, NUM_PATCHES, DIM] (each row = one patch's
   // full DIM feature vector). Mirrors TimmViT's patch_embed reorder.
   LayerHandle patch_seq(createLayer(
-    "reshape",
-    {withKey("name", PATCH_SEQ_NAME),
-     withKey("target_shape",
-             "1:" + std::to_string(DIM) + ":" + std::to_string(NUM_PATCHES))}));
+    "reshape", {withKey("name", PATCH_SEQ_NAME),
+                withKey("target_shape", "1:" + std::to_string(DIM) + ":" +
+                                          std::to_string(NUM_PATCHES))}));
   Tensor h = patch_seq(patch);
 
-  LayerHandle patch_perm(createLayer(
-    "permute",
-    {withKey("name", "v_patch_perm"), withKey("direction", {1, 3, 2})}));
+  LayerHandle patch_perm(
+    createLayer("permute", {withKey("name", "v_patch_perm"),
+                            withKey("direction", {1, 3, 2})}));
   h = patch_perm(h);
 
   // Learnable position embedding [NUM_PATCHES, DIM], added to the patch
   // sequence (loaded from the weight file as tensor "v_pos_embd").
-  LayerHandle pos_embed(createLayer(
-    "weight",
-    {withKey("name", "v_pos_embd"),
-     withKey("dim", "1:1:" + std::to_string(NUM_PATCHES) + ":" +
-                      std::to_string(DIM)),
-     withKey("tensor_dtype", "FP32"), withKey("weight_name", "v_pos_embd")}));
+  LayerHandle pos_embed(
+    createLayer("weight", {withKey("name", "v_pos_embd"),
+                           withKey("dim", "1:1:" + std::to_string(NUM_PATCHES) +
+                                            ":" + std::to_string(DIM)),
+                           withKey("tensor_dtype", "FP32"),
+                           withKey("weight_name", "v_pos_embd")}));
   Tensor pos = pos_embed(x);
 
   LayerHandle pos_add(createLayer("addition", {withKey("name", "v_pos_add")}));
@@ -169,10 +170,9 @@ std::pair<Tensor, Tensor> Lfm2VlVisionTransformer::constructModel() {
 
   // Final post-LN.
   LayerHandle post_ln(createLayer(
-    "layer_normalization",
-    {withKey("name", POST_LN_NAME),
-     withKey("epsilon", toStringPrecise(NORM_EPS)), withKey("axis", 3),
-     withKey("packed", "false")}));
+    "layer_normalization", {withKey("name", POST_LN_NAME),
+                            withKey("epsilon", toStringPrecise(NORM_EPS)),
+                            withKey("axis", 3), withKey("packed", "false")}));
   h = post_ln(h);
 
   return {x, h};
@@ -182,34 +182,32 @@ Tensor Lfm2VlVisionTransformer::createEncoderBlock(int layer_id, Tensor input) {
 
   // Pre-LN.
   LayerHandle ln1(createLayer(
-    "layer_normalization",
-    {withKey("name", blkName(layer_id, "ln1")),
-     withKey("epsilon", toStringPrecise(NORM_EPS)), withKey("axis", 3),
-     withKey("packed", "false")}));
+    "layer_normalization", {withKey("name", blkName(layer_id, "ln1")),
+                            withKey("epsilon", toStringPrecise(NORM_EPS)),
+                            withKey("axis", 3), withKey("packed", "false")}));
   Tensor x = ln1(input);
 
   // Self-attention.
   Tensor a = createSelfAttention(layer_id, x);
 
   // Residual.
-  LayerHandle attn_res(createLayer(
-    "addition", {withKey("name", blkName(layer_id, "attn_res"))}));
+  LayerHandle attn_res(
+    createLayer("addition", {withKey("name", blkName(layer_id, "attn_res"))}));
   Tensor h = attn_res({input, a});
 
   // Pre-LN before MLP.
   LayerHandle ln2(createLayer(
-    "layer_normalization",
-    {withKey("name", blkName(layer_id, "ln2")),
-     withKey("epsilon", toStringPrecise(NORM_EPS)), withKey("axis", 3),
-     withKey("packed", "false")}));
+    "layer_normalization", {withKey("name", blkName(layer_id, "ln2")),
+                            withKey("epsilon", toStringPrecise(NORM_EPS)),
+                            withKey("axis", 3), withKey("packed", "false")}));
   Tensor n = ln2(h);
 
   // MLP.
   Tensor m = createVitMlp(layer_id, n);
 
   // Residual.
-  LayerHandle ffn_res(createLayer(
-    "addition", {withKey("name", blkName(layer_id, "ffn_res"))}));
+  LayerHandle ffn_res(
+    createLayer("addition", {withKey("name", blkName(layer_id, "ffn_res"))}));
   return ffn_res({h, m});
 }
 
@@ -224,19 +222,17 @@ Tensor Lfm2VlVisionTransformer::createSelfAttention(int layer_id, Tensor x) {
   Tensor q = wq(x);
 
   LayerHandle wk(createLayer(
-    "fully_connected",
-    {withKey("name", blkName(layer_id, "attn_k")),
-     withKey("unit", HEAD_DIM * NUM_HEADS / GQA_SIZE),
-     withKey("disable_bias", "false"),
-     withKey("weight_initializer", "xavier_uniform")}));
+    "fully_connected", {withKey("name", blkName(layer_id, "attn_k")),
+                        withKey("unit", HEAD_DIM * NUM_HEADS / GQA_SIZE),
+                        withKey("disable_bias", "false"),
+                        withKey("weight_initializer", "xavier_uniform")}));
   Tensor k = wk(x);
 
   LayerHandle wv(createLayer(
-    "fully_connected",
-    {withKey("name", blkName(layer_id, "attn_v")),
-     withKey("unit", HEAD_DIM * NUM_HEADS / GQA_SIZE),
-     withKey("disable_bias", "false"),
-     withKey("weight_initializer", "xavier_uniform")}));
+    "fully_connected", {withKey("name", blkName(layer_id, "attn_v")),
+                        withKey("unit", HEAD_DIM * NUM_HEADS / GQA_SIZE),
+                        withKey("disable_bias", "false"),
+                        withKey("weight_initializer", "xavier_uniform")}));
   Tensor v = wv(x);
 
   // Bidirectional attention, no RoPE, no external KV cache.
@@ -252,10 +248,9 @@ Tensor Lfm2VlVisionTransformer::createSelfAttention(int layer_id, Tensor x) {
 
   // Output projection (with bias).
   LayerHandle wo(createLayer(
-    "fully_connected",
-    {withKey("name", blkName(layer_id, "attn_out")), withKey("unit", DIM),
-     withKey("disable_bias", "false"),
-     withKey("weight_initializer", "xavier_uniform")}));
+    "fully_connected", {withKey("name", blkName(layer_id, "attn_out")),
+                        withKey("unit", DIM), withKey("disable_bias", "false"),
+                        withKey("weight_initializer", "xavier_uniform")}));
   return wo(a);
 }
 
@@ -268,22 +263,20 @@ Tensor Lfm2VlVisionTransformer::createVitMlp(int layer_id, Tensor x) {
      withKey("weight_initializer", "xavier_uniform")}));
   Tensor h = up(x);
 
-  LayerHandle act(createLayer(
-    "activation", {withKey("name", blkName(layer_id, "ffn_act")),
-                   withKey("activation", "tanh_gelu")}));
+  LayerHandle act(
+    createLayer("activation", {withKey("name", blkName(layer_id, "ffn_act")),
+                               withKey("activation", "tanh_gelu")}));
   h = act(h);
 
   LayerHandle down(createLayer(
-    "fully_connected",
-    {withKey("name", blkName(layer_id, "ffn_down")), withKey("unit", DIM),
-     withKey("disable_bias", "false"),
-     withKey("weight_initializer", "xavier_uniform")}));
+    "fully_connected", {withKey("name", blkName(layer_id, "ffn_down")),
+                        withKey("unit", DIM), withKey("disable_bias", "false"),
+                        withKey("weight_initializer", "xavier_uniform")}));
   return down(h);
 }
 
-void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool /*do_sample*/,
-                             const WSTR /*system_prompt*/,
-                             const WSTR /*tail_prompt*/, bool log_output) {
+void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,
+                                  const WSTR, const WSTR, bool log_output) {
 
   if (!is_initialized) {
     throw std::runtime_error(
@@ -301,8 +294,7 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool /*do_sample
   }
   in.read(reinterpret_cast<char *>(image.data()),
           static_cast<std::streamsize>(n_elems * sizeof(float)));
-  if (in.gcount() !=
-      static_cast<std::streamsize>(n_elems * sizeof(float))) {
+  if (in.gcount() != static_cast<std::streamsize>(n_elems * sizeof(float))) {
     throw std::runtime_error(
       "Image tensor file is smaller than expected. Need " +
       std::to_string(n_elems) + " fp32 elements (NCHW=" +
@@ -322,16 +314,16 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool /*do_sample
     out_ptrs = model->incremental_inference(BATCH_SIZE, in_ptrs, vit_label,
                                             NUM_PATCHES, 0, NUM_PATCHES, false);
   auto vit_t1 = std::chrono::high_resolution_clock::now();
-  std::cout << "[vit infer] "
-            << std::chrono::duration<double, std::milli>(vit_t1 - vit_t0).count() /
-                 vit_iters
-            << " ms/iter over " << vit_iters << " iters" << std::endl;
+  std::cout
+    << "[vit infer] "
+    << std::chrono::duration<double, std::milli>(vit_t1 - vit_t0).count() /
+         vit_iters
+    << " ms/iter over " << vit_iters << " iters" << std::endl;
 
   // Debug: dump the full feature tensor to a file for parity comparison.
   if (const char *out_path = std::getenv("NNTR_VIT_OUT")) {
     if (!out_ptrs.empty() && out_ptrs[0] != nullptr) {
-      const size_t n_out =
-        static_cast<size_t>(BATCH_SIZE) * NUM_PATCHES * DIM;
+      const size_t n_out = static_cast<size_t>(BATCH_SIZE) * NUM_PATCHES * DIM;
       std::ofstream of(out_path, std::ios::binary);
       of.write(reinterpret_cast<const char *>(out_ptrs[0]),
                static_cast<std::streamsize>(n_out * sizeof(float)));
@@ -341,8 +333,8 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool /*do_sample
   }
 
   if (log_output && !out_ptrs.empty() && out_ptrs[0] != nullptr) {
-    std::cout << "Lfm2VlVisionTransformer features [" << NUM_PATCHES << "x" << DIM
-              << "], first 10 values: ";
+    std::cout << "Lfm2VlVisionTransformer features [" << NUM_PATCHES << "x"
+              << DIM << "], first 10 values: ";
     for (int i = 0; i < 10 && i < DIM; ++i) {
       std::cout << out_ptrs[0][i] << (i == 9 ? "" : ", ");
     }

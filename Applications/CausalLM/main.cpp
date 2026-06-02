@@ -35,8 +35,8 @@
 #include "chat_template.h"
 #include "deberta_v2.h"
 #include "embedding_gemma.h"
-#include "lfm2_vl_vision_transformer.h"
 #include "gemma3_causallm.h"
+#include "lfm2_vl_vision_transformer.h"
 #if !defined(_WIN32)
 #include "gptoss_cached_slim_causallm.h"
 #endif
@@ -287,12 +287,13 @@ int main(int argc, char *argv[]) {
     "TimmViT", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<causallm::TimmViTTransformer>(cfg, generation_cfg,
                                                             nntr_cfg);
-    });							    
+    });
 
   causallm::Factory::Instance().registerModel(
-    "Lfm2VlVisionTransformer", [](json cfg, json generation_cfg, json nntr_cfg) {
-      return std::make_unique<causallm::Lfm2VlVisionTransformer>(cfg, generation_cfg,
-                                                            nntr_cfg);
+    "Lfm2VlVisionTransformer",
+    [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::Lfm2VlVisionTransformer>(
+        cfg, generation_cfg, nntr_cfg);
     });
   causallm::Factory::Instance().registerModel(
     "VJEPA2ViT", [](json cfg, json generation_cfg, json nntr_cfg) {

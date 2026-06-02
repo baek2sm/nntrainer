@@ -28,6 +28,7 @@ CAUSALLM_COMMON_INCLUDES := \
     $(LOCAL_PATH)/../models/gemma3 \
     $(LOCAL_PATH)/../models/timm_vit \
     $(LOCAL_PATH)/../models/vjepa2_vit \
+    $(LOCAL_PATH)/../models/lfm2/lfm2-vl/vision \
     $(LOCAL_PATH)/../models/deberta_v2 \
     $(LOCAL_PATH)/../third_party/minja/include \
     $(LOCAL_PATH)/../third_party \
@@ -99,6 +100,7 @@ LOCAL_SRC_FILES := \
     ../models/gemma3/function.cpp \
     ../models/timm_vit/timm_vit_transformer.cpp \
     ../models/vjepa2_vit/vjepa2_vit.cpp \
+    ../models/lfm2/lfm2-vl/vision/lfm2_vl_vision_transformer.cpp \
     ../layers/vjepa_rope_layer.cpp \
     ../layers/vjepa_gelu_layer.cpp \
     ../layers/vjepa_layernorm_layer.cpp \
