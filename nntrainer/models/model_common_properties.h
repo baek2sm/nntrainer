@@ -182,7 +182,8 @@ class WeightSource : public Property<std::string> {
 public:
   static constexpr const char *key = "weight_source";
   using prop_tag = str_prop_tag;
-  WeightSource(const std::string &value = "") : Property<std::string>(value) {}
+  WeightSource() {}
+  WeightSource(const std::string &value) : Property<std::string>(value) {}
 };
 
 /**

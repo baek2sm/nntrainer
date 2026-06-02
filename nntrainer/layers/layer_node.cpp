@@ -669,8 +669,10 @@ InitLayerContext LayerNode::finalize(const std::vector<TensorDim> &input_dims,
 
   // Per-role weight dtype overrides (weight_dtype_map property). Empty
   // string disables; layers fall back to model-level tensor_type defaults.
-  context.setWeightDtypeMap(
-    std::get<props::WeightDtypeMap>(*layer_node_props).get());
+  {
+    const auto &wdm = std::get<props::WeightDtypeMap>(*layer_node_props);
+    context.setWeightDtypeMap(wdm.empty() ? std::string{} : wdm.get());
+  }
 
   layer->finalize(context);
 

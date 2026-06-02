@@ -777,7 +777,7 @@ public:
  */
 class WeightDtypeMap final : public Property<std::string> {
 public:
-  WeightDtypeMap() : Property<std::string>("") {}
+  WeightDtypeMap() {}
   WeightDtypeMap(const std::string &value) : Property<std::string>(value) {}
   static constexpr const char *key = "weight_dtype_map";
   using prop_tag = str_prop_tag;
