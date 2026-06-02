@@ -12,7 +12,7 @@
  * Pipeline:
  *   1. Load preprocessed [1,3,256,256] fp32 image .bin (SigLIP2 processor output)
  *   2. Lfm2VlVisionTransformer: image -> [NUM_PATCHES,768] features
- *   3. VjepaProjector: [NUM_PATCHES,768] -> [OUTPUT_TOKENS,1024]
+ *   3. Lfm2VlProjector: [NUM_PATCHES,768] -> [OUTPUT_TOKENS,1024]
  *   4. Merge with text token embeddings (single image placeholder = OUTPUT_TOKENS tokens)
  *   5. Lfm2CausalLM::run_with_embeddings()
  *
@@ -49,7 +49,7 @@
 
 #include "lfm2_causallm.h"
 #include "lfm2-vl/vision/lfm2_vl_vision_transformer.h"
-#include "vjepa2_vit/vjepa_projector.h"
+#include "lfm2/lfm2-vl/lfm2_vl_projector.h"
 
 using json = nlohmann::json;
 
@@ -247,7 +247,7 @@ int main(int argc, char *argv[]) {
     // Step 4: Projector (768 -> 1024)
     printSection("Step 4: Projector (768 -> 1024)");
 
-    auto projector = std::make_unique<causallm::VjepaProjector>(
+    auto projector = std::make_unique<causallm::Lfm2VlProjector>(
       proj_cfg, empty_gen_cfg, proj_nntr_cfg);
     projector->initialize();
     std::cout << "  Projector graph constructed.\n";
