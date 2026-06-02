@@ -48,14 +48,14 @@
 #if !defined(_WIN32)
 #include "qwen3_cached_slim_moe_causallm.h"
 #endif
+#include "lfm2-vl/vision/lfm2_vl_vision_transformer.h"
+#include "lfm2_causallm.h"
 #include "qwen3_causallm.h"
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
 #include "timm_vit/timm_vit_transformer.h"
 #include "vjepa2_vit/vjepa2_vit.h"
-#include "lfm2-vl/vision/lfm2_vl_vision_transformer.h"
-#include "lfm2_causallm.h"
 #include <models/gemma3/function.h>
 #if !defined(_WIN32)
 #include <sys/resource.h>
@@ -305,7 +305,8 @@ int main(int argc, char *argv[]) {
     });
   causallm::Factory::Instance().registerModel(
     "Lfm2ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-      return std::make_unique<causallm::Lfm2CausalLM>(cfg, generation_cfg, nntr_cfg);
+      return std::make_unique<causallm::Lfm2CausalLM>(cfg, generation_cfg,
+                                                      nntr_cfg);
     });
 
   // Validate arguments

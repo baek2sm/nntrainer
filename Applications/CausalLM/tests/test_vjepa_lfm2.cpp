@@ -32,11 +32,12 @@
  *
  * Examples:
  *   # With MP4 video input:
- *   ./test_vjepa_lfm2 /path/to/video.mp4 ../../Applications/CausalLM/res/vjepa2_lfm2
+ *   ./test_vjepa_lfm2 /path/to/video.mp4
+ * ../../Applications/CausalLM/res/vjepa2_lfm2
  *
  *   # With pre-processed .bin frames and custom prompt:
- *   ./test_vjepa_lfm2 /path/to/frames.bin ../../Applications/CausalLM/res/vjepa2_lfm2 \
- *       "What happens in this video?" 0
+ *   ./test_vjepa_lfm2 /path/to/frames.bin
+ * ../../Applications/CausalLM/res/vjepa2_lfm2 \ "What happens in this video?" 0
  */
 
 #include <algorithm>
@@ -57,9 +58,9 @@
 #include <tokenizers_cpp.h>
 
 #include "lfm2_causallm.h"
+#include "video_preprocessor.h"
 #include "vjepa2_vit/vjepa2_vit.h"
 #include "vjepa2_vit/vjepa_projector.h"
-#include "video_preprocessor.h"
 
 using json = nlohmann::json;
 
@@ -75,9 +76,9 @@ using json = nlohmann::json;
  * @param video_duration Total video duration in seconds
  * @return std::vector<std::string> text segments
  */
-static std::vector<std::string>
-apply_chat_template(const std::string &prompt,
-                    unsigned int num_video_tags, float video_duration) {
+static std::vector<std::string> apply_chat_template(const std::string &prompt,
+                                                    unsigned int num_video_tags,
+                                                    float video_duration) {
   std::vector<std::string> segments;
 
   // First segment: system prompt + start of user
@@ -118,8 +119,7 @@ apply_chat_template(const std::string &prompt,
  * @param batch_size        Batch size
  * @return pair of (inputs_embeds vector, actual_total_tokens)
  */
-static std::pair<std::vector<float>, unsigned int>
-merge_text_image_embeddings(
+static std::pair<std::vector<float>, unsigned int> merge_text_image_embeddings(
   const std::vector<std::string> &text_segments,
   const std::unique_ptr<tokenizers::Tokenizer> &tokenizer,
   const std::unique_ptr<causallm::Lfm2CausalLM> &lfm2,
@@ -213,7 +213,8 @@ int main(int argc, char *argv[]) {
       causallm::LoadJsonFile(model_dir + "/vjepa_nntr_config.json");
 
     // Projector config
-    json proj_cfg = causallm::LoadJsonFile(model_dir + "/projector_config.json");
+    json proj_cfg =
+      causallm::LoadJsonFile(model_dir + "/projector_config.json");
     json proj_nntr_cfg =
       causallm::LoadJsonFile(model_dir + "/projector_nntr_config.json");
 
@@ -259,7 +260,8 @@ int main(int argc, char *argv[]) {
     }
     if (vjepa_cfg.contains("image_std")) {
       auto s = vjepa_cfg["image_std"];
-      vp_cfg.std_val = {s[0].get<float>(), s[1].get<float>(), s[2].get<float>()};
+      vp_cfg.std_val = {s[0].get<float>(), s[1].get<float>(),
+                        s[2].get<float>()};
     }
 
     // If video_path ends with .bin, load preprocessed frames directly
@@ -269,17 +271,15 @@ int main(int argc, char *argv[]) {
         video_path.substr(video_path.size() - 4) == ".bin") {
       unsigned int num_frames = vjepa_cfg.value("num_frames", 16);
       frames = causallm::VideoPreprocessor::loadPreprocessedFrames(
-        video_path, num_frames, 3,
-        vp_cfg.target_height, vp_cfg.target_width);
+        video_path, num_frames, 3, vp_cfg.target_height, vp_cfg.target_width);
     } else {
       frames = causallm::VideoPreprocessor::process(video_path, vp_cfg);
     }
 
     auto t_preprocess_end = std::chrono::high_resolution_clock::now();
-    auto preprocess_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-        t_preprocess_end - t_preprocess_start)
-        .count();
+    auto preprocess_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           t_preprocess_end - t_preprocess_start)
+                           .count();
 
     std::cout << "  Frames extracted: " << frames.size() << "\n";
     std::cout << "  Frame shape: [3, " << vp_cfg.target_height << ", "
@@ -300,24 +300,21 @@ int main(int argc, char *argv[]) {
     auto t_vjepa_start = std::chrono::high_resolution_clock::now();
     auto [vision_ptr, vision_size] = vjepa->run_image(frames, 384, 384, true);
     auto t_vjepa_end = std::chrono::high_resolution_clock::now();
-    auto vjepa_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-        t_vjepa_end - t_vjepa_start)
-        .count();
+    auto vjepa_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      t_vjepa_end - t_vjepa_start)
+                      .count();
 
-    const unsigned int num_patches = vjepa_cfg.value("num_frames", 16) /
-                                       vjepa_cfg.value("tubelet_size", 2) *
-                                     (vjepa_cfg.value("img_size", 384) /
-                                      vjepa_cfg.value("patch_size", 16)) *
-                                     (vjepa_cfg.value("img_size", 384) /
-                                      vjepa_cfg.value("patch_size", 16));
+    const unsigned int num_patches =
+      vjepa_cfg.value("num_frames", 16) / vjepa_cfg.value("tubelet_size", 2) *
+      (vjepa_cfg.value("img_size", 384) / vjepa_cfg.value("patch_size", 16)) *
+      (vjepa_cfg.value("img_size", 384) / vjepa_cfg.value("patch_size", 16));
     const unsigned int vision_dim = vjepa_cfg.value("hidden_size", 768);
 
     // After pixel_unshuffle: tokens = T * (H/f) * (W/f)
     const unsigned int downsample_factor =
       proj_cfg.value("downsample_factor", 2);
-    const unsigned int output_tokens = num_patches / (downsample_factor *
-                                                        downsample_factor);
+    const unsigned int output_tokens =
+      num_patches / (downsample_factor * downsample_factor);
 
     std::cout << "  Vision tokens: " << num_patches << " x " << vision_dim
               << "\n";
@@ -339,10 +336,9 @@ int main(int argc, char *argv[]) {
     auto [proj_ptr, proj_size] =
       projector->run(static_cast<const float *>(vision_ptr), num_patches, true);
     auto t_proj_end = std::chrono::high_resolution_clock::now();
-    auto proj_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-        t_proj_end - t_proj_start)
-        .count();
+    auto proj_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     t_proj_end - t_proj_start)
+                     .count();
 
     const unsigned int text_dim = lfm2_cfg.value("hidden_size", 1024);
     std::cout << "  Projected tokens: " << output_tokens << " x " << text_dim
@@ -362,7 +358,8 @@ int main(int argc, char *argv[]) {
     // ── 6. Tokenize prompt and build merged embeddings ──────────────
     printSection("Step 6: Build Merged Embeddings");
 
-    std::string tokenizer_path = lfm2_nntr_cfg["tokenizer_file"].get<std::string>();
+    std::string tokenizer_path =
+      lfm2_nntr_cfg["tokenizer_file"].get<std::string>();
     if (!std::filesystem::exists(tokenizer_path)) {
       std::string resolved = model_dir + "/tokenizer.json";
       if (std::filesystem::exists(resolved)) {
@@ -413,7 +410,8 @@ int main(int argc, char *argv[]) {
         seed_tokens.insert(seed_tokens.end(), vision_tokens_per_video, 0);
     }
 
-    std::cout << "  Vision tokens per <video>: " << vision_tokens_per_video << "\n";
+    std::cout << "  Vision tokens per <video>: " << vision_tokens_per_video
+              << "\n";
     std::cout << "  Total vision tokens: " << output_tokens << "\n";
     std::cout << "  Actual total tokens: " << actual_total_tokens << "\n";
     std::cout << "  Embedding buffer size: "
@@ -426,15 +424,13 @@ int main(int argc, char *argv[]) {
 
     auto t_lfm2_start = std::chrono::high_resolution_clock::now();
 
-    lfm2->run_with_embeddings(
-      inputs_embeds.data(), actual_total_tokens, seed_tokens,
-      do_sample, /*log_output=*/true);
+    lfm2->run_with_embeddings(inputs_embeds.data(), actual_total_tokens,
+                              seed_tokens, do_sample, /*log_output=*/true);
 
     auto t_lfm2_end = std::chrono::high_resolution_clock::now();
-    auto lfm2_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-        t_lfm2_end - t_lfm2_start)
-        .count();
+    auto lfm2_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     t_lfm2_end - t_lfm2_start)
+                     .count();
 
     // ── 8. Print results ───────────────────────────────────────────
     printSection("Step 8: Results");
@@ -445,7 +441,7 @@ int main(int argc, char *argv[]) {
 
     if (!generated_ids.empty()) {
       std::vector<int32_t> gen_ids_i32(generated_ids.begin(),
-                                        generated_ids.end());
+                                       generated_ids.end());
       std::string decoded = tokenizer->Decode(gen_ids_i32);
       std::cout << "  Decoded output: " << decoded << "\n";
     }

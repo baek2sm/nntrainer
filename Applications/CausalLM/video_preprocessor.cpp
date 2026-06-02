@@ -84,7 +84,8 @@ struct AvPacket {
 
 unsigned int VideoPreprocessor::getFrameCount(const std::string &video_path) {
   AvFormatCtx fmt_ctx;
-  if (avformat_open_input(&fmt_ctx, video_path.c_str(), nullptr, nullptr) != 0) {
+  if (avformat_open_input(&fmt_ctx, video_path.c_str(), nullptr, nullptr) !=
+      0) {
     std::cerr << "Warning: could not open video: " << video_path << std::endl;
     return 0;
   }
@@ -117,7 +118,8 @@ unsigned int VideoPreprocessor::getFrameCount(const std::string &video_path) {
 
 double VideoPreprocessor::getFPS(const std::string &video_path) {
   AvFormatCtx fmt_ctx;
-  if (avformat_open_input(&fmt_ctx, video_path.c_str(), nullptr, nullptr) != 0) {
+  if (avformat_open_input(&fmt_ctx, video_path.c_str(), nullptr, nullptr) !=
+      0) {
     return 0.0;
   }
   if (avformat_find_stream_info(fmt_ctx.get(), nullptr) < 0) {
@@ -146,14 +148,14 @@ double VideoPreprocessor::getFPS(const std::string &video_path) {
   return 0.0;
 }
 
-unsigned int VideoPreprocessor::computeNumFrames(unsigned int total_frames,
-                                                 double video_fps,
-                                                 const VideoPreprocessorConfig &cfg) {
+unsigned int
+VideoPreprocessor::computeNumFrames(unsigned int total_frames, double video_fps,
+                                    const VideoPreprocessorConfig &cfg) {
   // VoRA formula: num_frames = int(total_frames / video_fps * target_fps)
   unsigned int num_frames = 0;
   if (video_fps > 0) {
-    num_frames = static_cast<unsigned int>(
-      static_cast<double>(total_frames) / video_fps * cfg.target_fps);
+    num_frames = static_cast<unsigned int>(static_cast<double>(total_frames) /
+                                           video_fps * cfg.target_fps);
   } else {
     // If FPS unknown, use all frames
     num_frames = total_frames;
@@ -173,7 +175,7 @@ unsigned int VideoPreprocessor::computeNumFrames(unsigned int total_frames,
 
 std::vector<unsigned int>
 VideoPreprocessor::computeSampleIndices(unsigned int total_frames,
-                                         unsigned int num_frames) {
+                                        unsigned int num_frames) {
   std::vector<unsigned int> indices;
   indices.reserve(num_frames);
 
@@ -190,8 +192,9 @@ VideoPreprocessor::computeSampleIndices(unsigned int total_frames,
   }
 
   // Match np.linspace(0, total_frames-1, num_frames).round().astype(int)
-  // np.linspace generates num_frames evenly spaced values from 0 to (total_frames-1)
-  // For i in [0, num_frames): value = i * (total_frames-1) / (num_frames-1)
+  // np.linspace generates num_frames evenly spaced values from 0 to
+  // (total_frames-1) For i in [0, num_frames): value = i * (total_frames-1) /
+  // (num_frames-1)
   for (unsigned int i = 0; i < num_frames; ++i) {
     double val;
     if (num_frames == 1) {
@@ -210,10 +213,11 @@ VideoPreprocessor::computeSampleIndices(unsigned int total_frames,
 
 std::vector<std::vector<float>>
 VideoPreprocessor::process(const std::string &video_path,
-                            const VideoPreprocessorConfig &cfg) {
+                           const VideoPreprocessorConfig &cfg) {
   // ── 1. Open video file ──────────────────────────────────────────
   AvFormatCtx fmt_ctx;
-  if (avformat_open_input(&fmt_ctx, video_path.c_str(), nullptr, nullptr) != 0) {
+  if (avformat_open_input(&fmt_ctx, video_path.c_str(), nullptr, nullptr) !=
+      0) {
     throw std::runtime_error("VideoPreprocessor: could not open video: " +
                              video_path);
   }
@@ -226,17 +230,16 @@ VideoPreprocessor::process(const std::string &video_path,
   int stream_idx =
     av_find_best_stream(fmt_ctx.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
   if (stream_idx < 0) {
-    throw std::runtime_error(
-      "VideoPreprocessor: no video stream found in: " + video_path);
+    throw std::runtime_error("VideoPreprocessor: no video stream found in: " +
+                             video_path);
   }
   AVStream *video_stream = fmt_ctx.get()->streams[stream_idx];
 
   // ── 3. Open decoder ─────────────────────────────────────────────
-  const AVCodec *codec =
-    avcodec_find_decoder(video_stream->codecpar->codec_id);
+  const AVCodec *codec = avcodec_find_decoder(video_stream->codecpar->codec_id);
   if (!codec) {
-    throw std::runtime_error(
-      "VideoPreprocessor: unsupported codec in: " + video_path);
+    throw std::runtime_error("VideoPreprocessor: unsupported codec in: " +
+                             video_path);
   }
 
   AvCodecCtx codec_ctx;
@@ -245,8 +248,8 @@ VideoPreprocessor::process(const std::string &video_path,
     throw std::runtime_error(
       "VideoPreprocessor: could not allocate codec context");
   }
-  if (avcodec_parameters_to_context(codec_ctx.get(),
-                                    video_stream->codecpar) < 0) {
+  if (avcodec_parameters_to_context(codec_ctx.get(), video_stream->codecpar) <
+      0) {
     throw std::runtime_error(
       "VideoPreprocessor: could not copy codec parameters");
   }
@@ -263,15 +266,13 @@ VideoPreprocessor::process(const std::string &video_path,
       av_q2d(video_stream->time_base) * video_stream->duration;
     double fps = av_q2d(video_stream->r_frame_rate);
     if (fps > 0 && duration_sec > 0) {
-      total_frames =
-        static_cast<unsigned int>(std::round(duration_sec * fps));
+      total_frames = static_cast<unsigned int>(std::round(duration_sec * fps));
     }
   }
 
   if (total_frames == 0) {
     throw std::runtime_error(
-      "VideoPreprocessor: could not determine frame count for: " +
-      video_path);
+      "VideoPreprocessor: could not determine frame count for: " + video_path);
   }
 
   // Get video FPS
@@ -288,8 +289,7 @@ VideoPreprocessor::process(const std::string &video_path,
     computeSampleIndices(total_frames, num_frames);
 
   std::cerr << "VideoPreprocessor: total_frames=" << total_frames
-            << ", video_fps=" << video_fps
-            << ", target_fps=" << cfg.target_fps
+            << ", video_fps=" << video_fps << ", target_fps=" << cfg.target_fps
             << ", num_frames=" << num_frames
             << ", grid_t=" << (num_frames / cfg.temporal_patch_size)
             << std::endl;
@@ -339,8 +339,7 @@ VideoPreprocessor::process(const std::string &video_path,
         break;
       }
       if (ret < 0) {
-        throw std::runtime_error(
-          "VideoPreprocessor: error during decoding");
+        throw std::runtime_error("VideoPreprocessor: error during decoding");
       }
 
       // Check if this frame is one we need
@@ -358,8 +357,7 @@ VideoPreprocessor::process(const std::string &video_path,
         }
 
         // Output frame buffer (RGB24)
-        std::vector<uint8_t> rgb_buf(
-          static_cast<size_t>(out_w) * out_h * 3);
+        std::vector<uint8_t> rgb_buf(static_cast<size_t>(out_w) * out_h * 3);
 
         // Setup destination data pointers
         uint8_t *dst_data[1] = {rgb_buf.data()};
@@ -382,11 +380,10 @@ VideoPreprocessor::process(const std::string &video_path,
               // Destination: [C, H, W]
               size_t dst_idx =
                 (static_cast<size_t>(c) * cfg.target_height + y) *
-                  cfg.target_width + x;
-              float val =
-                static_cast<float>(rgb_buf[src_idx + c]) / 255.0f;
-              float_frame[dst_idx] =
-                (val - cfg.mean[c]) / cfg.std_val[c];
+                  cfg.target_width +
+                x;
+              float val = static_cast<float>(rgb_buf[src_idx + c]) / 255.0f;
+              float_frame[dst_idx] = (val - cfg.mean[c]) / cfg.std_val[c];
             }
           }
         }
@@ -403,8 +400,8 @@ VideoPreprocessor::process(const std::string &video_path,
     // If we didn't get enough frames, pad by repeating the last frame
     while (result.size() < num_frames) {
       if (result.empty()) {
-        throw std::runtime_error(
-          "VideoPreprocessor: no frames decoded from: " + video_path);
+        throw std::runtime_error("VideoPreprocessor: no frames decoded from: " +
+                                 video_path);
       }
       result.push_back(result.back());
     }
@@ -416,16 +413,11 @@ VideoPreprocessor::process(const std::string &video_path,
   return result;
 }
 
-std::vector<std::vector<float>>
-VideoPreprocessor::loadPreprocessedFrames(const std::string &bin_path,
-                                           unsigned int num_frames,
-                                           unsigned int channels,
-                                           unsigned int height,
-                                           unsigned int width) {
-  const size_t frame_size =
-    static_cast<size_t>(channels) * height * width;
-  const size_t total_size =
-    static_cast<size_t>(num_frames) * frame_size;
+std::vector<std::vector<float>> VideoPreprocessor::loadPreprocessedFrames(
+  const std::string &bin_path, unsigned int num_frames, unsigned int channels,
+  unsigned int height, unsigned int width) {
+  const size_t frame_size = static_cast<size_t>(channels) * height * width;
+  const size_t total_size = static_cast<size_t>(num_frames) * frame_size;
 
   std::ifstream file(bin_path, std::ios::binary | std::ios::ate);
   if (!file.is_open()) {
@@ -437,10 +429,9 @@ VideoPreprocessor::loadPreprocessedFrames(const std::string &bin_path,
   file.seekg(0, std::ios::beg);
 
   if (file_size < total_size) {
-    throw std::runtime_error(
-      "VideoPreprocessor: file too small: expected " +
-      std::to_string(total_size) + " floats, got " +
-      std::to_string(file_size) + " in " + bin_path);
+    throw std::runtime_error("VideoPreprocessor: file too small: expected " +
+                             std::to_string(total_size) + " floats, got " +
+                             std::to_string(file_size) + " in " + bin_path);
   }
 
   // Read all data at once

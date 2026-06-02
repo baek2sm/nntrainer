@@ -36,13 +36,14 @@ namespace causallm {
  * @brief Video preprocessor configuration.
  */
 struct VideoPreprocessorConfig {
-  unsigned int target_fps = 4;       /**< Target FPS for frame sampling */
-  unsigned int min_frames = 4;      /**< Minimum number of frames */
-  unsigned int max_frames = 60;     /**< Maximum number of frames */
-  unsigned int temporal_patch_size = 2; /**< Tubelet size (must divide num_frames) */
-  unsigned int target_height = 384; /**< Resize height */
-  unsigned int target_width = 384;  /**< Resize width */
-  std::vector<float> mean = {0.485f, 0.456f, 0.406f}; /**< ImageNet mean */
+  unsigned int target_fps = 4;  /**< Target FPS for frame sampling */
+  unsigned int min_frames = 4;  /**< Minimum number of frames */
+  unsigned int max_frames = 60; /**< Maximum number of frames */
+  unsigned int temporal_patch_size =
+    2; /**< Tubelet size (must divide num_frames) */
+  unsigned int target_height = 384;                      /**< Resize height */
+  unsigned int target_width = 384;                       /**< Resize width */
+  std::vector<float> mean = {0.485f, 0.456f, 0.406f};    /**< ImageNet mean */
   std::vector<float> std_val = {0.229f, 0.224f, 0.225f}; /**< ImageNet std */
 };
 
@@ -102,7 +103,8 @@ public:
   /**
    * @brief Compute uniform sampling indices matching np.linspace.
    *
-   * Equivalent to: np.linspace(0, total_frames-1, num_frames).round().astype(int)
+   * Equivalent to: np.linspace(0, total_frames-1,
+   * num_frames).round().astype(int)
    *
    * @param total_frames Total frames in the video
    * @param num_frames   Number of frames to sample
@@ -129,8 +131,7 @@ public:
   static std::vector<std::vector<float>>
   loadPreprocessedFrames(const std::string &bin_path,
                          unsigned int num_frames = 16,
-                         unsigned int channels = 3,
-                         unsigned int height = 384,
+                         unsigned int channels = 3, unsigned int height = 384,
                          unsigned int width = 384);
 };
 

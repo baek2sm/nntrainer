@@ -5,6 +5,8 @@
  * @file   vjepa_layernorm_layer.cpp
  * @date   22 May 2026
  * @brief  Per-token-parallel LayerNorm over the width axis.
+ * @author Jijoong Moon <jijoong.moon@samsung.com>
+ * @bug    No known bugs except for NYI items
  */
 
 #include "vjepa_layernorm_layer.h"
@@ -30,12 +32,12 @@ void VjepaLayerNormLayer::finalize(nntrainer::InitLayerContext &context) {
                                 context.getActivationDataType());
   norm_dim.width(in_dim.width());
 
-  wt_idx[GAMMA] = context.requestWeight(
-    norm_dim, nntrainer::Initializer::ONES, nntrainer::WeightRegularizer::NONE,
-    1.0f, 0.0f, "gamma", true);
-  wt_idx[BETA] = context.requestWeight(
-    norm_dim, nntrainer::Initializer::ZEROS, nntrainer::WeightRegularizer::NONE,
-    1.0f, 0.0f, "beta", true);
+  wt_idx[GAMMA] = context.requestWeight(norm_dim, nntrainer::Initializer::ONES,
+                                        nntrainer::WeightRegularizer::NONE,
+                                        1.0f, 0.0f, "gamma", true);
+  wt_idx[BETA] = context.requestWeight(norm_dim, nntrainer::Initializer::ZEROS,
+                                       nntrainer::WeightRegularizer::NONE, 1.0f,
+                                       0.0f, "beta", true);
 }
 
 // LayerNorm of `num_rows` contiguous rows of width W, parallelized over the

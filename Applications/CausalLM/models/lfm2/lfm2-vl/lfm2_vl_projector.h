@@ -18,7 +18,8 @@
 namespace causallm {
 
 /**
- * @brief LFM2.5-VL multimodal projector connecting vision encoder to language model.
+ * @brief LFM2.5-VL multimodal projector connecting vision encoder to language
+ * model.
  */
 class Lfm2VlProjector : public VjepaProjector {
 public:

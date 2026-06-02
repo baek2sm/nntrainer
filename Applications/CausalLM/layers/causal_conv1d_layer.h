@@ -50,7 +50,8 @@
 namespace causallm {
 
 /**
- * @brief Causal depthwise Conv1D layer with conv-state cache for CausalLM inference.
+ * @brief Causal depthwise Conv1D layer with conv-state cache for CausalLM
+ * inference.
  */
 WIN_EXPORT class CausalConv1DLayer : public nntrainer::LayerImpl {
 public:
@@ -81,8 +82,9 @@ public:
 
   WIN_EXPORT const std::string getType() const override { return type; }
 
-  WIN_EXPORT void exportTo(nntrainer::Exporter &exporter,
-                           const ml::train::ExportMethods &method) const override;
+  WIN_EXPORT void
+  exportTo(nntrainer::Exporter &exporter,
+           const ml::train::ExportMethods &method) const override;
 
   WIN_EXPORT void setProperty(const std::vector<std::string> &values) override;
 
