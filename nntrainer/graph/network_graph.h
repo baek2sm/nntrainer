@@ -100,6 +100,19 @@ public:
   ~NetworkGraph() = default;
 
   /**
+   * @brief Route the weight/activation memory pools to a specific allocator
+   *        backend (e.g. "npu" for rpcmem/DMA buffers). Empty string keeps
+   *        the current default for that pool. Must be called before
+   *        allocateTensors()/allocateWeights().
+   * @param[in] weight_backend allocator name for the weight pool ("" = keep)
+   * @param[in] tensor_backend allocator name for the activation pool ("" = keep)
+   */
+  void setComputeBackend(const std::string &weight_backend,
+                         const std::string &tensor_backend) {
+    tensor_manager->setComputeBackend(weight_backend, tensor_backend);
+  }
+
+  /**
    * @brief     Compile the graph
    * @param[in] loss_type loss for the graph
    * returns ML_ERROR_NONE on success, error on failure

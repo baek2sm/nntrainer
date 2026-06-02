@@ -226,6 +226,29 @@ int NeuralNetwork::compile(ExecutionMode mode) {
   model_graph =
     NetworkGraph(fsu, mode, fsu_path, lookahead, tensor_format, tensor_type);
 
+  // QNN/HTP graphs register their input/output tensors with the DSP via
+  // rpcmem_to_fd(), which requires every buffer to be an exact rpcmem
+  // (DMA/ION) base address. Manager-owned intermediate activations (e.g. an
+  // in-graph embedding_layer's output that bridges into a QNN graph node)
+  // otherwise land in the CPU pool as interior offsets of one malloc'd
+  // buffer, and rpcmem_to_fd fails (hard exit). When the graph contains a
+  // QNN-engine layer, route the activation pool to the "npu" (rpcmem)
+  // allocator so each tensor gets its own rpcmem base address. Weights are
+  // left untouched (QNN graph weights are loaded by the QNN context loader).
+  {
+    bool has_qnn_engine = false;
+    for (auto &node : graph_representation) {
+      if (node->getComputeEngineType() == "qnn" ||
+          node->getType() == "qnn_graph") {
+        has_qnn_engine = true;
+        break;
+      }
+    }
+    if (has_qnn_engine) {
+      model_graph.setComputeBackend("", "npu");
+    }
+  }
+
   model_graph.setMemoryOptimizations(
     std::get<props::MemoryOptimization>(model_flex_props));
   for (auto &node : graph_representation) {
