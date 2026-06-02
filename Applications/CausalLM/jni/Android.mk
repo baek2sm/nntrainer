@@ -247,6 +247,8 @@ LOCAL_SRC_FILES := ../quantize.cpp \
     ../models/deberta_v2/deberta_v2.cpp \
     ../layers/deberta_attention_layer.cpp \
     ../layers/shared_fully_connected_layer.cpp \
+    ../layers/custom_multiply.cpp \
+    ../layers/causal_conv1d_layer.cpp \
     ../models/lfm2/lfm2_causallm.cpp \
     ../models/lfm2/lfm2-vl/lfm2_vl_projector.cpp \
     ../models/lfm2/lfm2-vl/vision/lfm2_vl_vision_transformer.cpp \
