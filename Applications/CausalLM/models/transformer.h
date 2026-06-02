@@ -199,6 +199,9 @@ public:
     (void)offset;
   }
 
+  /** Current KV-cache length (0 if the model has no persistent KV cache). */
+  virtual int getKvLen() const { return 0; }
+
   /**
    * @brief Get TransformerPerformanceMetrics
    */
