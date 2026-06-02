@@ -163,7 +163,7 @@ float compute_mse(const uint32_t M, const uint32_t N, std::vector<T> &ref_dst,
 #if defined(__aarch64__) || defined(_M_ARM64) || defined(__AVX2__)
 static std::vector<float> make_causal_conv_input(unsigned int B, unsigned int H,
                                                  unsigned int W) {
-  std::vector<float> input(B * H * W);
+  std::vector<float> input(static_cast<size_t>(B) * H * W);
   for (size_t i = 0; i < input.size(); ++i) {
     const int v = static_cast<int>((i * 17 + 5) % 23) - 11;
     input[i] = static_cast<float>(v) * 0.125f;
@@ -192,7 +192,7 @@ static std::vector<float> make_causal_conv_bias(unsigned int W) {
 static std::vector<float> reference_causal_depthwise_conv1d_k3(
   const std::vector<float> &input, const std::vector<float> &weight,
   const float *bias, unsigned int B, unsigned int H, unsigned int W) {
-  std::vector<float> output(B * H * W, 0.0f);
+  std::vector<float> output(static_cast<size_t>(B) * H * W, 0.0f);
   const float *w0 = weight.data();
   const float *w1 = weight.data() + W;
   const float *w2 = weight.data() + 2 * W;
