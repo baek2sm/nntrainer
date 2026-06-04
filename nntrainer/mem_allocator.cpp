@@ -28,8 +28,11 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <sysinfoapi.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
+#include <sysinfoapi.h>
 #else
 #include <unistd.h>
 #endif

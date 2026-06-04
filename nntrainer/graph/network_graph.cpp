@@ -115,8 +115,11 @@ void NetworkGraph::setExecutionOrder() {
       backward_order++;
     auto apply_gradient_order = backward_order++;
 
-    node->setExecutionOrder({forward_order, calc_gradient_order,
-                             calc_derivative_order, apply_gradient_order});
+    node->setExecutionOrder(
+      {static_cast<unsigned int>(forward_order),
+       static_cast<unsigned int>(calc_gradient_order),
+       static_cast<unsigned int>(calc_derivative_order),
+       static_cast<unsigned int>(apply_gradient_order)});
   }
 
   /**
