@@ -23,11 +23,8 @@ Lfm2VlConnector::Lfm2VlConnector(unsigned int in_features,
     out_features_(out_features) {}
 
 /* static */ float Lfm2VlConnector::gelu(float x) {
-  // tanh GELU approximation (matches PyTorch gelu_pytorch_tanh)
-  constexpr float kAlpha = 0.7978845608028654f; // sqrt(2/pi)
-  constexpr float kBeta  = 0.044715f;
-  float inner = kAlpha * (x + kBeta * x * x * x);
-  return 0.5f * x * (1.0f + std::tanh(inner));
+  // Exact GELU (erf-based) matching torch.nn.functional.gelu
+  return 0.5f * x * (1.0f + std::erf(x / 1.4142135623730951f));
 }
 
 /* static */ std::vector<float>

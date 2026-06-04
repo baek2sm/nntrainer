@@ -6,7 +6,7 @@
  *
  *         Pipeline:
  *           preprocess image -> SigLIP2 ViT -> pixel-unshuffle x2
- *           -> MLP connector (3072->2560->1024) -> splice at image_token_id=396
+ *           -> MLP connector (3072->2048->1024) -> splice at image_token_id=396
  *           -> Lfm2CausalLM::run_with_embeddings -> generate tokens.
  *
  *         The V-JEPA/VoRA path in Lfm2CausalLM is preserved unchanged.
@@ -42,7 +42,7 @@ namespace causallm {
  *   "text_config": { ...LFM2 LM config... },
  *   "vision_config": { ...SigLIP2 ViT config... },
  *   "image_token_id": 396,
- *   "projector_hidden_size": 2560,
+ *   "projector_hidden_size": 2048,
  *   "downsample_factor": 2
  * }
  */
@@ -121,7 +121,7 @@ private:
 
   int image_token_id_{DEFAULT_IMAGE_TOKEN_ID};
   unsigned int downsample_factor_{2};
-  unsigned int projector_hidden_size_{2560};
+  unsigned int projector_hidden_size_{2048};
 
   std::unique_ptr<Lfm2VlVisionTransformer> vit_;
   std::unique_ptr<Lfm2VlConnector> connector_;

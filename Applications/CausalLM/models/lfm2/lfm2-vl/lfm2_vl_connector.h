@@ -6,8 +6,8 @@
  *
  *         Architecture (LiquidAI LFM2-VL-450M config.json):
  *           pixel_unshuffle x2 (downsample_factor=2)
- *           MLP  3072 -> gelu -> 2560 -> gelu -> 1024
- *         (projector_hidden_size=2560, text hidden_size=1024).
+ *           MLP  3072 -> gelu -> 2048 -> gelu -> 1024
+ *         (projector_hidden_size=2048, text hidden_size=1024).
  *
  *         This is a NEW connector separate from the V-JEPA VoRA merger.
  * @author SeungBaek Hong <baek2sm@naver.com>
@@ -48,7 +48,7 @@ std::vector<float> pixelUnshuffle(const std::vector<float> &features,
  * checkpoint. All three linear layers use bias.
  *
  *   in_features  = embed_dim * factor * factor  (default 768*4=3072)
- *   hidden_size  = projector_hidden_size         (default 2560)
+ *   hidden_size  = projector_hidden_size         (default 2048)
  *   out_features = text hidden_size              (default 1024)
  */
 class Lfm2VlConnector {
@@ -56,11 +56,11 @@ public:
   /**
    * @brief Construct with explicit dimensions.
    * @param in_features  Input dimension after pixel-unshuffle (3072 default).
-   * @param hidden_size  Projector hidden dimension (2560 default).
+   * @param hidden_size  Projector hidden dimension (2048 default).
    * @param out_features Output dimension = LLM hidden size (1024 default).
    */
   Lfm2VlConnector(unsigned int in_features = 3072,
-                  unsigned int hidden_size = 2560,
+                  unsigned int hidden_size = 2048,
                   unsigned int out_features = 1024);
 
   /**
@@ -109,7 +109,7 @@ private:
 
   bool weights_loaded_{false};
 
-  /** @brief Element-wise GELU (tanh approximation). */
+  /** @brief Element-wise GELU (erf-based, exact). */
   static float gelu(float x);
 
   /** @brief Matrix-vector multiply: y = W * x + b. */
