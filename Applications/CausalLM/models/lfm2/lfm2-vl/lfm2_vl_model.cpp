@@ -50,9 +50,11 @@ Lfm2VlForConditionalGeneration::Lfm2VlForConditionalGeneration(
 
   auto [text_cfg, vision_cfg] = splitConfig(cfg);
 
-  // Vision encoder
+  // Vision encoder: Transformer base checks nntr_cfg["model_type"] == "embedding".
+  // Patch the stored copy before constructing so the check passes.
+  nntr_cfg_["model_type"] = "embedding";
   vit_ = std::make_unique<Lfm2VlVisionTransformer>(
-    vision_cfg, generation_cfg, nntr_cfg);
+    vision_cfg, generation_cfg_, nntr_cfg_);
 
   // Connector dimensions
   unsigned int vit_embed =
@@ -65,8 +67,9 @@ Lfm2VlForConditionalGeneration::Lfm2VlForConditionalGeneration(
   connector_ = std::make_unique<Lfm2VlConnector>(
     connector_in, projector_hidden_size_, lm_hidden);
 
-  // LM decoder
-  lm_ = std::make_unique<Lfm2CausalLM>(text_cfg, generation_cfg, nntr_cfg);
+  // LM decoder: Transformer base checks nntr_cfg["model_type"] == "causallm".
+  nntr_cfg_["model_type"] = "causallm";
+  lm_ = std::make_unique<Lfm2CausalLM>(text_cfg, generation_cfg_, nntr_cfg_);
 }
 
 /* -------------------------------------------------------------------------
