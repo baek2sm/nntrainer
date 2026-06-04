@@ -67,6 +67,8 @@ public:
    * @brief Load weights from a flat binary file.
    *
    * Expected layout (all FP32, row-major):
+   *   ln_weight  [in_features]
+   *   ln_bias    [in_features]
    *   fc1_weight [hidden_size, in_features]
    *   fc1_bias   [hidden_size]
    *   fc2_weight [out_features, hidden_size]
@@ -108,6 +110,8 @@ private:
   std::vector<float> fc2_bias_;   /**< [out_features] */
 
   bool weights_loaded_{false};
+  std::vector<float> ln_weight_; /**< LayerNorm weight [in_features] */
+  std::vector<float> ln_bias_;   /**< LayerNorm bias [in_features] */
 
   /** @brief Element-wise GELU (erf-based, exact). */
   static float gelu(float x);
@@ -118,6 +122,12 @@ private:
                                           const std::vector<float> &x,
                                           unsigned int rows,
                                           unsigned int cols);
+
+  /** @brief Layer normalization over a single feature vector. */
+  static std::vector<float> layerNorm(const std::vector<float> &x,
+                                      const std::vector<float> &w,
+                                      const std::vector<float> &b,
+                                      float eps = 1e-5f);
 };
 
 } // namespace causallm

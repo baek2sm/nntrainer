@@ -181,44 +181,87 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
     // image_embeds: [n_img_tokens * lm_hidden]
   }
 
-  // --- 4. Build input_embeds with prompt tokens + image splice ---
-  // Tokenize prompt using LM lookupEmbedding
-  // We need to get token IDs first. For now use a simple approach:
-  // the LM's run() handles tokenization internally; for the embedding splice
-  // path we need token IDs explicitly. Use a placeholder for the smoke run:
-  // pass the raw float embedding directly via run_with_embeddings.
+  // --- 4. Build full chat-template input_embeds ---
+  // HF chat template (from hf_model/chat_template.jinja):
+  //   {{bos_token}}<|im_start|>user\n<image>PROMPT<|im_end|>\n<|im_start|>assistant\n
+  // BOS is added via embedding lookup; the rest is tokenized.
+  // The <image> token (id=396) in the tokenized sequence is replaced by
+  // the n_img_tokens connector feature vectors.
 
   unsigned int lm_hidden = connector_->outFeatures();
 
   if (n_img_tokens == 0 || image_embeds.empty()) {
-    // Text-only path: delegate to the standard LM run.
+    // Text-only path: delegate to standard LM run.
     lm_->run(prompt, do_sample, "", "", log_output);
     return;
   }
 
-  // Build merged embeddings:
-  //   For each token in prompt, if it is image_token_id, insert image_embeds;
-  //   otherwise insert the token's text embedding.
-  //
-  // For the smoke-level base: we treat the entire image_embeds as the prefix
-  // and pass the prompt tokens after it, using run_with_embeddings.
-  // A full splice implementation that inserts per-image-token is TODO.
+  // Build the templated text string (BOS not included -- added separately).
+  // The <image> placeholder matches image_token_id_ (396) in tokenizer.
+  std::string templated_text =
+    "<|im_start|>user\n<|image_start|><image><|image_end|>" + prompt +
+    "<|im_end|>\n<|im_start|>assistant\n";
 
-  // Allocate merged embedding buffer: [n_img_tokens + prompt_tokens, lm_hidden]
-  // For the smoke run we use only the image prefix + a single BOS embedding.
-  std::vector<float> merged = image_embeds;
-  // Append BOS token embedding (token_id=1 is BOS for LFM2)
-  std::vector<float> bos_emb = lm_->lookupEmbedding(1);
-  merged.insert(merged.end(), bos_emb.begin(), bos_emb.end());
+  // Tokenize the templated text (without BOS).
+  std::vector<int64_t> token_ids = lm_->tokenize(templated_text);
 
-  size_t n_total_tokens = n_img_tokens + 1;
+  // Count <image> placeholders for diagnostics.
+  size_t n_image_placeholders = 0;
+  for (auto tid : token_ids)
+    if (static_cast<int>(tid) == image_token_id_)
+      ++n_image_placeholders;
 
   if (log_output) {
-    std::cout << "[LFM2-VL] image tokens: " << n_img_tokens
-              << "  total prefill tokens: " << n_total_tokens << "\n";
+    std::cout << "[LFM2-VL] chat-template token count (excl BOS): "
+              << token_ids.size()
+              << "  <image> placeholders: " << n_image_placeholders
+              << "  connector image tokens per placeholder: " << n_img_tokens
+              << "\n";
   }
 
-  // Run LM with merged embeddings
+  // Allocate merged embedding buffer.
+  // Total tokens = 1 (BOS) + (token_ids.size() - n_image_placeholders) + n_img_tokens * n_image_placeholders
+  size_t n_text_tokens = token_ids.size() - n_image_placeholders;
+  size_t n_total_tokens = 1 + n_text_tokens + n_img_tokens * n_image_placeholders;
+  std::vector<float> merged;
+  merged.reserve(n_total_tokens * lm_hidden);
+
+  // 1) BOS embedding (token_id = 1 for LFM2).
+  {
+    auto bos_emb = lm_->lookupEmbedding(1);
+    merged.insert(merged.end(), bos_emb.begin(), bos_emb.end());
+  }
+
+  // 2) Process token_ids: splice image features at <image> positions.
+  size_t image_chunks_used = 0;
+  for (auto tid : token_ids) {
+    if (static_cast<int>(tid) == image_token_id_) {
+      // Replace this placeholder with n_img_tokens image feature vectors.
+      size_t offset = image_chunks_used * n_img_tokens * lm_hidden;
+      merged.insert(merged.end(),
+                    image_embeds.begin() + static_cast<ptrdiff_t>(offset),
+                    image_embeds.begin() + static_cast<ptrdiff_t>(offset) +
+                      static_cast<ptrdiff_t>(n_img_tokens * lm_hidden));
+      ++image_chunks_used;
+    } else {
+      auto tok_emb = lm_->lookupEmbedding(static_cast<unsigned int>(tid));
+      merged.insert(merged.end(), tok_emb.begin(), tok_emb.end());
+    }
+  }
+
+  // Sanity check.
+  if (merged.size() != n_total_tokens * lm_hidden) {
+    throw std::runtime_error(
+      "[LFM2-VL] merged embedding size mismatch: got " +
+      std::to_string(merged.size()) + " expected " +
+      std::to_string(n_total_tokens * lm_hidden));
+  }
+
+  if (log_output) {
+    std::cout << "[LFM2-VL] total prefill tokens: " << n_total_tokens << "\n";
+  }
+
+  // Run LM with merged embeddings.
   lm_->run_with_embeddings(merged.data(), n_total_tokens, {}, do_sample,
                            log_output);
 }

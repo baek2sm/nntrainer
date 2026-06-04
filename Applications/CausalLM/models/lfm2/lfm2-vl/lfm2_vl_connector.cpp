@@ -28,6 +28,29 @@ Lfm2VlConnector::Lfm2VlConnector(unsigned int in_features,
 }
 
 /* static */ std::vector<float>
+Lfm2VlConnector::layerNorm(const std::vector<float> &x,
+                           const std::vector<float> &w,
+                           const std::vector<float> &b,
+                           float eps) {
+  size_t n = x.size();
+  float mean = 0.0f;
+  for (float v : x)
+    mean += v;
+  mean /= static_cast<float>(n);
+  float var = 0.0f;
+  for (float v : x) {
+    float d = v - mean;
+    var += d * d;
+  }
+  var /= static_cast<float>(n);
+  float inv_std = 1.0f / std::sqrt(var + eps);
+  std::vector<float> y(n);
+  for (size_t i = 0; i < n; ++i)
+    y[i] = (x[i] - mean) * inv_std * w[i] + b[i];
+  return y;
+}
+
+/* static */ std::vector<float>
 Lfm2VlConnector::linearForward(const std::vector<float> &W,
                                const std::vector<float> &b,
                                const std::vector<float> &x,
@@ -58,6 +81,8 @@ void Lfm2VlConnector::loadWeights(const std::string &weight_path) {
                                weight_path);
   };
 
+  readFloats(ln_weight_, in_features_);
+  readFloats(ln_bias_,   in_features_);
   readFloats(fc1_weight_, static_cast<size_t>(hidden_size_) * in_features_);
   readFloats(fc1_bias_,   hidden_size_);
   readFloats(fc2_weight_, static_cast<size_t>(out_features_) * hidden_size_);
@@ -79,6 +104,9 @@ Lfm2VlConnector::forward(const std::vector<float> &x,
     // Slice one patch vector
     std::vector<float> xp(x.begin() + p * in_features_,
                           x.begin() + (p + 1) * in_features_);
+
+    // LayerNorm
+    xp = layerNorm(xp, ln_weight_, ln_bias_);
 
     // fc1 + gelu
     auto h = linearForward(fc1_weight_, fc1_bias_, xp,
