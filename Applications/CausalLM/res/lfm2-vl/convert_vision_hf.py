@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Samsung Electronics Co., Ltd. All Rights Reserved.
+##
+# @package convert_vision_hf
+# @brief Convert LFM2-VL HF vision tower weights to nntrainer raw binary format.
 
 """Convert the HF safetensors vision tower to nntrainer raw binary.
 
