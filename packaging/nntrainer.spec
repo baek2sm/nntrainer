@@ -581,6 +581,7 @@ cp -r result %{buildroot}%{_datadir}/nntrainer/unittest/
 %{_includedir}/nntrainer/q4_k_tensor.h
 %{_includedir}/nntrainer/q6_k_tensor.h
 %{_includedir}/nntrainer/q4_0_tensor.h
+%{_includedir}/nntrainer/q8_0_tensor.h
 %{_includedir}/nntrainer/q4_0_utils.h
 %{_includedir}/nntrainer/int4_tensor.h
 %{_includedir}/nntrainer/int4_utils.h
@@ -611,6 +612,7 @@ cp -r result %{buildroot}%{_datadir}/nntrainer/unittest/
 %{_includedir}/nntrainer/thread_manager.h
 %{_includedir}/nntrainer/thread_manager_util.h
 %{_includedir}/nntrainer/safetensors_util.h
+%{_includedir}/nntrainer/safetensors_header.h
 %ifarch %{ix86} x86_64
 %{_includedir}/nntrainer/x86_compute_backend.h
 %{_includedir}/nntrainer/avx2_impl.h
