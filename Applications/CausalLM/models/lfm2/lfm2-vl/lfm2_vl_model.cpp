@@ -155,8 +155,12 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
     unsigned int img_size = vision_cfg.value("image_size", 256u);
     unsigned int patch_size = vision_cfg.value("patch_size", 16u);
     unsigned int vit_embed = vision_cfg.value("hidden_size", 768u);
-    unsigned int ph = img_size / patch_size;
-    unsigned int pw = img_size / patch_size;
+    // NaFlex supports non-square inputs: use image_height/image_width when
+    // present, falling back to image_size for both when absent.
+    unsigned int img_h = vision_cfg.value("image_height", img_size);
+    unsigned int img_w = vision_cfg.value("image_width", img_size);
+    unsigned int ph = img_h / patch_size;
+    unsigned int pw = img_w / patch_size;
     unsigned int n_patches = ph * pw; // e.g. 256 for 256x256 / patch16
 
     // Run ViT; features are cached in vit_->getLastFeatures() afterwards.
