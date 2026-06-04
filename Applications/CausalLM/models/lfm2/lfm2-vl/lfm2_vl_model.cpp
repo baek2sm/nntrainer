@@ -191,8 +191,34 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
   unsigned int lm_hidden = connector_->outFeatures();
 
   if (n_img_tokens == 0 || image_embeds.empty()) {
-    // Text-only path: delegate to standard LM run.
-    lm_->run(prompt, do_sample, "", "", log_output);
+    // Text-only path: embed tokens and call run_with_embeddings so the
+    // USE_EMBEDDING graph receives inputs_embeds (not raw token IDs).
+
+    // Chat template without image placeholder.
+    std::string text_templated =
+      "<|im_start|>user\n" + prompt +
+      "<|im_end|>\n<|im_start|>assistant\n";
+
+    std::vector<int64_t> text_ids = lm_->tokenize(text_templated);
+
+    // Build embeddings: BOS token first, then all text tokens.
+    size_t n_tok = 1 + text_ids.size();
+    std::vector<float> text_embeds;
+    text_embeds.reserve(n_tok * lm_hidden);
+
+    auto bos_emb = lm_->lookupEmbedding(1);
+    text_embeds.insert(text_embeds.end(), bos_emb.begin(), bos_emb.end());
+
+    for (auto tid : text_ids) {
+      auto tok_emb = lm_->lookupEmbedding(static_cast<unsigned int>(tid));
+      text_embeds.insert(text_embeds.end(), tok_emb.begin(), tok_emb.end());
+    }
+
+    if (log_output)
+      std::cout << "[LFM2-VL] text-only prefill tokens: " << n_tok << "\n";
+
+    lm_->run_with_embeddings(text_embeds.data(), n_tok, {}, do_sample,
+                             log_output);
     return;
   }
 
