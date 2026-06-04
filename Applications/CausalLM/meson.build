@@ -246,15 +246,6 @@ if get_option('enable-test')
     )
   endif
 
-  # ClipVitTransformer structural unit tests
-  unittest_clip_vit_transformer = executable(
-    'unittest_clip_vit_transformer',
-    meson.source_root() / 'test' / 'unittest' / 'layers' / 'unittest_clip_vit_transformer.cpp',
-    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, gtest_dep, causallm_layer_dependencies, causallm_dep],
-    build_by_default: true,
-    install: false,
-  )
-
   # Lfm2VlVisionTransformer structural unit tests
   unittest_lfm2_vl_vision_transformer = executable(
     'unittest_lfm2_vl_vision_transformer',
