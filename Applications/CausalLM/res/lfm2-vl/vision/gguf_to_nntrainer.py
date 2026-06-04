@@ -513,6 +513,11 @@ def _infer_config(md: dict, reader: GGUFReader):
             if name.startswith("v.blk.") and name.split(".")[2].isdigit()
         )
 
+    # NaFlex: number of patches per side in the stored pos_embed grid.
+    # For SigLIP2-NaFlex this is always 16 (256 total), but read from GGUF
+    # if available.
+    naflex_base_grid = int(md.get("clip.vision.naflex_base_grid", 16))
+
     return dict(
         image_size=image_size,
         patch_size=patch_size,
@@ -521,10 +526,67 @@ def _infer_config(md: dict, reader: GGUFReader):
         n_layers=n_layers,
         ff_dim=ff_dim,
         channels=channels,
+        naflex_base_grid=naflex_base_grid,
     )
 
 
-def gather_tensors(reader: GGUFReader, cfg: dict):
+def _naflex_interp_pos_embed_np(
+    pos: np.ndarray, src_h: int, src_w: int, dst_h: int, dst_w: int
+) -> np.ndarray:
+    """Bilinear interpolation of (src_h*src_w, dim) -> (dst_h*dst_w, dim).
+    align_corners=False. Uses torch if available (for antialias=True parity),
+    else falls back to scipy (order=1) or pure numpy.
+    """
+    if src_h == dst_h and src_w == dst_w:
+        return pos
+    dim = pos.shape[1]
+    grid = pos.reshape(src_h, src_w, dim)
+
+    try:
+        import torch
+        import torch.nn.functional as F
+        t = torch.from_numpy(grid).permute(2, 0, 1).unsqueeze(0).float()
+        out = F.interpolate(t, size=(dst_h, dst_w),
+                            mode="bilinear", align_corners=False, antialias=True)
+        return out.squeeze(0).permute(1, 2, 0).reshape(dst_h * dst_w, dim).numpy()
+    except ImportError:
+        pass
+
+    try:
+        import scipy.ndimage as ndimage
+        out = ndimage.zoom(grid,
+                           (dst_h / src_h, dst_w / src_w, 1.0), order=1)
+        return out.reshape(dst_h * dst_w, dim).astype(np.float32)
+    except ImportError:
+        pass
+
+    # Pure numpy fallback (bilinear, align_corners=False).
+    out = np.empty((dst_h * dst_w, dim), dtype=np.float32)
+    for dy in range(dst_h):
+        sy_f = (dy + 0.5) * src_h / dst_h - 0.5
+        sy_f = max(0.0, min(sy_f, src_h - 1.0))
+        sy0 = int(sy_f)
+        sy1 = min(sy0 + 1, src_h - 1)
+        ty = sy_f - sy0
+        for dx in range(dst_w):
+            sx_f = (dx + 0.5) * src_w / dst_w - 0.5
+            sx_f = max(0.0, min(sx_f, src_w - 1.0))
+            sx0 = int(sx_f)
+            sx1 = min(sx0 + 1, src_w - 1)
+            tx = sx_f - sx0
+            v00 = grid[sy0, sx0]
+            v01 = grid[sy0, sx1]
+            v10 = grid[sy1, sx0]
+            v11 = grid[sy1, sx1]
+            out[dy * dst_w + dx] = (
+                (1 - ty) * ((1 - tx) * v00 + tx * v01) +
+                ty       * ((1 - tx) * v10 + tx * v11)
+            )
+    return out
+
+
+def gather_tensors(reader: GGUFReader, cfg: dict,
+                   args_naflex_target=None):
     """Walk the ClipVitTransformer layer order and collect (name, fp32_array)
     tuples. Order matches clip_vit_transformer.cpp exactly: writing these out
     sequentially as raw FP32 reproduces the byte layout
@@ -540,12 +602,16 @@ def gather_tensors(reader: GGUFReader, cfg: dict):
                    _pick(reader, *top["patch_embd.bias"]),
                    expected_patch_shape)
 
-    # 1b. learnable position embedding [NUM_PATCHES, DIM]. Added right after
-    #     the patch permute and before the encoder blocks, matching the graph
-    #     weight-load order in lfm2_vl_vision_transformer.cpp.
-    n_patches = (cfg["image_size"] // cfg["patch_size"]) ** 2
+    # 1b. Learnable position embedding. The NaFlex model stores a square
+    #     base grid of size (naflex_base_grid^2, hidden) in the GGUF.
+    #     When --naflex-resolution is given, interpolate to that target.
+    base_grid = cfg.get("naflex_base_grid", 16)
+    base_n = base_grid * base_grid
     pos = reader.read_tensor_fp32("v.position_embd.weight")
-    _check_shape("v.position_embd.weight", pos, (n_patches, cfg["hidden"]))
+    _check_shape("v.position_embd.weight", pos, (base_n, cfg["hidden"]))
+    if args_naflex_target is not None:
+        dst_h, dst_w = args_naflex_target
+        pos = _naflex_interp_pos_embed_np(pos, base_grid, base_grid, dst_h, dst_w)
     tensors.append(("v_pos_embd", pos.astype(np.float32, copy=False)))
 
     # 2. encoder blocks (Pre-LN order matches clip_vit_transformer.cpp:
@@ -611,7 +677,13 @@ def convert(args):
                 exist_ok=True)
 
     # Gather the full tensor list once; reuse for both serializers.
-    tensors = gather_tensors(reader, cfg)
+    naflex_target = None
+    if hasattr(args, "naflex_resolution") and args.naflex_resolution:
+        parts = args.naflex_resolution.lower().split("x")
+        if len(parts) == 2:
+            naflex_target = (int(parts[0]) // cfg["patch_size"],
+                             int(parts[1]) // cfg["patch_size"])
+    tensors = gather_tensors(reader, cfg, args_naflex_target=naflex_target)
     total_params = sum(t[1].size for t in tensors)
     print(f"\n  total params : {total_params:,} "
           f"({total_params * 4 / (1024 * 1024):.2f} MiB raw FP32)")
@@ -685,6 +757,12 @@ def parse_args():
                          ".bin (loadable today); safetensors = named-tensor "
                          "HuggingFace .safetensors (FP32); both = write both "
                          "alongside one another. Default: bin")
+    ap.add_argument("--naflex-resolution", default=None,
+                    metavar="HxW",
+                    help="interpolate the position embedding to this target "
+                         "resolution (e.g. '512x384' means 32x24 patch grid). "
+                         "Height and width must be multiples of patch_size (16). "
+                         "Default: emit the raw base grid (16x16 for SigLIP2).")
     ap.add_argument("--emit-nntr-config", action="store_true",
                     help="also write a matching nntr_config.json next to "
                          "the output (always points at the .bin variant)")
