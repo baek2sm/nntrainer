@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Samsung Electronics Co., Ltd. All Rights Reserved.
+##
+# @package convert_connector
+# @brief Convert LFM2-VL multimodal projector weights to nntrainer raw binary format.
 
 import argparse
 import os

@@ -22,12 +22,12 @@ Lfm2VlConnector::Lfm2VlConnector(unsigned int in_features,
   hidden_size_(hidden_size),
   out_features_(out_features) {}
 
-/* static */ float Lfm2VlConnector::gelu(float x) {
+float Lfm2VlConnector::gelu(float x) {
   // Exact GELU (erf-based) matching torch.nn.functional.gelu
   return 0.5f * x * (1.0f + std::erf(x / 1.4142135623730951f));
 }
 
-/* static */ std::vector<float>
+std::vector<float>
 Lfm2VlConnector::layerNorm(const std::vector<float> &x,
                            const std::vector<float> &w,
                            const std::vector<float> &b, float eps) {
@@ -49,7 +49,7 @@ Lfm2VlConnector::layerNorm(const std::vector<float> &x,
   return y;
 }
 
-/* static */ std::vector<float> Lfm2VlConnector::linearForward(
+std::vector<float> Lfm2VlConnector::linearForward(
   const std::vector<float> &W, const std::vector<float> &b,
   const std::vector<float> &x, unsigned int rows, unsigned int cols) {
   std::vector<float> y(rows, 0.0f);
