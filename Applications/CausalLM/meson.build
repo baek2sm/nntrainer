@@ -246,12 +246,29 @@ if get_option('enable-test')
     )
   endif
 
-  # Lfm2VlVisionTransformer structural unit tests
+  # Lfm2VlVisionTransformer structural unit tests.
+  # Compiled standalone: directly includes the vision transformer source so it
+  # does not pull in the full causallm lib (which links unrelated layers not
+  # needed by the ViT encoder). Only causallm_mha_core_dep is required because
+  # constructModel() registers an mha_core layer.
+  lfm2_vl_vit_test_src = [
+    meson.source_root() / 'test' / 'unittest' / 'layers' / 'unittest_lfm2_vl_vision_transformer.cpp',
+    meson.current_source_dir() / 'models' / 'lfm2' / 'lfm2-vl' / 'vision' / 'lfm2_vl_vision_transformer.cpp',
+  ]
+  lfm2_vl_vit_test_inc = [
+    causallm_inc,
+    include_directories('models', 'models/lfm2/lfm2-vl/vision'),
+  ]
   unittest_lfm2_vl_vision_transformer = executable(
     'unittest_lfm2_vl_vision_transformer',
-    meson.source_root() / 'test' / 'unittest' / 'layers' / 'unittest_lfm2_vl_vision_transformer.cpp',
-    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, gtest_dep, causallm_layer_dependencies, causallm_dep],
-    include_directories: [causallm_inc, include_directories('models', 'models/lfm2/lfm2-vl/vision')],
+    lfm2_vl_vit_test_src,
+    dependencies: [
+      nntrainer_dep,
+      nntrainer_ccapi_dep,
+      gtest_main_dep,
+      causallm_mha_core_dep,
+    ],
+    include_directories: lfm2_vl_vit_test_inc,
     build_by_default: true,
     install: false,
   )

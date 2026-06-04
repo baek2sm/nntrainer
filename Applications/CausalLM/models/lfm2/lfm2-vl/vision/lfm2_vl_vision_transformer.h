@@ -90,16 +90,6 @@ public:
   Tensor createVitMlp(int layer_id, Tensor x);
 
   /**
-   * @brief Bilinearly interpolate a (src_h * src_w, dim) position embedding
-   *        to (dst_h * dst_w, dim). Matches HF SigLIP2 NaFlex interpolation:
-   *        bilinear, align_corners=False. Returns identity when src == dst.
-   */
-  static std::vector<float>
-  naflexInterpPosEmbed(const float *src, unsigned int src_h, unsigned int src_w,
-                       unsigned int dst_h, unsigned int dst_w,
-                       unsigned int dim);
-
-  /**
    * @brief Run a forward pass on a preprocessed image tensor and dump the
    *        first batch's output features summary.
    */
@@ -114,8 +104,6 @@ protected:
   unsigned int NUM_PATCHES;  /**< PATCH_H * PATCH_W */
   unsigned int PATCH_H;      /**< patch grid height (IMAGE_H / PATCH_SIZE) */
   unsigned int PATCH_W;      /**< patch grid width  (IMAGE_W / PATCH_SIZE) */
-  unsigned int NAFLEX_BASE_GRID; /**< stored pos_embed grid side, default 16 */
-  bool NAFLEX_MODE;              /**< true = NaFlex variable-resolution mode */
 };
 
 } // namespace causallm

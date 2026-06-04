@@ -96,8 +96,6 @@ void Lfm2VlVisionTransformer::setupParameters(json &cfg, json &generation_cfg,
     PATCH_W = img_w / PATCH_SIZE;
   }
   NUM_PATCHES = PATCH_H * PATCH_W;
-  NAFLEX_BASE_GRID = cfg.value("naflex_base_grid", 16u);
-  NAFLEX_MODE = cfg.value("naflex_mode", false);
 
   // Non-causal, no RoPE.
   IS_CAUSAL = false;
@@ -287,48 +285,6 @@ Tensor Lfm2VlVisionTransformer::createVitMlp(int layer_id, Tensor x) {
                         withKey("unit", DIM), withKey("disable_bias", "false"),
                         withKey("weight_initializer", "xavier_uniform")}));
   return down(h);
-}
-
-// static
-std::vector<float> Lfm2VlVisionTransformer::naflexInterpPosEmbed(
-  const float *src, unsigned int src_h, unsigned int src_w, unsigned int dst_h,
-  unsigned int dst_w, unsigned int dim) {
-  if (src_h == dst_h && src_w == dst_w)
-    return std::vector<float>(src, src + src_h * src_w * dim);
-
-  std::vector<float> out(dst_h * dst_w * dim);
-  for (unsigned int dy = 0; dy < dst_h; ++dy) {
-    float sy_f =
-      (dy + 0.5f) * (static_cast<float>(src_h) / static_cast<float>(dst_h)) -
-      0.5f;
-    sy_f = std::max(0.0f, std::min(sy_f, static_cast<float>(src_h) - 1.0f));
-    auto sy0 = static_cast<unsigned int>(sy_f);
-    unsigned int sy1 = std::min(sy0 + 1u, src_h - 1u);
-    float ty = sy_f - static_cast<float>(sy0);
-
-    for (unsigned int dx = 0; dx < dst_w; ++dx) {
-      float sx_f =
-        (dx + 0.5f) *
-          (static_cast<float>(src_w) / static_cast<float>(dst_w)) -
-        0.5f;
-      sx_f = std::max(0.0f, std::min(sx_f, static_cast<float>(src_w) - 1.0f));
-      auto sx0 = static_cast<unsigned int>(sx_f);
-      unsigned int sx1 = std::min(sx0 + 1u, src_w - 1u);
-      float tx = sx_f - static_cast<float>(sx0);
-
-      unsigned int i00 = (sy0 * src_w + sx0) * dim;
-      unsigned int i01 = (sy0 * src_w + sx1) * dim;
-      unsigned int i10 = (sy1 * src_w + sx0) * dim;
-      unsigned int i11 = (sy1 * src_w + sx1) * dim;
-      unsigned int oi = (dy * dst_w + dx) * dim;
-      for (unsigned int d = 0; d < dim; ++d) {
-        out[oi + d] =
-          (1.0f - ty) * ((1.0f - tx) * src[i00 + d] + tx * src[i01 + d]) +
-          ty * ((1.0f - tx) * src[i10 + d] + tx * src[i11 + d]);
-      }
-    }
-  }
-  return out;
 }
 
 void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,

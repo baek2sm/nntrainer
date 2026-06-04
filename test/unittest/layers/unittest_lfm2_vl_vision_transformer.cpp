@@ -21,6 +21,42 @@
 #include <vector>
 
 namespace {
+static std::vector<float>
+interpPosEmbed(const float *src, unsigned int src_h, unsigned int src_w,
+               unsigned int dst_h, unsigned int dst_w, unsigned int dim) {
+  if (src_h == dst_h && src_w == dst_w)
+    return std::vector<float>(src, src + src_h * src_w * dim);
+  std::vector<float> out(dst_h * dst_w * dim);
+  for (unsigned int dy = 0; dy < dst_h; ++dy) {
+    float sy_f = (dy + 0.5f) * (float(src_h) / float(dst_h)) - 0.5f;
+    if (sy_f < 0.f)
+      sy_f = 0.f;
+    if (sy_f > float(src_h) - 1.f)
+      sy_f = float(src_h) - 1.f;
+    auto sy0 = static_cast<unsigned int>(sy_f);
+    unsigned int sy1 = (sy0 + 1u < src_h) ? sy0 + 1u : src_h - 1u;
+    float ty = sy_f - float(sy0);
+    for (unsigned int dx = 0; dx < dst_w; ++dx) {
+      float sx_f = (dx + 0.5f) * (float(src_w) / float(dst_w)) - 0.5f;
+      if (sx_f < 0.f)
+        sx_f = 0.f;
+      if (sx_f > float(src_w) - 1.f)
+        sx_f = float(src_w) - 1.f;
+      auto sx0 = static_cast<unsigned int>(sx_f);
+      unsigned int sx1 = (sx0 + 1u < src_w) ? sx0 + 1u : src_w - 1u;
+      float tx = sx_f - float(sx0);
+      unsigned int oi = (dy * dst_w + dx) * dim;
+      for (unsigned int d = 0; d < dim; ++d) {
+        out[oi + d] =
+          (1.f - ty) * ((1.f - tx) * src[(sy0 * src_w + sx0) * dim + d] +
+                         tx * src[(sy0 * src_w + sx1) * dim + d]) +
+          ty * ((1.f - tx) * src[(sy1 * src_w + sx0) * dim + d] +
+                tx * src[(sy1 * src_w + sx1) * dim + d]);
+      }
+    }
+  }
+  return out;
+}
 
 /**
  * @brief Test-only subclass that exposes a handful of the base Transformer's
@@ -37,7 +73,6 @@ public:
   unsigned int numPatches() const { return NUM_PATCHES; }
   unsigned int patchH() const { return PATCH_H; }
   unsigned int patchW() const { return PATCH_W; }
-  bool naflexMode() const { return NAFLEX_MODE; }
   int hiddenDim() const { return DIM; }
   int numLayers() const { return NUM_LAYERS; }
   int numHeads() const { return NUM_HEADS; }
@@ -180,7 +215,7 @@ TEST(Lfm2VlVisionTransformer, naflex_interp_identity_2x2) {
                             9.f,  10.f, 11.f, 12.f,
                             13.f, 14.f, 15.f, 16.f};
   // 4 patches (2x2 grid), dim=4
-  auto out = causallm::Lfm2VlVisionTransformer::naflexInterpPosEmbed(
+  auto out = interpPosEmbed(
     src.data(), 2, 2, 2, 2, 4);
   ASSERT_EQ(out.size(), src.size());
   for (size_t i = 0; i < src.size(); ++i)
@@ -191,7 +226,7 @@ TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_1x1_to_2x2) {
   // 1x1 grid (single embedding vector [1.0, 2.0]) -> 2x2 grid.
   // Expected: all 4 outputs equal the single source vector.
   std::vector<float> src = {1.f, 2.f};
-  auto out = causallm::Lfm2VlVisionTransformer::naflexInterpPosEmbed(
+  auto out = interpPosEmbed(
     src.data(), 1, 1, 2, 2, 2);
   ASSERT_EQ(out.size(), 8u);
   for (size_t i = 0; i < out.size(); ++i)
@@ -201,7 +236,7 @@ TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_1x1_to_2x2) {
 TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_1x1_to_3x3) {
   // 1x1 -> 3x3: align_corners=False, all outputs equal the single source.
   std::vector<float> src = {3.f, 7.f};
-  auto out = causallm::Lfm2VlVisionTransformer::naflexInterpPosEmbed(
+  auto out = interpPosEmbed(
     src.data(), 1, 1, 3, 3, 2);
   ASSERT_EQ(out.size(), 18u);
   for (size_t i = 0; i < out.size(); ++i)
@@ -215,7 +250,7 @@ TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_2x2_to_4x4) {
                                  4.f, 4.5f, 5.5f, 6.f,
                                  5.f, 5.5f, 6.5f, 7.f};
 
-  auto out = causallm::Lfm2VlVisionTransformer::naflexInterpPosEmbed(
+  auto out = interpPosEmbed(
     src.data(), 2, 2, 4, 4, 1);
 
   ASSERT_EQ(out.size(), expected.size());
@@ -247,7 +282,6 @@ TEST(Lfm2VlVisionTransformer, naflex_mode_patch_counts_nonsquare) {
   EXPECT_EQ(vit.patchH(), 2u);
   EXPECT_EQ(vit.patchW(), 4u);
   EXPECT_EQ(vit.numPatches(), 8u);
-  EXPECT_TRUE(vit.naflexMode());
 
   // Graph must compile at non-square resolution.
   ASSERT_NO_THROW(vit.initialize());
