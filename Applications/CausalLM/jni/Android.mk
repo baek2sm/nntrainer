@@ -30,6 +30,8 @@ CAUSALLM_COMMON_INCLUDES := \
     $(LOCAL_PATH)/../models/vjepa2_vit \
     $(LOCAL_PATH)/../models/deberta_v2 \
     $(LOCAL_PATH)/../models/lfm2 \
+    $(LOCAL_PATH)/../models/lfm2/lfm2-vl \
+    $(LOCAL_PATH)/../models/lfm2/lfm2-vl/vision \
     $(LOCAL_PATH)/../third_party/minja/include \
     $(LOCAL_PATH)/../third_party \
 
@@ -267,5 +269,7 @@ LOCAL_C_INCLUDES += $(NNTRAINER_INCLUDES) \
     $(LOCAL_PATH)/../models/gemma3 \
     $(LOCAL_PATH)/../models/deberta_v2 \
     $(LOCAL_PATH)/../models/lfm2 \
+    $(LOCAL_PATH)/../models/lfm2/lfm2-vl \
+    $(LOCAL_PATH)/../models/lfm2/lfm2-vl/vision \
 
 include $(BUILD_EXECUTABLE)
