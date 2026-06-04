@@ -10,6 +10,7 @@
  * @bug    No known bugs except for NYI items
  */
 
+#define CAUSAL_CONV1D_BUILDING_DLL
 #include "causal_conv1d_layer.h"
 
 #include <algorithm>
@@ -177,17 +178,23 @@ void CausalConv1DLayer::setProperty(const std::vector<std::string> &values) {
 
 } // namespace causallm
 
-#ifdef PLUGGABLE
 extern "C" {
 
 nntrainer::Layer *create_causal_conv1d_layer() {
   return new causallm::CausalConv1DLayer();
 }
 
-void destroy_causal_conv1d_layer(nntrainer::Layer *layer) { delete layer; }
-
-nntrainer::LayerPluggable ml_train_layer_pluggable{
-  create_causal_conv1d_layer, destroy_causal_conv1d_layer,
-  causallm::CausalConv1DLayer::type};
-}
+#ifdef _WIN32
+__declspec(dllexport)
 #endif
+void destroy_causal_conv1d_layer(nntrainer::Layer *layer) {
+  delete layer;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+nntrainer::LayerPluggable ml_train_layer_pluggable{
+  create_causal_conv1d_layer, destroy_causal_conv1d_layer};
+}
+

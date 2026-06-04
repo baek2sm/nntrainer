@@ -110,7 +110,8 @@ ToyConfig makeToyConfig() {
                 {"fc_layer_dtype", "FP32"},
                 {"init_seq_len", 4},
                 {"max_seq_len", 4},
-                {"num_to_generate", 0}};
+                {"num_to_generate", 0},
+                {"skip_tokenizer", true}};
   return c;
 }
 
@@ -122,7 +123,8 @@ causallm::json makeFullNntrCfg() {
           {"fc_layer_dtype", "FP32"},
           {"init_seq_len", 256},
           {"max_seq_len", 256},
-          {"num_to_generate", 0}};
+          {"num_to_generate", 0},
+          {"skip_tokenizer", true}};
 }
 
 } // namespace
@@ -276,7 +278,8 @@ TEST(Lfm2VlVisionTransformer, naflex_mode_patch_counts_nonsquare) {
     {"fc_layer_dtype", "FP32"},
     {"init_seq_len", 8},
     {"max_seq_len", 8},
-    {"num_to_generate", 0}};
+    {"num_to_generate", 0},
+    {"skip_tokenizer", true}};
 
   TestableLfm2Vl vit(cfg, gen_cfg, nntr_cfg);
   EXPECT_EQ(vit.patchH(), 2u);
@@ -309,7 +312,8 @@ TEST(Lfm2VlVisionTransformer, setup_parameters_lfm2vl_450m_vision_config) {
     {"fc_layer_dtype", "FP32"},
     {"init_seq_len", 256},
     {"max_seq_len", 256},
-    {"num_to_generate", 0}};
+    {"num_to_generate", 0},
+    {"skip_tokenizer", true}};
 
   TestableLfm2Vl vit(cfg, gen_cfg, nntr_cfg);
   EXPECT_EQ(vit.hiddenDim(), 768);

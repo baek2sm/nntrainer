@@ -99,4 +99,19 @@ private:
 
 } // namespace causallm
 
+// Windows DLL factory: exported from causal_conv1d_layer.dll, imported
+// by callers.  When building the DLL itself (CAUSAL_CONV1D_BUILDING_DLL
+// is defined in causal_conv1d_layer.cpp) the symbol is exported; all
+// other translation units see dllimport.
+#ifdef _WIN32
+#ifdef CAUSAL_CONV1D_BUILDING_DLL
+#define CAUSAL_CONV1D_API __declspec(dllexport)
+#else
+#define CAUSAL_CONV1D_API __declspec(dllimport)
+#endif
+#else
+#define CAUSAL_CONV1D_API
+#endif
+extern "C" CAUSAL_CONV1D_API nntrainer::Layer *create_causal_conv1d_layer();
+
 #endif // __CAUSAL_LM_CAUSAL_CONV1D_LAYER_H__

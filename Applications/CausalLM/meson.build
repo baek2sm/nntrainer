@@ -238,9 +238,10 @@ if get_option('enable-test')
   )
 
   # LFM2-VL vision transformer structural unit tests.
+  # Links causallm_dep (which includes Transformer base class) rather than
+  # re-compiling vision transformer sources, to avoid duplicate symbols.
   lfm2_vl_vit_test_src = [
     meson.source_root() / 'test' / 'unittest' / 'layers' / 'unittest_lfm2_vl_vision_transformer.cpp',
-    meson.current_source_dir() / 'models' / 'lfm2' / 'lfm2-vl' / 'vision' / 'lfm2_vl_vision_transformer.cpp',
   ]
   lfm2_vl_vit_test_inc = [
     causallm_inc,
@@ -253,7 +254,7 @@ if get_option('enable-test')
       nntrainer_dep,
       nntrainer_ccapi_dep,
       gtest_main_dep,
-      causallm_mha_core_dep,
+      causallm_dep,
     ],
     include_directories: lfm2_vl_vit_test_inc,
     build_by_default: true,

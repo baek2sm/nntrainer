@@ -196,8 +196,23 @@ void Lfm2Transformer::registerCustomLayers() {
       nntrainer::createLayer<causallm::ReshapedRMSNormLayer>);
     app_context->registerFactory(
       nntrainer::createLayer<causallm::CustomMultiplyLayer>);
-    app_context->registerFactory(
-      nntrainer::createLayer<causallm::CausalConv1DLayer>);
+    // CausalConv1DLayer is in a separate DLL; register via the exported
+    // factory function to avoid requiring the class constructor to be
+    // explicitly exported from the DLL.
+    {
+      std::function<std::unique_ptr<nntrainer::Layer>(
+        const std::vector<std::string> &)>
+        conv1d_factory =
+        [](const std::vector<std::string> &props)
+          -> std::unique_ptr<nntrainer::Layer> {
+        auto *ptr = create_causal_conv1d_layer();
+        if (!props.empty())
+          ptr->setProperty(props);
+        return std::unique_ptr<nntrainer::Layer>(ptr);
+      };
+      app_context->registerFactory(conv1d_factory,
+                                   causallm::CausalConv1DLayer::type);
+    }
   } catch (std::invalid_argument &e) {
     std::cerr << "failed to register factory, reason: " << e.what()
               << std::endl;
