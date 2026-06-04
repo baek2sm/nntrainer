@@ -933,7 +933,8 @@ void NeuralNetwork::load(const std::string &file_path,
       // Skip duplicates so that:
       // 1. file_offset is only set once (at the position where save writes)
       // 2. start_from is only advanced once (matching actual file layout)
-      if (!visited_weights.insert(&weight->getVariableRef()).second) {
+      const Tensor *ptr = &weight->getVariableRef();
+      if (!visited_weights.insert(ptr).second) {
         continue;
       }
       size_t size = weight->getVariable().getMemoryBytes();
@@ -955,7 +956,6 @@ void NeuralNetwork::load(const std::string &file_path,
       start_from += size;
     }
   }
-
   if (exec_mode == ExecutionMode::INFERENCE && fsu_mode) {
     model_graph.setFsuWeightPath((v.size() == 2) ? v[1] : v[0]);
     model_graph.setWeightOffset(file_offset);
@@ -1013,57 +1013,77 @@ void NeuralNetwork::load(const std::string &file_path,
       // std::vector<std::future<void>> futures;
       std::vector<std::thread> threads;
       threads.reserve(model_graph.size());
+      std::vector<std::exception_ptr> thread_exceptions(model_graph.size(),
+                                                        nullptr);
+      std::size_t thread_idx = 0;
       for (auto iter = model_graph.cbegin(); iter != model_graph.cend();
-           ++iter) {
+           ++iter, ++thread_idx) {
         auto node = *iter;
         auto exec_order = std::get<0>((*iter)->getExecutionOrder());
 
-        threads.emplace_back([&, node]() {
-          if (!MMAP_READ) {
-            auto local_model_file = checkedOpenStream<std::ifstream>(
-              (v.size() == 2) ? v[1] : v[0], std::ios::in | std::ios::binary);
-            node->read(local_model_file, false, exec_mode, fsu_mode,
-                       std::numeric_limits<size_t>::max(), true, model_file_fd);
-          } else {
+        threads.emplace_back([&, node, thread_idx]() {
+          try {
+            (void)exec_order;
+            if (!MMAP_READ) {
+              auto local_model_file = checkedOpenStream<std::ifstream>(
+                (v.size() == 2) ? v[1] : v[0],
+                std::ios::in | std::ios::binary);
+              node->read(local_model_file, false, exec_mode, fsu_mode,
+                         std::numeric_limits<size_t>::max(), true,
+                         model_file_fd);
+            } else {
 #if defined(_WIN32)
-            // Map per-ask, then unmap immediately after: enables early release
-            // of pages
-            HANDLE hFile =
-              CreateFileA(f_path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
-                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-            NNTR_THROW_IF((hFile == INVALID_HANDLE_VALUE), std::runtime_error)
-              << "CreateFileA failed";
+              // Map per-ask, then unmap immediately after: enables early
+              // release of pages
+              HANDLE hFile = CreateFileA(f_path.c_str(), GENERIC_READ,
+                                         FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                                         FILE_ATTRIBUTE_NORMAL, NULL);
+              NNTR_THROW_IF((hFile == INVALID_HANDLE_VALUE), std::runtime_error)
+                << "CreateFileA failed";
 
-            HANDLE hMap =
-              CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-            NNTR_THROW_IF((hMap == NULL), std::runtime_error)
-              << "CreateFileMapping failed";
+              HANDLE hMap =
+                CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+              if (hMap == NULL) {
+                CloseHandle(hFile);
+                throw std::runtime_error("CreateFileMapping failed");
+              }
 
-            char *view =
-              static_cast<char *>(MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0));
-            NNTR_THROW_IF((view == nullptr), std::runtime_error)
-              << "MapViewOfFile failed";
+              char *view = static_cast<char *>(
+                MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0));
+              if (view == nullptr) {
+                CloseHandle(hMap);
+                CloseHandle(hFile);
+                throw std::runtime_error("MapViewOfFile failed");
+              }
 
-            node->read(view, false, exec_mode, fsu_mode,
-                       std::numeric_limits<size_t>::max(), true, model_file_fd);
-
-            // Early unmap: let the OS reclaim the working set ASAP
-            UnmapViewOfFile(view);
-            CloseHandle(hMap);
-            CloseHandle(hFile);
+              node->read(view, false, exec_mode, fsu_mode,
+                         std::numeric_limits<size_t>::max(), true,
+                         model_file_fd);
+              // Early unmap: let the OS reclaim the working set ASAP
+              UnmapViewOfFile(view);
+              CloseHandle(hMap);
+              CloseHandle(hFile);
 #else
-            // POSIX: read from the parent-owned shared mmap. No per-thread
-            // mmap/munmap — see the comment on shared_mmap_ptr above.
-            char *view = static_cast<char *>(shared_mmap_ptr);
-            node->read(view, false, exec_mode, fsu_mode,
-                       std::numeric_limits<size_t>::max(), true, model_file_fd);
+              // POSIX: read from the parent-owned shared mmap. No per-thread
+              // mmap/munmap — see the comment on shared_mmap_ptr above.
+              char *view = static_cast<char *>(shared_mmap_ptr);
+              node->read(view, false, exec_mode, fsu_mode,
+                         std::numeric_limits<size_t>::max(), true,
+                         model_file_fd);
 #endif
+            }
+          } catch (...) {
+            thread_exceptions[thread_idx] = std::current_exception();
           }
         });
       }
       for (auto &t : threads) {
         if (t.joinable())
           t.join();
+      }
+      for (auto &ep : thread_exceptions) {
+        if (ep)
+          std::rethrow_exception(ep);
       }
 
 #if !defined(_WIN32)

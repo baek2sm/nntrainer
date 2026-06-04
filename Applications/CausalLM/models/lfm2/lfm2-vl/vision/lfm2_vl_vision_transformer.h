@@ -32,6 +32,7 @@
 #ifndef __LFM2_VL_VISION_TRANSFORMER_H__
 #define __LFM2_VL_VISION_TRANSFORMER_H__
 
+#include <kv_cache_manager.h>
 #include <transformer.h>
 
 #include <vector>
@@ -98,6 +99,13 @@ public:
            bool log_output = true) override;
 
   /**
+   * @brief Allocate and bind external UINT16 KV cache buffers to every
+   *        mha_core placeholder created by createSelfAttention().  Must be
+   *        called once after initialize() and before the first run().
+   */
+  void allocateAndBindVitKVCache();
+
+  /**
    * @brief Return raw feature buffer from the last run() call.
    *        Layout: [BATCH_SIZE * NUM_PATCHES * DIM] floats (FP32).
    */
@@ -111,6 +119,9 @@ protected:
   unsigned int PATCH_H;      /**< patch grid height (IMAGE_H / PATCH_SIZE) */
   unsigned int PATCH_W;      /**< patch grid width  (IMAGE_W / PATCH_SIZE) */
   std::vector<float> last_features_; /**< Output feature cache from last run() */
+
+  KVCacheManager vit_kv_cache_;       /**< External KV cache for ViT encoder. */
+  bool vit_kv_cache_bound_ = false;   /**< True once KV buffers are bound. */
 };
 
 } // namespace causallm

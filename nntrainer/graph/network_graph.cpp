@@ -929,8 +929,21 @@ NetworkGraph::finalizeContext(const std::shared_ptr<LayerNode> &lnode,
     }
 
     const auto &w_specs = init_context.getWeightsSpec();
-    for (auto i = 0u; i < w_specs.size(); ++i) {
-      shared_weight_names.emplace_back(std::get<8>(w_specs.at(i)));
+    auto shared_node = getLayerNode(shared_node_str);
+    if (shared_node && shared_node->isFinalized() &&
+        shared_node->getNumWeights() == w_specs.size()) {
+      // Use the shared node's actual weight names so requestOrExtend finds the
+      // already-allocated Tensor objects instead of creating new ones.  The
+      // old path (w_specs name) produced a new tensor whose file_offset would
+      // be set past end-of-file (crash for TieWordEmbedding / similar).
+      for (unsigned int i = 0; i < shared_node->getNumWeights(); ++i) {
+        shared_weight_names.emplace_back(shared_node->getWeightName(i));
+      }
+    } else {
+      // Fallback: use local weight names (previous behaviour).
+      for (auto i = 0u; i < w_specs.size(); ++i) {
+        shared_weight_names.emplace_back(std::get<8>(w_specs.at(i)));
+      }
     }
   }
   lnode->setDataType(init_context.getWeightDataType(),
@@ -1097,8 +1110,16 @@ NetworkGraph::refinalizeContext(const std::shared_ptr<LayerNode> &lnode,
     }
 
     const auto &w_specs = init_context.getWeightsSpec();
-    for (auto i = 0u; i < w_specs.size(); ++i) {
-      shared_weight_names.emplace_back(std::get<8>(w_specs.at(i)));
+    auto shared_node = getLayerNode(shared_node_str);
+    if (shared_node && shared_node->isFinalized() &&
+        shared_node->getNumWeights() == w_specs.size()) {
+      for (unsigned int i = 0; i < shared_node->getNumWeights(); ++i) {
+        shared_weight_names.emplace_back(shared_node->getWeightName(i));
+      }
+    } else {
+      for (auto i = 0u; i < w_specs.size(); ++i) {
+        shared_weight_names.emplace_back(std::get<8>(w_specs.at(i)));
+      }
     }
   }
 

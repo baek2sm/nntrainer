@@ -163,7 +163,7 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
     unsigned int n_patches = ph * pw; // e.g. 256 for 256x256 / patch16
 
     // Run ViT; features are cached in vit_->getLastFeatures() afterwards.
-    vit_->run(tmp_path, false, "", "", false);
+    vit_->run(tmp_path, false, "", "", true);
 
     // Retrieve raw ViT output from the cache populated during run().
     const std::vector<float> &vit_features = vit_->getLastFeatures();
@@ -234,18 +234,22 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
 
   // 2) Process token_ids: splice image features at <image> positions.
   size_t image_chunks_used = 0;
+  size_t tok_pos = 1; // 0=BOS
   for (auto tid : token_ids) {
     if (static_cast<int>(tid) == image_token_id_) {
       // Replace this placeholder with n_img_tokens image feature vectors.
       size_t offset = image_chunks_used * n_img_tokens * lm_hidden;
+      const float *img_start = image_embeds.data() + offset;
       merged.insert(merged.end(),
                     image_embeds.begin() + static_cast<ptrdiff_t>(offset),
                     image_embeds.begin() + static_cast<ptrdiff_t>(offset) +
                       static_cast<ptrdiff_t>(n_img_tokens * lm_hidden));
+      tok_pos += n_img_tokens;
       ++image_chunks_used;
     } else {
       auto tok_emb = lm_->lookupEmbedding(static_cast<unsigned int>(tid));
       merged.insert(merged.end(), tok_emb.begin(), tok_emb.end());
+      ++tok_pos;
     }
   }
 

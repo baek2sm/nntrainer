@@ -247,16 +247,36 @@ Tensor Lfm2VlVisionTransformer::createSelfAttention(int layer_id, Tensor x) {
                         withKey("weight_initializer", "xavier_uniform")}));
   Tensor v = wv(x);
 
-  // Bidirectional attention, no RoPE, no external KV cache.
+  // External KV cache placeholders: FP32 dtype so that mha_core's
+  // apply_rotary_emb_tensor_v2 copies FP32 key/value into FP32 cache memory
+  // (not UINT16).  The ViT encoder is a single-pass encoder, not an
+  // autoregressive decoder, so FP32 cache is both correct and sufficient.
+  const unsigned int kv_width =
+    static_cast<unsigned int>(HEAD_DIM * NUM_HEADS / GQA_SIZE);
+  const std::string cache_shape =
+    std::to_string(BATCH_SIZE) + ":1:" + std::to_string(MAX_SEQ_LEN) + ":" +
+    std::to_string(kv_width);
+  LayerHandle cache_k_input(createLayer(
+    "input", {withKey("name", "cache_k_l" + std::to_string(layer_id)),
+              withKey("input_shape", cache_shape),
+              withKey("input_dtype", "FP32")}));
+  LayerHandle cache_v_input(createLayer(
+    "input", {withKey("name", "cache_v_l" + std::to_string(layer_id)),
+              withKey("input_shape", cache_shape),
+              withKey("input_dtype", "FP32")}));
+  Tensor cache_k = cache_k_input(Tensor());
+  Tensor cache_v = cache_v_input(Tensor());
+
+  // Bidirectional attention, no RoPE, external KV cache.
   LayerHandle mha(createLayer(
     "mha_core",
     {withKey("name", blkName(layer_id, "attn")),
      withKey("num_heads", NUM_HEADS),
      withKey("num_heads_kv", NUM_HEADS / GQA_SIZE),
      withKey("max_timestep", std::to_string(NUM_PATCHES + 1)),
-     withKey("rope_theta", ROPE_THETA), withKey("is_causal", "false"),
-     withKey("use_gemm_attention", "true")}));
-  Tensor a = mha({q, k, v});
+     withKey("use_rope", "false"),
+     withKey("is_causal", "false")}));
+  Tensor a = mha({q, k, v, cache_k, cache_v});
 
   // Output projection (with bias).
   LayerHandle wo(createLayer(
@@ -285,6 +305,52 @@ Tensor Lfm2VlVisionTransformer::createVitMlp(int layer_id, Tensor x) {
                         withKey("unit", DIM), withKey("disable_bias", "false"),
                         withKey("weight_initializer", "xavier_uniform")}));
   return down(h);
+}
+
+void Lfm2VlVisionTransformer::allocateAndBindVitKVCache() {
+  if (!vit_kv_cache_.isAllocated()) {
+    // FP32 cache: the ViT encoder is a single-pass encoder, not autoregressive.
+    // Using FP32 avoids the UINT16 memcpy bug in UIntTensor::copyData(FP32).
+    const auto cache_dtype = ml::train::TensorDim::DataType::FP32;
+    vit_kv_cache_.allocate(
+      static_cast<unsigned int>(NUM_LAYERS), BATCH_SIZE,
+      static_cast<unsigned int>(MAX_SEQ_LEN),
+      static_cast<unsigned int>(NUM_HEADS / GQA_SIZE),
+      static_cast<unsigned int>(HEAD_DIM), cache_dtype);
+    vit_kv_cache_bound_ = false;
+  }
+
+  if (vit_kv_cache_bound_)
+    return;
+
+  // Bind each layer's FP32 KV buffers to the cache_k_l{i} / cache_v_l{i}
+  // input placeholders created by createSelfAttention().
+  auto find_placeholder = [this](const std::string &base) {
+    for (const auto &suffix : {":0", ":input0", ":out0", ""}) {
+      auto *t = model->getTensor(base + suffix);
+      if (t != nullptr)
+        return t;
+    }
+    return static_cast<nntrainer::Tensor *>(nullptr);
+  };
+
+  for (int i = 0; i < NUM_LAYERS; ++i) {
+    auto &kc = vit_kv_cache_.getKeyCache(i);
+    auto &vc = vit_kv_cache_.getValueCache(i);
+
+    auto *kp = find_placeholder("cache_k_l" + std::to_string(i));
+    auto *vp = find_placeholder("cache_v_l" + std::to_string(i));
+
+    if (kp == nullptr || vp == nullptr)
+      throw std::runtime_error(
+        "allocateAndBindVitKVCache: placeholder not found for layer " +
+        std::to_string(i));
+
+    kp->setData(kc.getMemoryData(), kc.getOffset(), false);
+    vp->setData(vc.getMemoryData(), vc.getOffset(), false);
+  }
+
+  vit_kv_cache_bound_ = true;
 }
 
 void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,
@@ -316,8 +382,30 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,
       std::to_string(PATCH_W * PATCH_SIZE) + ").");
   }
 
-  // Forward.
-  std::vector<float *> in_ptrs = {image.data()};
+  // Allocate and bind external KV cache buffers (no-op after first call).
+  allocateAndBindVitKVCache();
+  vit_kv_cache_.reset();
+
+  // Build inference input list: [image] + [cache_k_l0, cache_v_l0, ..., cache_k_l11, cache_v_l11]
+  // sorted by name to match the order getInputDimension() returns.
+  std::vector<std::pair<std::string, float *>> cache_inputs;
+  cache_inputs.reserve(static_cast<size_t>(NUM_LAYERS) * 2);
+  for (int i = 0; i < NUM_LAYERS; ++i) {
+    cache_inputs.emplace_back(
+      "cache_k_l" + std::to_string(i),
+      reinterpret_cast<float *>(vit_kv_cache_.getKeyCache(i).getData()));
+    cache_inputs.emplace_back(
+      "cache_v_l" + std::to_string(i),
+      reinterpret_cast<float *>(vit_kv_cache_.getValueCache(i).getData()));
+  }
+  std::sort(cache_inputs.begin(), cache_inputs.end(),
+            [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+
+  std::vector<float *> in_ptrs;
+  in_ptrs.reserve(1 + cache_inputs.size());
+  in_ptrs.push_back(image.data());
+  for (const auto &ci : cache_inputs)
+    in_ptrs.push_back(ci.second);
   int vit_iters = 1;
   if (const char *it = std::getenv("NNTR_VIT_ITERS"))
     vit_iters = std::max(1, std::atoi(it));

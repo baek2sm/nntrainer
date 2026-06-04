@@ -140,6 +140,19 @@ public:
 };
 
 /**
+ * @brief UseGemmAttention property — accepted for API compatibility; the
+ * GEMM non-causal attention path is not implemented in this base; the flag
+ * is always treated as false and standard attention is used.
+ */
+class UseGemmAttention : public nntrainer::Property<bool> {
+public:
+  UseGemmAttention(bool value = false) { set(value); };
+  static constexpr const char *key =
+    "use_gemm_attention";                        /**< unique key to access */
+  using prop_tag = nntrainer::bool_prop_tag;     /**< property type */
+};
+
+/**
  * @brief IsCausal property
  */
 class IsCausal : public nntrainer::Property<bool> {
@@ -345,7 +358,7 @@ private:
     props::MaxPositionEmbeddings, props::UseSink, props::RopeScalingType,
     props::RopeScalingFactor, props::RopePartialRotaryFactor,
     props::RopeScalingMaxPositionEmbeddings, props::AttnLogitSoftcapping,
-    props::IsCausal>
+    props::IsCausal, props::UseGemmAttention>
     mha_core_props; /**< mha_core layer properties */
 
   /** softmax activation operation */

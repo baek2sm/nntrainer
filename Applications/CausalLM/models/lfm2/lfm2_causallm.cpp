@@ -146,20 +146,43 @@ void Lfm2Transformer::registerCustomLayers() {
 
 std::pair<Tensor, Tensor> Lfm2CausalLM::constructModel() {
 
-  // Create input tensor
-  LayerHandle input_layer = createLayer(
-    "input", {withKey("name", "input0"),
-              withKey("input_shape", "1:1:" + std::to_string(INIT_SEQ_LEN))});
-  Tensor input = input_layer(Tensor());
+  Tensor x;
 
-  // Embedding layer
-  const std::string embedding_type =
-    TIE_WORD_EMBEDDINGS ? "tie_word_embeddings" : "embedding_layer";
-  LayerHandle embedding(createLayer(
-    embedding_type,
-    {withKey("name", "embedding0"), withKey("weight_dtype", EMBEDDING_DTYPE),
-     withKey("in_dim", NUM_VOCAB), withKey("out_dim", DIM)}));
-  Tensor x = embedding(input);
+  Tensor model_input;
+
+  if (USE_EMBEDDING) {
+    // VL path: embeddings are pre-computed by the connector and passed as
+    // float tensors of shape [1, INIT_SEQ_LEN, DIM].  No embedding layer in
+    // the graph.  The binary layout is [body_weights | lm_head_weights]; the
+    // dedup offset loop in NeuralNetwork::load() assigns body weights first
+    // then lm_head gets the correct tail offset automatically.
+    // Float embeddings input: 4-D shape [1, 1, INIT_SEQ_LEN, DIM] so that
+    // subsequent layers (attention, FC) see the correct channel/time/feature
+    // layout used throughout the transformer graph.
+    LayerHandle input_layer = createLayer(
+      "input",
+      {withKey("name", "input0"),
+       withKey("input_shape",
+               "1:1:" + std::to_string(INIT_SEQ_LEN) + ":" +
+                 std::to_string(DIM))});
+    model_input = input_layer(Tensor());
+    x = model_input;
+  } else {
+    // Standard LM path: input is a sequence of token IDs.
+    LayerHandle input_layer = createLayer(
+      "input",
+      {withKey("name", "input0"),
+       withKey("input_shape", "1:1:" + std::to_string(INIT_SEQ_LEN))});
+    model_input = input_layer(Tensor());
+
+    const std::string embedding_type =
+      TIE_WORD_EMBEDDINGS ? "tie_word_embeddings" : "embedding_layer";
+    LayerHandle embedding(createLayer(
+      embedding_type,
+      {withKey("name", "embedding0"), withKey("weight_dtype", EMBEDDING_DTYPE),
+       withKey("in_dim", NUM_VOCAB), withKey("out_dim", DIM)}));
+    x = embedding(model_input);
+  }
 
   // Hybrid transformer blocks
   for (int i = 0; i < NUM_LAYERS; ++i) {
@@ -180,9 +203,15 @@ std::pair<Tensor, Tensor> Lfm2CausalLM::constructModel() {
                              withKey("packed", "false")}));
   Tensor norm_out = output_norm(x);
 
-  // LM head
+  // LM head.
+  // - USE_EMBEDDING=true: standalone FC layer; weight loaded from end of
+  //   binary after all body weights (offset assigned automatically by the
+  //   sequential dedup pass in NeuralNetwork::load()).
+  // - USE_EMBEDDING=false + TIE_WORD_EMBEDDINGS: tie_word_embeddings sharing
+  //   embedding0's tensor.
+  // - USE_EMBEDDING=false + !TIE_WORD_EMBEDDINGS: plain lm_head layer.
   const std::string lmhead_type =
-    TIE_WORD_EMBEDDINGS ? "tie_word_embeddings" : "lm_head";
+    (!USE_EMBEDDING && TIE_WORD_EMBEDDINGS) ? "tie_word_embeddings" : "lm_head";
 
   std::vector<std::string> lmhead_props = {
     withKey("name", "output_of_causallm"),
@@ -191,13 +220,13 @@ std::pair<Tensor, Tensor> Lfm2CausalLM::constructModel() {
     withKey("disable_bias", "true"),
   };
 
-  if (TIE_WORD_EMBEDDINGS)
+  if (!USE_EMBEDDING && TIE_WORD_EMBEDDINGS)
     lmhead_props.emplace_back(withKey("shared_from", "embedding0"));
 
   LayerHandle lmhead(createLayer(lmhead_type, lmhead_props));
   Tensor output = lmhead(norm_out);
 
-  return {input, output};
+  return {model_input, output};
 }
 
 Tensor Lfm2Transformer::createConvBlock(const int layer_id, Tensor input) {

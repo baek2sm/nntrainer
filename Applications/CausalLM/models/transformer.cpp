@@ -281,7 +281,6 @@ void Transformer::load_weight(const std::string &weight_path) {
       "Transformer model is not initialized. Please call "
       "initialize() before load_weight().");
   }
-
   try {
     model->load(weight_path, formatFromExtension(weight_path));
   } catch (const std::exception &e) {
