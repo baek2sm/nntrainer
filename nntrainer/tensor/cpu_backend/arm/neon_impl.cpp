@@ -2204,8 +2204,8 @@ void causal_depthwise_conv1d_k3(
           const float32x4_t cur = vld1q_f32(x_ptr);
 
           float32x4_t vy = vmulq_f32(cur, vw0);
-          vy = vfmaq_f32(vy, prev1, vw1);
-          vy = vfmaq_f32(vy, prev2, vw2);
+          vy = vmlaq_f32(vy, prev1, vw1);
+          vy = vmlaq_f32(vy, prev2, vw2);
           vy = vaddq_f32(vy, vb);
 
           vst1q_f32(y_ptr, vy);
@@ -2249,8 +2249,8 @@ void causal_depthwise_conv1d_k3(
           const float32x4_t cur = vld1q_f32(x_ptr);
 
           float32x4_t vy = vmulq_f32(cur, vw0);
-          vy = vfmaq_f32(vy, prev1, vw1);
-          vy = vfmaq_f32(vy, prev2, vw2);
+          vy = vmlaq_f32(vy, prev1, vw1);
+          vy = vmlaq_f32(vy, prev2, vw2);
 
           vst1q_f32(y_ptr, vy);
 
@@ -2306,8 +2306,8 @@ void causal_depthwise_conv1d_k3_decode(const float *x_cur,
     const float32x4_t vs0 = vld1q_f32(s0 + c);
 
     float32x4_t vy = vmulq_f32(vw0, vx);
-    vy = vfmaq_f32(vy, vw1, vs1);
-    vy = vfmaq_f32(vy, vw2, vs0);
+    vy = vmlaq_f32(vy, vw1, vs1);
+    vy = vmlaq_f32(vy, vw2, vs0);
     vst1q_f32(y_cur + c, vy);
 
     // Update state: s0 <- s1, s1 <- x_cur

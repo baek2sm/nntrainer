@@ -1,3 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Samsung Electronics Co., Ltd. All Rights Reserved.
+#
+# @file convert_weights.py
+# @brief Weight conversion script for LFM2-VJepa multimodal model weights.
+# @author Samsung Electronics Co., Ltd.
+
 """Auto-generated weight conversion script."""
 import torch
 import sys

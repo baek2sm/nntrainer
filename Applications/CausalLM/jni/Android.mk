@@ -241,7 +241,11 @@ LOCAL_SRC_FILES := ../quantize.cpp \
     ../layers/vjepa_layernorm_layer.cpp \
     ../models/deberta_v2/deberta_v2.cpp \
     ../layers/deberta_attention_layer.cpp \
-    ../layers/shared_fully_connected_layer.cpp
+    ../layers/shared_fully_connected_layer.cpp \
+    ../models/lfm2/lfm2_causallm.cpp \
+    ../layers/causal_conv1d_layer.cpp \
+    ../layers/custom_multiply.cpp \
+    ../huggingface_tokenizer.cpp
 
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
 LOCAL_STATIC_LIBRARIES := tokenizers_c
