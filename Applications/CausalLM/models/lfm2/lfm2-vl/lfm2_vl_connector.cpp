@@ -49,9 +49,11 @@ std::vector<float> Lfm2VlConnector::layerNorm(const std::vector<float> &x,
   return y;
 }
 
-std::vector<float> Lfm2VlConnector::linearForward(
-  const std::vector<float> &W, const std::vector<float> &b,
-  const std::vector<float> &x, unsigned int rows, unsigned int cols) {
+std::vector<float> Lfm2VlConnector::linearForward(const std::vector<float> &W,
+                                                  const std::vector<float> &b,
+                                                  const std::vector<float> &x,
+                                                  unsigned int rows,
+                                                  unsigned int cols) {
   std::vector<float> y(rows, 0.0f);
   for (unsigned int r = 0; r < rows; ++r) {
     float s = b[r];
