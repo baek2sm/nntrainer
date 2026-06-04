@@ -237,6 +237,35 @@ if get_option('enable-test')
     suite: 'unittests'
   )
 
+  # LFM2-VL vision transformer structural unit tests.
+  lfm2_vl_vit_test_src = [
+    meson.source_root() / 'test' / 'unittest' / 'layers' / 'unittest_lfm2_vl_vision_transformer.cpp',
+    meson.current_source_dir() / 'models' / 'lfm2' / 'lfm2-vl' / 'vision' / 'lfm2_vl_vision_transformer.cpp',
+  ]
+  lfm2_vl_vit_test_inc = [
+    causallm_inc,
+    include_directories('models', 'models/lfm2/lfm2-vl/vision'),
+  ]
+  unittest_lfm2_vl_vision_transformer = executable(
+    'unittest_lfm2_vl_vision_transformer',
+    lfm2_vl_vit_test_src,
+    dependencies: [
+      nntrainer_dep,
+      nntrainer_ccapi_dep,
+      gtest_main_dep,
+      causallm_mha_core_dep,
+    ],
+    include_directories: lfm2_vl_vit_test_inc,
+    build_by_default: true,
+    install: false,
+  )
+
+  test('unittest_lfm2_vl_vision_transformer', unittest_lfm2_vl_vision_transformer,
+    args: '--gtest_output=xml:@0@/@1@.xml'.format(meson.build_root(), 'unittest_lfm2_vl_vision_transformer'),
+    timeout: 60,
+    suite: 'unittests'
+  )
+
   # Ubuntu native builds use platform=none.
   model_unittest_platforms = ['none', 'windows', 'android']
   platform = get_option('platform')

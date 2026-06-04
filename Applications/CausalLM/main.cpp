@@ -49,6 +49,7 @@
 #include "qwen3_cached_slim_moe_causallm.h"
 #endif
 #include "lfm2_causallm.h"
+#include "lfm2-vl/lfm2_vl_model.h"
 #include "qwen3_causallm.h"
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
@@ -385,32 +386,53 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    auto model = causallm::Factory::Instance().create(architecture, cfg,
-                                                      generation_cfg, nntr_cfg);
-    if (!model) {
-      std::cerr << "Unknown architecture: " << architecture << std::endl;
-      std::cerr << "Registered architectures:";
-      causallm::Factory::Instance().printRegistered(std::cerr);
-      std::cerr << std::endl;
-      return EXIT_FAILURE;
-    }
-    model->initialize();
-    model->load_weight(weight_file);
-
     bool do_sample = generation_cfg.value("do_sample", false);
 
+    if (architecture == "Lfm2VlForConditionalGeneration") {
+      // LFM2-VL multimodal path: does not go through the CausalLM factory.
+      causallm::Lfm2VlForConditionalGeneration vl_model(cfg, generation_cfg,
+                                                        nntr_cfg);
+      vl_model.initialize();
+      vl_model.load_weight(model_path);
+
+      std::string image_tensor_path;
+      if (nntr_cfg.contains("image_tensor_path")) {
+        image_tensor_path =
+          nntr_cfg["image_tensor_path"].get<std::string>();
+      }
 #ifdef PROFILE
-    start_peak_tracker();
+      start_peak_tracker();
+#endif
+      vl_model.run(image_tensor_path, input_text, do_sample, true);
+#ifdef PROFILE
+      stop_and_print_peak();
+#endif
+    } else {
+      auto model = causallm::Factory::Instance().create(architecture, cfg,
+                                                        generation_cfg, nntr_cfg);
+      if (!model) {
+        std::cerr << "Unknown architecture: " << architecture << std::endl;
+        std::cerr << "Registered architectures:";
+        causallm::Factory::Instance().printRegistered(std::cerr);
+        std::cerr << std::endl;
+        return EXIT_FAILURE;
+      }
+      model->initialize();
+      model->load_weight(weight_file);
+
+#ifdef PROFILE
+      start_peak_tracker();
 #endif
 #if defined(_WIN32)
-    model->run(input_text.c_str(), do_sample, system_head_prompt.c_str(),
-               system_tail_prompt.c_str());
+      model->run(input_text.c_str(), do_sample, system_head_prompt.c_str(),
+                 system_tail_prompt.c_str());
 #else
-    model->run(input_text, do_sample, system_head_prompt, system_tail_prompt);
+      model->run(input_text, do_sample, system_head_prompt, system_tail_prompt);
 #endif
 #ifdef PROFILE
-    stop_and_print_peak();
+      stop_and_print_peak();
 #endif
+    }
     auto finish_time = std::chrono::high_resolution_clock::now();
     auto e2e_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
       finish_time - start_time);
