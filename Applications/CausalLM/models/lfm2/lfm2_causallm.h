@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -107,6 +108,23 @@ public:
    * @return Embedding vector of size DIM (FP32)
    */
   std::vector<float> lookupEmbedding(unsigned int token_id);
+
+  /**
+   * @brief Tokenize text using the model's tokenizer.
+   *
+   * Encodes the given text without adding BOS/EOS automatically.
+   * The tokenizer (loaded from nntr_config tokenizer_file) must be
+   * initialized before calling this.
+   *
+   * @param text Input text string to tokenize.
+   * @return Vector of token IDs as int64_t.
+   */
+  std::vector<int64_t> tokenize(const std::string &text) {
+    if (!tokenizer)
+      throw std::runtime_error("Lfm2CausalLM::tokenize: tokenizer not loaded");
+    auto ids = tokenizer->Encode(text);
+    return std::vector<int64_t>(ids.begin(), ids.end());
+  }
 
   /**
    * @brief Get the generated token IDs from the last run_with_embeddings call.
