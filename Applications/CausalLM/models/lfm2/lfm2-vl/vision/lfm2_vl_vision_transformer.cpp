@@ -31,6 +31,7 @@ std::string toStringPrecise(float v) {
 
 const char *PATCH_EMBED_NAME = "v_patch_embd";
 const char *PATCH_SEQ_NAME = "v_patch_seq";
+const char *POS_EMBED_NAME = "v_pos_embd";
 const char *POST_LN_NAME = "v_post_ln";
 
 std::string blkName(int i, const char *suffix) {
@@ -60,6 +61,10 @@ json &Lfm2VlVisionTransformer::sanitizeConfig(json &cfg) {
     cfg["num_attention_heads"] = 12;
   if (!cfg.contains("hidden_size"))
     cfg["hidden_size"] = 768;
+  if (!cfg.contains("image_height"))
+    cfg["image_height"] = cfg.value("image_size", 256u);
+  if (!cfg.contains("image_width"))
+    cfg["image_width"] = cfg.value("image_size", 256u);
   if (!cfg.contains("num_hidden_layers"))
     cfg["num_hidden_layers"] = 12;
   if (!cfg.contains("intermediate_size"))
@@ -84,7 +89,15 @@ void Lfm2VlVisionTransformer::setupParameters(json &cfg, json &generation_cfg,
   IMAGE_SIZE = cfg.value("image_size", 256u);
   PATCH_SIZE = cfg.value("patch_size", 16u);
   NUM_CHANNELS = cfg.value("num_channels", 3u);
-  NUM_PATCHES = (IMAGE_SIZE / PATCH_SIZE) * (IMAGE_SIZE / PATCH_SIZE);
+  {
+    unsigned int img_h = cfg.value("image_height", IMAGE_SIZE);
+    unsigned int img_w = cfg.value("image_width", IMAGE_SIZE);
+    PATCH_H = img_h / PATCH_SIZE;
+    PATCH_W = img_w / PATCH_SIZE;
+  }
+  NUM_PATCHES = PATCH_H * PATCH_W;
+  NAFLEX_BASE_GRID = cfg.value("naflex_base_grid", 16u);
+  NAFLEX_MODE = cfg.value("naflex_mode", false);
 
   // Non-causal, no RoPE.
   IS_CAUSAL = false;
@@ -121,8 +134,9 @@ void Lfm2VlVisionTransformer::setupParameters(json &cfg, json &generation_cfg,
 std::pair<Tensor, Tensor> Lfm2VlVisionTransformer::constructModel() {
 
   // [B, C, H, W] image input.
-  Tensor x =
-    Tensor({BATCH_SIZE, NUM_CHANNELS, IMAGE_SIZE, IMAGE_SIZE}, "input0");
+  Tensor x = Tensor(
+    {BATCH_SIZE, NUM_CHANNELS, PATCH_H * PATCH_SIZE, PATCH_W * PATCH_SIZE},
+    "input0");
 
   // Conv2D patch embedding: kernel = stride = PATCH_SIZE, padding "valid".
   // Output: [B, DIM, H/P, W/P].
@@ -153,11 +167,11 @@ std::pair<Tensor, Tensor> Lfm2VlVisionTransformer::constructModel() {
   // Learnable position embedding [NUM_PATCHES, DIM], added to the patch
   // sequence (loaded from the weight file as tensor "v_pos_embd").
   LayerHandle pos_embed(
-    createLayer("weight", {withKey("name", "v_pos_embd"),
+    createLayer("weight", {withKey("name", POS_EMBED_NAME),
                            withKey("dim", "1:1:" + std::to_string(NUM_PATCHES) +
                                             ":" + std::to_string(DIM)),
                            withKey("tensor_dtype", "FP32"),
-                           withKey("weight_name", "v_pos_embd")}));
+                           withKey("weight_name", POS_EMBED_NAME)}));
   Tensor pos = pos_embed(x);
 
   LayerHandle pos_add(createLayer("addition", {withKey("name", "v_pos_add")}));
@@ -275,6 +289,48 @@ Tensor Lfm2VlVisionTransformer::createVitMlp(int layer_id, Tensor x) {
   return down(h);
 }
 
+// static
+std::vector<float> Lfm2VlVisionTransformer::naflexInterpPosEmbed(
+  const float *src, unsigned int src_h, unsigned int src_w, unsigned int dst_h,
+  unsigned int dst_w, unsigned int dim) {
+  if (src_h == dst_h && src_w == dst_w)
+    return std::vector<float>(src, src + src_h * src_w * dim);
+
+  std::vector<float> out(dst_h * dst_w * dim);
+  for (unsigned int dy = 0; dy < dst_h; ++dy) {
+    float sy_f =
+      (dy + 0.5f) * (static_cast<float>(src_h) / static_cast<float>(dst_h)) -
+      0.5f;
+    sy_f = std::max(0.0f, std::min(sy_f, static_cast<float>(src_h) - 1.0f));
+    auto sy0 = static_cast<unsigned int>(sy_f);
+    unsigned int sy1 = std::min(sy0 + 1u, src_h - 1u);
+    float ty = sy_f - static_cast<float>(sy0);
+
+    for (unsigned int dx = 0; dx < dst_w; ++dx) {
+      float sx_f =
+        (dx + 0.5f) *
+          (static_cast<float>(src_w) / static_cast<float>(dst_w)) -
+        0.5f;
+      sx_f = std::max(0.0f, std::min(sx_f, static_cast<float>(src_w) - 1.0f));
+      auto sx0 = static_cast<unsigned int>(sx_f);
+      unsigned int sx1 = std::min(sx0 + 1u, src_w - 1u);
+      float tx = sx_f - static_cast<float>(sx0);
+
+      unsigned int i00 = (sy0 * src_w + sx0) * dim;
+      unsigned int i01 = (sy0 * src_w + sx1) * dim;
+      unsigned int i10 = (sy1 * src_w + sx0) * dim;
+      unsigned int i11 = (sy1 * src_w + sx1) * dim;
+      unsigned int oi = (dy * dst_w + dx) * dim;
+      for (unsigned int d = 0; d < dim; ++d) {
+        out[oi + d] =
+          (1.0f - ty) * ((1.0f - tx) * src[i00 + d] + tx * src[i01 + d]) +
+          ty * ((1.0f - tx) * src[i10 + d] + tx * src[i11 + d]);
+      }
+    }
+  }
+  return out;
+}
+
 void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,
                                   const WSTR, const WSTR, bool log_output) {
 
@@ -285,7 +341,8 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,
 
   // Load preprocessed image tensor (raw fp32, NCHW, BATCH_SIZE x C x H x W).
   const size_t n_elems =
-    static_cast<size_t>(BATCH_SIZE) * NUM_CHANNELS * IMAGE_SIZE * IMAGE_SIZE;
+    static_cast<size_t>(BATCH_SIZE) * NUM_CHANNELS * PATCH_H * PATCH_SIZE *
+    PATCH_W * PATCH_SIZE;
   std::vector<float> image(n_elems);
   std::ifstream in(image_tensor_path, std::ios::binary);
   if (!in) {
@@ -299,7 +356,8 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,
       "Image tensor file is smaller than expected. Need " +
       std::to_string(n_elems) + " fp32 elements (NCHW=" +
       std::to_string(BATCH_SIZE) + "x" + std::to_string(NUM_CHANNELS) + "x" +
-      std::to_string(IMAGE_SIZE) + "x" + std::to_string(IMAGE_SIZE) + ").");
+      std::to_string(PATCH_H * PATCH_SIZE) + "x" +
+      std::to_string(PATCH_W * PATCH_SIZE) + ").");
   }
 
   // Forward.

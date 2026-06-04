@@ -5,7 +5,8 @@
  * @brief  CLIP/SigLIP-style Vision Transformer encoder for nntrainer CausalLM.
  *         Targets the LFM2.5-VL vision tower (GGUF tensor naming v.*).
  *
- *         Architecture summary (256x256 image, patch16, 256 patches, no CLS):
+ *         Architecture summary (fixed 256x256 or NaFlex target grid, patch16,
+ *         no CLS):
  *
  *           [Image B,3,H,W]
  *                 |
@@ -33,9 +34,11 @@
 
 #include <transformer.h>
 
+#include <vector>
+
 namespace causallm {
 
-/** @brief CLIP/SigLIP-style Vision Transformer for LFM2-VL (SigLIP2 86M). */
+/** @brief CLIP/SigLIP-style Vision Transformer for LFM2-VL (SigLIP2 NaFlex). */
 class Lfm2VlVisionTransformer : public Transformer {
 public:
   static constexpr const char *architectures = "Lfm2VlVisionTransformer";
@@ -87,6 +90,16 @@ public:
   Tensor createVitMlp(int layer_id, Tensor x);
 
   /**
+   * @brief Bilinearly interpolate a (src_h * src_w, dim) position embedding
+   *        to (dst_h * dst_w, dim). Matches HF SigLIP2 NaFlex interpolation:
+   *        bilinear, align_corners=False. Returns identity when src == dst.
+   */
+  static std::vector<float>
+  naflexInterpPosEmbed(const float *src, unsigned int src_h, unsigned int src_w,
+                       unsigned int dst_h, unsigned int dst_w,
+                       unsigned int dim);
+
+  /**
    * @brief Run a forward pass on a preprocessed image tensor and dump the
    *        first batch's output features summary.
    */
@@ -98,7 +111,11 @@ protected:
   unsigned int IMAGE_SIZE;   /**< image side length, e.g. 256 */
   unsigned int PATCH_SIZE;   /**< patch side length, e.g. 16 */
   unsigned int NUM_CHANNELS; /**< image channels, typically 3 */
-  unsigned int NUM_PATCHES;  /**< (IMAGE_SIZE / PATCH_SIZE) ^ 2 */
+  unsigned int NUM_PATCHES;  /**< PATCH_H * PATCH_W */
+  unsigned int PATCH_H;      /**< patch grid height (IMAGE_H / PATCH_SIZE) */
+  unsigned int PATCH_W;      /**< patch grid width  (IMAGE_W / PATCH_SIZE) */
+  unsigned int NAFLEX_BASE_GRID; /**< stored pos_embed grid side, default 16 */
+  bool NAFLEX_MODE;              /**< true = NaFlex variable-resolution mode */
 };
 
 } // namespace causallm

@@ -18,6 +18,8 @@
 
 #include <lfm2_vl_vision_transformer.h>
 
+#include <vector>
+
 namespace {
 
 /**
@@ -33,6 +35,9 @@ public:
   unsigned int patchSize() const { return PATCH_SIZE; }
   unsigned int numChannels() const { return NUM_CHANNELS; }
   unsigned int numPatches() const { return NUM_PATCHES; }
+  unsigned int patchH() const { return PATCH_H; }
+  unsigned int patchW() const { return PATCH_W; }
+  bool naflexMode() const { return NAFLEX_MODE; }
   int hiddenDim() const { return DIM; }
   int numLayers() const { return NUM_LAYERS; }
   int numHeads() const { return NUM_HEADS; }
@@ -164,6 +169,120 @@ TEST(Lfm2VlVisionTransformer, initialize_supports_larger_grid) {
 
   ASSERT_NO_THROW(vit.initialize());
   EXPECT_TRUE(vit.initialized());
+}
+
+// --- NaFlex interpolation tests ---
+
+TEST(Lfm2VlVisionTransformer, naflex_interp_identity_2x2) {
+  // Interpolating a 2x2 grid to itself must return identical values.
+  std::vector<float> src = {1.f,  2.f,  3.f,  4.f,
+                            5.f,  6.f,  7.f,  8.f,
+                            9.f,  10.f, 11.f, 12.f,
+                            13.f, 14.f, 15.f, 16.f};
+  // 4 patches (2x2 grid), dim=4
+  auto out = causallm::Lfm2VlVisionTransformer::naflexInterpPosEmbed(
+    src.data(), 2, 2, 2, 2, 4);
+  ASSERT_EQ(out.size(), src.size());
+  for (size_t i = 0; i < src.size(); ++i)
+    EXPECT_FLOAT_EQ(out[i], src[i]);
+}
+
+TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_1x1_to_2x2) {
+  // 1x1 grid (single embedding vector [1.0, 2.0]) -> 2x2 grid.
+  // Expected: all 4 outputs equal the single source vector.
+  std::vector<float> src = {1.f, 2.f};
+  auto out = causallm::Lfm2VlVisionTransformer::naflexInterpPosEmbed(
+    src.data(), 1, 1, 2, 2, 2);
+  ASSERT_EQ(out.size(), 8u);
+  for (size_t i = 0; i < out.size(); ++i)
+    EXPECT_FLOAT_EQ(out[i], src[i % 2]);
+}
+
+TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_1x1_to_3x3) {
+  // 1x1 -> 3x3: align_corners=False, all outputs equal the single source.
+  std::vector<float> src = {3.f, 7.f};
+  auto out = causallm::Lfm2VlVisionTransformer::naflexInterpPosEmbed(
+    src.data(), 1, 1, 3, 3, 2);
+  ASSERT_EQ(out.size(), 18u);
+  for (size_t i = 0; i < out.size(); ++i)
+    EXPECT_FLOAT_EQ(out[i], src[i % 2]);
+}
+
+TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_2x2_to_4x4) {
+  std::vector<float> src = {1.f, 3.f, 5.f, 7.f};
+  std::vector<float> expected = {1.f, 1.5f, 2.5f, 3.f,
+                                 2.f, 2.5f, 3.5f, 4.f,
+                                 4.f, 4.5f, 5.5f, 6.f,
+                                 5.f, 5.5f, 6.5f, 7.f};
+
+  auto out = causallm::Lfm2VlVisionTransformer::naflexInterpPosEmbed(
+    src.data(), 2, 2, 4, 4, 1);
+
+  ASSERT_EQ(out.size(), expected.size());
+  for (size_t i = 0; i < out.size(); ++i)
+    EXPECT_FLOAT_EQ(out[i], expected[i]);
+}
+
+TEST(Lfm2VlVisionTransformer, naflex_mode_patch_counts_nonsquare) {
+  // image_height=32, image_width=64, patch_size=16 -> PATCH_H=2, PATCH_W=4
+  causallm::json cfg = {
+    {"hidden_size", 16},      {"num_attention_heads", 2},
+    {"num_hidden_layers", 1}, {"intermediate_size", 32},
+    {"image_size", 32},      {"image_height", 32},
+    {"image_width", 64},     {"patch_size", 16},
+    {"num_channels", 3},     {"layer_norm_eps", 1e-6},
+    {"naflex_mode", true},   {"naflex_base_grid", 16}};
+  causallm::json gen_cfg = causallm::json::object();
+  causallm::json nntr_cfg = {
+    {"batch_size", 1},
+    {"model_type", "embedding"},
+    {"model_tensor_type", "FP32-FP32"},
+    {"embedding_dtype", "FP32"},
+    {"fc_layer_dtype", "FP32"},
+    {"init_seq_len", 8},
+    {"max_seq_len", 8},
+    {"num_to_generate", 0}};
+
+  TestableLfm2Vl vit(cfg, gen_cfg, nntr_cfg);
+  EXPECT_EQ(vit.patchH(), 2u);
+  EXPECT_EQ(vit.patchW(), 4u);
+  EXPECT_EQ(vit.numPatches(), 8u);
+  EXPECT_TRUE(vit.naflexMode());
+
+  // Graph must compile at non-square resolution.
+  ASSERT_NO_THROW(vit.initialize());
+  EXPECT_TRUE(vit.initialized());
+}
+
+TEST(Lfm2VlVisionTransformer, setup_parameters_lfm2vl_450m_vision_config) {
+  // Verify that the LFM2-VL-450M vision_config parameters are accepted.
+  causallm::json cfg = {{"hidden_size", 768},
+                        {"num_attention_heads", 16},
+                        {"num_hidden_layers", 27},
+                        {"intermediate_size", 3072},
+                        {"image_size", 256},
+                        {"patch_size", 16},
+                        {"num_channels", 3},
+                        {"layer_norm_eps", 1e-6},
+                        {"naflex_mode", true},
+                        {"naflex_base_grid", 16}};
+  causallm::json gen_cfg = causallm::json::object();
+  causallm::json nntr_cfg = {
+    {"batch_size", 1},
+    {"model_type", "embedding"},
+    {"model_tensor_type", "FP32-FP32"},
+    {"embedding_dtype", "FP32"},
+    {"fc_layer_dtype", "FP32"},
+    {"init_seq_len", 256},
+    {"max_seq_len", 256},
+    {"num_to_generate", 0}};
+
+  TestableLfm2Vl vit(cfg, gen_cfg, nntr_cfg);
+  EXPECT_EQ(vit.hiddenDim(), 768);
+  EXPECT_EQ(vit.numHeads(), 16);
+  EXPECT_EQ(vit.numLayers(), 27);
+  EXPECT_EQ(vit.numPatches(), 256u);
+  EXPECT_EQ(vit.intermediateSize(), 3072);
 }
 
 int main(int argc, char **argv) {
