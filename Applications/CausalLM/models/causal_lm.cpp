@@ -50,6 +50,20 @@
 // include_directories('.') in meson.build).
 #include <streamer.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+static std::wstring utf8_to_wstring(const std::string &s) {
+  if (s.empty())
+    return std::wstring();
+  int sz = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+  if (sz <= 0)
+    return std::wstring();
+  std::wstring ws(static_cast<size_t>(sz - 1), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &ws[0], sz);
+  return ws;
+}
+#endif
+
 namespace causallm {
 
 CausalLM::CausalLM(json &cfg, json &generation_cfg, json &nntr_cfg) :

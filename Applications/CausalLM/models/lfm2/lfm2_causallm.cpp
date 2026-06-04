@@ -17,6 +17,10 @@
 #include <model.h>
 #include <tensor_api.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cpu_backend.h>
+
 #include <iostream>
 
 #include <causal_conv1d_layer.h>
@@ -118,8 +122,22 @@ void Lfm2Transformer::registerCustomLayers() {
       nntrainer::createLayer<causallm::ReshapedRMSNormLayer>);
     app_context->registerFactory(
       nntrainer::createLayer<causallm::CustomMultiplyLayer>);
-    app_context->registerFactory(
-      nntrainer::createLayer<causallm::CausalConv1DLayer>);
+    // CausalConv1DLayer is in a separate DLL; register via the exported
+    // factory function to avoid requiring the class constructor to be
+    // explicitly exported from the DLL.
+    {
+      std::function<std::unique_ptr<nntrainer::Layer>(
+        const std::vector<std::string> &)>
+        conv1d_factory = [](const std::vector<std::string> &props)
+        -> std::unique_ptr<nntrainer::Layer> {
+        auto *ptr = create_causal_conv1d_layer();
+        if (!props.empty())
+          ptr->setProperty(props);
+        return std::unique_ptr<nntrainer::Layer>(ptr);
+      };
+      app_context->registerFactory(conv1d_factory,
+                                   causallm::CausalConv1DLayer::type);
+    }
   } catch (std::invalid_argument &e) {
     std::cerr << "failed to register factory, reason: " << e.what()
               << std::endl;
@@ -182,7 +200,7 @@ std::pair<Tensor, Tensor> Lfm2CausalLM::constructModel() {
   return {input, output};
 }
 
-Tensor Lfm2CausalLM::createConvBlock(const int layer_id, Tensor input) {
+Tensor Lfm2Transformer::createConvBlock(const int layer_id, Tensor input) {
 
   auto prefix = "layer" + std::to_string(layer_id);
 
@@ -257,8 +275,99 @@ Tensor Lfm2CausalLM::createConvBlock(const int layer_id, Tensor input) {
   return block_out;
 }
 
+void Lfm2Transformer::setupLfm2Parameters(json &cfg, json &generation_cfg,
+                                          json &nntr_cfg,
+                                          bool require_layer_types) {
+  (void)generation_cfg;
+
+  try {
+    unsigned int ff_dim = INTERMEDIATE_SIZE;
+    if (cfg.contains("block_ff_dim")) {
+      ff_dim = cfg["block_ff_dim"].get<unsigned int>();
+    }
+
+    if (cfg.contains("block_auto_adjust_ff_dim") &&
+        cfg["block_auto_adjust_ff_dim"].get<bool>()) {
+      ff_dim = static_cast<unsigned int>((2.0f * ff_dim) / 3.0f);
+    }
+
+    float mult = cfg.contains("block_ffn_dim_multiplier")
+                   ? cfg["block_ffn_dim_multiplier"].get<float>()
+                   : 1.0f;
+    ff_dim = static_cast<unsigned int>(ff_dim * mult);
+
+    unsigned int multiple_of = cfg.contains("block_multiple_of")
+                                 ? cfg["block_multiple_of"].get<unsigned int>()
+                                 : 1;
+    ff_dim = multiple_of * ((ff_dim + multiple_of - 1) / multiple_of);
+
+    INTERMEDIATE_SIZE = ff_dim;
+
+    // LFM2 prefers block_norm_eps over rms_norm_eps for block norms
+    NORM_EPS = cfg.contains("block_norm_eps")
+                 ? cfg["block_norm_eps"].get<float>()
+                 : NORM_EPS;
+
+    // conv-specific parameters
+    CONV_DIM = cfg.contains("conv_dim") ? cfg["conv_dim"].get<int>() : DIM;
+
+    CONV_DIM_OUT =
+      cfg.contains("conv_dim_out") ? cfg["conv_dim_out"].get<int>() : DIM;
+
+    CONV_L_CACHE =
+      cfg.contains("conv_L_cache") ? cfg["conv_L_cache"].get<int>() : 0;
+
+    CONV_BIAS =
+      cfg.contains("conv_bias") ? cfg["conv_bias"].get<bool>() : false;
+
+    // Layer types (attention/conv hybrid)
+    if (cfg.contains("layer_types")) {
+      layer_types_ = cfg["layer_types"].get<std::vector<std::string>>();
+    } else if (require_layer_types) {
+      throw std::invalid_argument(
+        "Lfm2CausalLM requires layer_types in config");
+    } else {
+      layer_types_.assign(NUM_LAYERS, "full_attention");
+    }
+
+    if (cfg.contains("layer_types")) {
+      if (layer_types_.size() != static_cast<size_t>(NUM_LAYERS)) {
+        throw std::invalid_argument(
+          "layer_types size must match num_hidden_layers");
+      }
+
+      for (const auto &layer_type : layer_types_) {
+        if (layer_type != "attention" && layer_type != "full_attention" &&
+            layer_type != "conv") {
+          throw std::invalid_argument("Unsupported LFM2 layer type: " +
+                                      layer_type);
+        }
+      }
+    }
+
+    TIE_WORD_EMBEDDINGS = cfg.contains("tie_word_embeddings")
+                            ? cfg["tie_word_embeddings"].get<bool>()
+                            : false;
+
+    USE_EMBEDDING = nntr_cfg.contains("use_embedding")
+                      ? nntr_cfg["use_embedding"].get<bool>()
+                      : false;
+
+    EMBEDDING_BIN_PATH = nntr_cfg.contains("embedding_bin_path")
+                           ? nntr_cfg["embedding_bin_path"].get<std::string>()
+                           : "";
+  } catch (const std::exception &e) {
+    throw std::runtime_error(
+      std::string("Lfm2Transformer: config parsing error: ") + e.what());
+  }
+}
+
 void Lfm2CausalLM::setupParameters(json &cfg, json &generation_cfg,
                                    json &nntr_cfg) {
+  // Delegate LFM2-specific parameter parsing to the shared method
+  setupLfm2Parameters(cfg, generation_cfg, nntr_cfg,
+                      /*require_layer_types=*/true);
+  return;
 
   try {
     unsigned int ff_dim = INTERMEDIATE_SIZE;
@@ -334,6 +443,374 @@ void Lfm2CausalLM::setupParameters(json &cfg, json &generation_cfg,
 void Lfm2CausalLM::registerCustomLayers() {
   CausalLM::registerCustomLayers();
   Lfm2Transformer::registerCustomLayers();
+}
+
+void Lfm2CausalLM::load_weight(const std::string &weight_path) {
+  Transformer::load_weight(weight_path);
+
+  if (USE_EMBEDDING) {
+    loadEmbeddingWeight();
+  }
+}
+
+void Lfm2CausalLM::loadEmbeddingWeight() {
+  if (EMBEDDING_BIN_PATH.empty()) {
+    throw std::runtime_error(
+      "loadEmbeddingWeight: embedding_bin_path is not set. "
+      "Add embedding_bin_path to nntr_config.");
+  }
+
+  // Determine dtype from EMBEDDING_DTYPE string
+  if (EMBEDDING_DTYPE == "FP32" || EMBEDDING_DTYPE == "fp32") {
+    embedding_weight_dtype_ = nntrainer::TensorDim::DataType::FP32;
+  } else if (EMBEDDING_DTYPE == "Q4_0" || EMBEDDING_DTYPE == "q4_0") {
+    embedding_weight_dtype_ = nntrainer::TensorDim::DataType::Q4_0;
+  } else if (EMBEDDING_DTYPE == "Q6_K" || EMBEDDING_DTYPE == "q6_K") {
+    embedding_weight_dtype_ = nntrainer::TensorDim::DataType::Q6_K;
+  } else {
+    throw std::runtime_error(
+      "loadEmbeddingWeight: unsupported embedding dtype: " + EMBEDDING_DTYPE);
+  }
+
+  std::ifstream file(EMBEDDING_BIN_PATH, std::ios::binary | std::ios::ate);
+  if (!file.is_open()) {
+    throw std::runtime_error(
+      "loadEmbeddingWeight: failed to open embedding bin: " +
+      EMBEDDING_BIN_PATH);
+  }
+
+  if (embedding_weight_dtype_ == nntrainer::TensorDim::DataType::FP32) {
+    size_t expected_size = static_cast<size_t>(NUM_VOCAB) * DIM;
+    size_t file_size = static_cast<size_t>(file.tellg());
+    if (file_size != expected_size * sizeof(float)) {
+      throw std::runtime_error(
+        "loadEmbeddingWeight: FP32 file size mismatch. Expected " +
+        std::to_string(expected_size * sizeof(float)) + " bytes, got " +
+        std::to_string(file_size) + " bytes.");
+    }
+    embedding_weight_cache_.resize(expected_size);
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char *>(embedding_weight_cache_.data()),
+              static_cast<std::streamsize>(expected_size * sizeof(float)));
+  } else {
+    // Compute row bytes for quantized types
+    if (embedding_weight_dtype_ == nntrainer::TensorDim::DataType::Q4_0) {
+      int num_blocks = (DIM + 32 - 1) / 32;
+      embedding_row_bytes_ = static_cast<size_t>(18 * num_blocks);
+    } else { // Q6_K
+      int num_blocks = (DIM + 256 - 1) / 256;
+      embedding_row_bytes_ = static_cast<size_t>(210 * num_blocks);
+    }
+
+    size_t total_bytes = embedding_row_bytes_ * NUM_VOCAB;
+    size_t file_size = static_cast<size_t>(file.tellg());
+    if (file_size != total_bytes) {
+      throw std::runtime_error(
+        "loadEmbeddingWeight: quantized file size mismatch. Expected " +
+        std::to_string(total_bytes) + " bytes, got " +
+        std::to_string(file_size) + " bytes.");
+    }
+    embedding_weight_cache_uint8_.resize(total_bytes);
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char *>(embedding_weight_cache_uint8_.data()),
+              static_cast<std::streamsize>(total_bytes));
+  }
+
+  embedding_weight_cached_ = true;
+}
+
+std::vector<float> Lfm2CausalLM::lookupEmbedding(unsigned int token_id) {
+  if (!embedding_weight_cached_) {
+    throw std::runtime_error(
+      "lookupEmbedding: embedding weight not loaded. "
+      "Set use_embedding=true in nntr_config and ensure load_weight() was "
+      "called.");
+  }
+
+  std::vector<float> result(DIM, 0.0f);
+
+  if (embedding_weight_dtype_ == nntrainer::TensorDim::DataType::FP32) {
+    const float *data = embedding_weight_cache_.data();
+    std::copy(data + static_cast<size_t>(token_id) * DIM,
+              data + static_cast<size_t>(token_id + 1) * DIM, result.begin());
+  } else if (embedding_weight_dtype_ == nntrainer::TensorDim::DataType::Q4_0) {
+    // Q4_0: 18-byte blocks (2-byte fp16 scale + 16 bytes nibble data = 32 elems)
+    const uint8_t *row =
+      embedding_weight_cache_uint8_.data() +
+      static_cast<size_t>(token_id) * embedding_row_bytes_;
+    int num_blocks = (DIM + 31) / 32;
+    for (int blk = 0; blk < num_blocks; ++blk) {
+      const uint8_t *block = row + blk * 18;
+      uint16_t scale_bits;
+      std::memcpy(&scale_bits, block, 2);
+      // Inline fp16 -> fp32 conversion
+      uint32_t fp32_bits = ((scale_bits & 0x8000u) << 16) |
+                           ((((scale_bits >> 10) & 0x1Fu) + 112u) << 23) |
+                           ((scale_bits & 0x3FFu) << 13);
+      float scale;
+      std::memcpy(&scale, &fp32_bits, 4);
+      const uint8_t *nib = block + 2;
+      for (int i = 0; i < 16; ++i) {
+        int q0 = static_cast<int>(nib[i] & 0x0F) - 8;
+        int q1 = static_cast<int>(nib[i] >> 4) - 8;
+        int e0 = blk * 32 + i;
+        int e1 = blk * 32 + i + 16;
+        if (e0 < DIM)
+          result[e0] = scale * static_cast<float>(q0);
+        if (e1 < DIM)
+          result[e1] = scale * static_cast<float>(q1);
+      }
+    }
+  } else {
+    // Q6_K: 210-byte blocks (256 elements each)
+    const uint8_t *row =
+      embedding_weight_cache_uint8_.data() +
+      static_cast<size_t>(token_id) * embedding_row_bytes_;
+    int num_blocks = (DIM + 255) / 256;
+    for (int blk = 0; blk < num_blocks; ++blk) {
+      const uint8_t *block = row + blk * 210;
+      const uint8_t *ql = block;
+      const uint8_t *qh = block + 128;
+      const int8_t *sc = reinterpret_cast<const int8_t *>(block + 192);
+      uint16_t d_bits;
+      std::memcpy(&d_bits, block + 208, 2);
+      uint32_t fp32_bits = ((d_bits & 0x8000u) << 16) |
+                           ((((d_bits >> 10) & 0x1Fu) + 112u) << 23) |
+                           ((d_bits & 0x3FFu) << 13);
+      float d;
+      std::memcpy(&d, &fp32_bits, 4);
+      for (int i = 0; i < 256; ++i) {
+        int elem = blk * 256 + i;
+        if (elem >= DIM)
+          break;
+        int qi = i % 128;
+        uint8_t low4 = (qi % 2 == 0) ? (ql[qi / 2] & 0x0F) : (ql[qi / 2] >> 4);
+        uint8_t high2 = (qh[qi / 4] >> (2 * (qi % 4))) & 0x03;
+        int q6 = static_cast<int>(low4 | (high2 << 4)) - 32;
+        int scale_idx = (i / 16) + (i / 128) * 8;
+        float scale = d * static_cast<float>(sc[scale_idx]);
+        result[elem] = scale * static_cast<float>(q6);
+      }
+    }
+  }
+
+  return result;
+}
+
+void Lfm2CausalLM::run_with_embeddings(const void *inputs_embeds,
+                                       size_t n_tokens,
+                                       std::vector<int> seed_tokens,
+                                       bool do_sample, bool log_output) {
+  auto start_total = std::chrono::high_resolution_clock::now();
+
+  if (!is_initialized) {
+    throw std::runtime_error(
+      "Lfm2CausalLM model is not initialized. Please call "
+      "initialize() before run_with_embeddings().");
+  }
+  if (!USE_EMBEDDING) {
+    throw std::runtime_error(
+      "run_with_embeddings() requires USE_EMBEDDING=true. "
+      "Set use_embedding=true in nntr_config.");
+  }
+
+  const auto *embeds = static_cast<const float *>(inputs_embeds);
+  const unsigned int input_len = static_cast<unsigned int>(n_tokens);
+
+  if (input_len > static_cast<unsigned int>(INIT_SEQ_LEN)) {
+    throw std::invalid_argument("n_tokens (" + std::to_string(input_len) +
+                                ") exceeds INIT_SEQ_LEN (" +
+                                std::to_string(INIT_SEQ_LEN) + ")");
+  }
+
+  if (MAX_SEQ_LEN < INIT_SEQ_LEN) {
+    throw std::invalid_argument(
+      "MAX_SEQ_LEN must be greater than or equal to INIT_SEQ_LEN");
+  }
+
+  allocateAndBindKVCache();
+
+  output_list.clear();
+  for (unsigned int b = 0; b < BATCH_SIZE; ++b) {
+    output_list.push_back("");
+  }
+
+  // Store seed token IDs into ids_history for repetition penalty support
+  for (unsigned int b = 0; b < BATCH_SIZE; ++b) {
+    for (size_t i = 0; i < seed_tokens.size(); ++i) {
+      ids_history[b * MAX_SEQ_LEN + i] =
+        static_cast<unsigned int>(seed_tokens[i]);
+    }
+  }
+
+  // Local lambda: build inference inputs list from embeddings data + KV cache
+  auto build_inference_inputs = [this](float *input_data) {
+    std::vector<std::pair<std::string, float *>> cache_inputs;
+    cache_inputs.reserve(static_cast<size_t>(NUM_LAYERS) * 2);
+    for (int i = 0; i < NUM_LAYERS; ++i) {
+      cache_inputs.emplace_back(
+        "cache_k_l" + std::to_string(i),
+        reinterpret_cast<float *>(kv_cache.getKeyCache(i).getData()));
+      cache_inputs.emplace_back(
+        "cache_v_l" + std::to_string(i),
+        reinterpret_cast<float *>(kv_cache.getValueCache(i).getData()));
+    }
+    std::sort(cache_inputs.begin(), cache_inputs.end(),
+              [](const auto &lhs, const auto &rhs) {
+                return lhs.first < rhs.first;
+              });
+    std::vector<float *> inference_inputs;
+    inference_inputs.reserve(1 + cache_inputs.size());
+    inference_inputs.push_back(input_data);
+    for (const auto &ci : cache_inputs)
+      inference_inputs.push_back(ci.second);
+    return inference_inputs;
+  };
+
+  unsigned int generation_cnt = 0;
+
+  // Prepare prefill input (pad to INIT_SEQ_LEN if needed)
+  float *input_sample;
+  std::vector<float> padded_embeds;
+  bool needs_padding = input_len < static_cast<unsigned int>(INIT_SEQ_LEN);
+  if (needs_padding) {
+    const size_t padded_size =
+      static_cast<size_t>(BATCH_SIZE) * INIT_SEQ_LEN * DIM;
+    padded_embeds.assign(padded_size, 0.0f);
+    const size_t copy_size = static_cast<size_t>(BATCH_SIZE) * input_len * DIM;
+    std::copy(embeds, embeds + copy_size, padded_embeds.begin());
+    input_sample = padded_embeds.data();
+  } else {
+    input_sample = const_cast<float *>(embeds);
+  }
+
+  auto input = build_inference_inputs(input_sample);
+  std::vector<float *> label;
+
+  auto start_prefill = std::chrono::high_resolution_clock::now();
+
+  const unsigned int prefill_from = global_token_len;
+  const unsigned int prefill_to = prefill_from + input_len;
+  setKVCachePosition(prefill_from);
+
+  std::vector<float *> outputs =
+    model->incremental_inference(BATCH_SIZE, input, label, input_len,
+                                 prefill_from, prefill_to, false);
+
+  advanceKVCachePosition(input_len);
+
+  generated_ids_.clear();
+  std::vector<bool> eos_list(BATCH_SIZE, false);
+  std::vector<unsigned int> id_list(
+    generate(outputs[0], do_sample, 1.0f, ids_history, input_len));
+
+  generated_ids_.push_back(id_list[0]);
+  registerOutputs(tokenizer, id_list, input_len, eos_list, log_output);
+
+  for (unsigned int b = 0; b < BATCH_SIZE; ++b) {
+    ids_history[b * MAX_SEQ_LEN + input_len] = id_list[b];
+  }
+
+  for (auto *out : outputs) {
+    delete[] out;
+  }
+
+  auto finish_prefill = std::chrono::high_resolution_clock::now();
+  auto prefill_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+    finish_prefill - start_prefill);
+
+  std::vector<float> gen_input(
+    static_cast<size_t>(BATCH_SIZE) * INIT_SEQ_LEN * DIM, 0.0f);
+
+  auto start_generation = std::chrono::high_resolution_clock::now();
+
+  for (unsigned int tok_idx = input_len + 1;
+       tok_idx < input_len + 1 + NUM_TO_GENERATE; ++tok_idx) {
+
+    std::fill(gen_input.begin(), gen_input.end(), 0.0f);
+    for (unsigned int b = 0; b < BATCH_SIZE; ++b) {
+      std::vector<float> embed = lookupEmbedding(id_list[b]);
+      std::copy(embed.begin(), embed.end(),
+                gen_input.data() + static_cast<size_t>(b) * INIT_SEQ_LEN * DIM);
+    }
+
+    input = build_inference_inputs(gen_input.data());
+    allocateAndBindKVCache();
+
+    auto output_interval =
+      model->incremental_inference(BATCH_SIZE, input, label, input_len,
+                                   tok_idx - 1 + global_token_len,
+                                   tok_idx + global_token_len);
+
+    id_list = generate(output_interval[0], do_sample);
+    generated_ids_.push_back(id_list[0]);
+    registerOutputs(tokenizer, id_list, tok_idx, eos_list, log_output);
+    ++generation_cnt;
+
+    for (unsigned int b = 0; b < BATCH_SIZE; ++b) {
+      ids_history[b * MAX_SEQ_LEN + tok_idx] = id_list[b];
+    }
+
+    for (auto *out : output_interval) {
+      delete[] out;
+    }
+
+    // Check EOS
+    for (unsigned int j = 0; j < BATCH_SIZE; ++j) {
+      if (!eos_list[j] &&
+          std::find(EOS_TOKEN_ID.begin(), EOS_TOKEN_ID.end(), id_list[j]) !=
+            EOS_TOKEN_ID.end()) {
+        eos_list[j] = true;
+      }
+    }
+
+    bool is_finish = true;
+    for (unsigned int j = 0; j < BATCH_SIZE; ++j) {
+      if (!eos_list[j]) {
+        is_finish = false;
+        break;
+      }
+    }
+
+    if (is_finish)
+      break;
+  }
+
+  global_token_len += (generation_cnt + input_len);
+
+  auto finish_generation = std::chrono::high_resolution_clock::now();
+  auto generation_duration =
+    std::chrono::duration_cast<std::chrono::milliseconds>(finish_generation -
+                                                          start_generation);
+  auto finish_total = std::chrono::high_resolution_clock::now();
+  auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+    finish_total - start_total);
+  size_t peak_memory = getPeakMemoryKb();
+
+  if (log_output) {
+    std::cout << "\n\n";
+    std::cout << "=================[ LLM with NNTrainer ]===================\n";
+    std::cout << "prefill: " << input_len << " tokens, "
+              << prefill_duration.count() << " ms, "
+              << ((double)input_len / prefill_duration.count() * 1000)
+              << " TPS\n";
+    std::cout << "generation: " << generation_cnt << " tokens, "
+              << generation_duration.count() << " ms, "
+              << ((double)generation_cnt / generation_duration.count() * 1000)
+              << " TPS\n";
+    std::cout << "total: " << total_duration.count() << " ms\n";
+    std::cout << "peak memory: " << peak_memory << " KB\n";
+    std::cout << "==========================================================\n";
+  }
+
+  performance_metrics.prefill_tokens = input_len;
+  performance_metrics.prefill_duration_ms = prefill_duration.count();
+  performance_metrics.generation_tokens = generation_cnt;
+  performance_metrics.generation_duration_ms = generation_duration.count();
+  performance_metrics.total_duration_ms = total_duration.count();
+  performance_metrics.peak_memory_kb = peak_memory;
+
+  has_run_ = true;
 }
 
 } // namespace causallm
