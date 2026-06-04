@@ -18,9 +18,9 @@
 
 namespace causallm {
 
-/** -----------------------------------------------------------------------
- * Config splitting helpers
- * ---------------------------------------------------------------------- */
+// -------------------------------------------------------------------------
+// Config splitting helpers
+// -------------------------------------------------------------------------
 
 std::pair<json, json>
 Lfm2VlForConditionalGeneration::splitConfig(const json &top) {
@@ -36,9 +36,9 @@ Lfm2VlForConditionalGeneration::splitConfig(const json &top) {
   return {text_cfg, vision_cfg};
 }
 
-/** -----------------------------------------------------------------------
- * Constructor
- * ---------------------------------------------------------------------- */
+// -------------------------------------------------------------------------
+// Constructor
+// -------------------------------------------------------------------------
 
 Lfm2VlForConditionalGeneration::Lfm2VlForConditionalGeneration(
   json &cfg, json &generation_cfg, json &nntr_cfg) :
@@ -70,9 +70,9 @@ Lfm2VlForConditionalGeneration::Lfm2VlForConditionalGeneration(
   lm_ = std::make_unique<Lfm2CausalLM>(text_cfg, generation_cfg_, nntr_cfg_);
 }
 
-/** -----------------------------------------------------------------------
- * initialize
- * ---------------------------------------------------------------------- */
+// -------------------------------------------------------------------------
+// initialize
+// -------------------------------------------------------------------------
 
 void Lfm2VlForConditionalGeneration::initialize() {
   vit_->initialize();
@@ -80,9 +80,9 @@ void Lfm2VlForConditionalGeneration::initialize() {
   initialized_ = true;
 }
 
-/** -----------------------------------------------------------------------
- * load_weight
- * ---------------------------------------------------------------------- */
+// -------------------------------------------------------------------------
+// load_weight
+// -------------------------------------------------------------------------
 
 void Lfm2VlForConditionalGeneration::load_weight(const std::string &base_path) {
   // LM weights
@@ -105,9 +105,9 @@ void Lfm2VlForConditionalGeneration::load_weight(const std::string &base_path) {
   }
 }
 
-/** -----------------------------------------------------------------------
- * loadImageTensor
- * ---------------------------------------------------------------------- */
+// -------------------------------------------------------------------------
+// loadImageTensor
+// -------------------------------------------------------------------------
 
 std::vector<float> Lfm2VlForConditionalGeneration::loadImageTensor(
   const std::string &image_tensor_path) {
@@ -123,9 +123,9 @@ std::vector<float> Lfm2VlForConditionalGeneration::loadImageTensor(
   return buf;
 }
 
-/** -----------------------------------------------------------------------
- * run
- * ---------------------------------------------------------------------- */
+// -------------------------------------------------------------------------
+// run
+// -------------------------------------------------------------------------
 
 void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
                                          const std::string &prompt,
@@ -293,9 +293,9 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
                            log_output);
 }
 
-/** -----------------------------------------------------------------------
- * getGeneratedIds
- * ---------------------------------------------------------------------- */
+// -------------------------------------------------------------------------
+// getGeneratedIds
+// -------------------------------------------------------------------------
 
 const std::vector<unsigned int> &
 Lfm2VlForConditionalGeneration::getGeneratedIds() const {
