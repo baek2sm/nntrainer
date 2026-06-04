@@ -102,18 +102,15 @@ std::pair<Tensor, Tensor> VjepaProjector::constructModel() {
   Tensor h = input;
 
   // LayerNorm(INPUT_DIM)
-  LayerHandle ln1(createLayer(
-    "vjepa_layernorm",
-    {withKey("name", "merger_ln1"),
-     withKey("epsilon", "1e-5")}));
+  LayerHandle ln1(createLayer("vjepa_layernorm", {withKey("name", "merger_ln1"),
+                                                  withKey("epsilon", "1e-5")}));
   h = ln1(h);
 
   // FC1: INPUT_DIM → MERGER_HIDDEN_1
-  LayerHandle fc1(createLayer(
-    "fully_connected",
-    {withKey("name", "merger_fc1"),
-     withKey("unit", std::to_string(MERGER_HIDDEN_1)),
-     withKey("disable_bias", "false")}));
+  LayerHandle fc1(createLayer("fully_connected",
+                              {withKey("name", "merger_fc1"),
+                               withKey("unit", std::to_string(MERGER_HIDDEN_1)),
+                               withKey("disable_bias", "false")}));
   h = fc1(h);
 
   // GELU
@@ -122,11 +119,10 @@ std::pair<Tensor, Tensor> VjepaProjector::constructModel() {
   h = gelu1(h);
 
   // FC2: MERGER_HIDDEN_1 → MERGER_HIDDEN_2
-  LayerHandle fc2(createLayer(
-    "fully_connected",
-    {withKey("name", "merger_fc2"),
-     withKey("unit", std::to_string(MERGER_HIDDEN_2)),
-     withKey("disable_bias", "false")}));
+  LayerHandle fc2(createLayer("fully_connected",
+                              {withKey("name", "merger_fc2"),
+                               withKey("unit", std::to_string(MERGER_HIDDEN_2)),
+                               withKey("disable_bias", "false")}));
   h = fc2(h);
 
   // GELU
@@ -135,25 +131,20 @@ std::pair<Tensor, Tensor> VjepaProjector::constructModel() {
   h = gelu2(h);
 
   // LayerNorm(MERGER_HIDDEN_2)
-  LayerHandle ln2(createLayer(
-    "vjepa_layernorm",
-    {withKey("name", "merger_ln2"),
-     withKey("epsilon", "1e-5")}));
+  LayerHandle ln2(createLayer("vjepa_layernorm", {withKey("name", "merger_ln2"),
+                                                  withKey("epsilon", "1e-5")}));
   h = ln2(h);
 
   // FC3: MERGER_HIDDEN_2 → TEXT_DIM
-  LayerHandle fc3(createLayer(
-    "fully_connected",
-    {withKey("name", "merger_fc3"),
-     withKey("unit", std::to_string(TEXT_DIM)),
-     withKey("disable_bias", "false")}));
+  LayerHandle fc3(
+    createLayer("fully_connected", {withKey("name", "merger_fc3"),
+                                    withKey("unit", std::to_string(TEXT_DIM)),
+                                    withKey("disable_bias", "false")}));
   h = fc3(h);
 
   // LayerNorm(TEXT_DIM)
-  LayerHandle ln3(createLayer(
-    "vjepa_layernorm",
-    {withKey("name", "merger_ln3"),
-     withKey("epsilon", "1e-5")}));
+  LayerHandle ln3(createLayer("vjepa_layernorm", {withKey("name", "merger_ln3"),
+                                                  withKey("epsilon", "1e-5")}));
   h = ln3(h);
 
   return {input, h};
@@ -197,13 +188,10 @@ void VjepaProjector::registerCustomLayers() {
  *     Output: [H/f, W/f, C*f*f] tokens
  *     where adjacent 2x2 spatial blocks are merged into single tokens.
  */
-void VjepaProjector::pixelUnshuffle(const float *input, float *output,
-                                    unsigned int /*num_tokens*/,
-                                    unsigned int temporal_dim,
-                                    unsigned int spatial_h,
-                                    unsigned int spatial_w,
-                                    unsigned int vision_dim,
-                                    unsigned int factor) {
+void VjepaProjector::pixelUnshuffle(
+  const float *input, float *output, unsigned int /*num_tokens*/,
+  unsigned int temporal_dim, unsigned int spatial_h, unsigned int spatial_w,
+  unsigned int vision_dim, unsigned int factor) {
   const unsigned int out_h = spatial_h / factor;
   const unsigned int out_w = spatial_w / factor;
   const unsigned int out_dim = vision_dim * factor * factor;
@@ -212,8 +200,7 @@ void VjepaProjector::pixelUnshuffle(const float *input, float *output,
     for (unsigned int oh = 0; oh < out_h; ++oh) {
       for (unsigned int ow = 0; ow < out_w; ++ow) {
         // Output token index
-        unsigned int out_token_idx =
-          t * out_h * out_w + oh * out_w + ow;
+        unsigned int out_token_idx = t * out_h * out_w + oh * out_w + ow;
 
         // For each output channel, gather from the 2x2 input block
         for (unsigned int c = 0; c < vision_dim; ++c) {
@@ -227,8 +214,7 @@ void VjepaProjector::pixelUnshuffle(const float *input, float *output,
                 t * spatial_h * spatial_w + ih * spatial_w + iw;
 
               // Output channel index (matches Python: fh, fw, c ordering)
-              unsigned int out_c =
-                (fh * factor + fw) * vision_dim + c;
+              unsigned int out_c = (fh * factor + fw) * vision_dim + c;
 
               output[out_token_idx * out_dim + out_c] =
                 input[in_token_idx * vision_dim + c];
@@ -244,8 +230,8 @@ void VjepaProjector::pixelUnshuffle(const float *input, float *output,
  * @brief Run the projector on VJEPA2 encoder output.
  */
 multimodal_pointer VjepaProjector::run(const float *vision_embeds,
-                                      unsigned int num_tokens,
-                                      bool log_output) {
+                                       unsigned int num_tokens,
+                                       bool log_output) {
   if (!is_initialized) {
     throw std::runtime_error(
       "VjepaProjector model is not initialized. Please call "
@@ -259,11 +245,9 @@ multimodal_pointer VjepaProjector::run(const float *vision_embeds,
   }
 
   // Step 1: Apply pixel_unshuffle
-  unshuffled_.resize(
-    static_cast<size_t>(OUTPUT_TOKENS) * INPUT_DIM);
-  pixelUnshuffle(vision_embeds, unshuffled_.data(),
-                 num_tokens, TEMPORAL_DIM, SPATIAL_H, SPATIAL_W,
-                 VISION_DIM, DOWNSAMPLE_FACTOR);
+  unshuffled_.resize(static_cast<size_t>(OUTPUT_TOKENS) * INPUT_DIM);
+  pixelUnshuffle(vision_embeds, unshuffled_.data(), num_tokens, TEMPORAL_DIM,
+                 SPATIAL_H, SPATIAL_W, VISION_DIM, DOWNSAMPLE_FACTOR);
 
   // Debug: print first 5 values after pixel_unshuffle
   if (log_output) {
@@ -294,8 +278,8 @@ multimodal_pointer VjepaProjector::run(const float *vision_embeds,
     std::cout << std::endl;
     std::cout << "  Input tokens: " << NUM_TOKENS
               << " → Output tokens: " << OUTPUT_TOKENS << "\n";
-    std::cout << "  Input dim: " << INPUT_DIM
-              << " → Output dim: " << TEXT_DIM << "\n";
+    std::cout << "  Input dim: " << INPUT_DIM << " → Output dim: " << TEXT_DIM
+              << "\n";
   }
 
   return {last_output_.data(), last_output_.size() * sizeof(float)};

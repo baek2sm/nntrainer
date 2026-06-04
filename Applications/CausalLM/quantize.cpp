@@ -78,12 +78,12 @@
 #if !defined(_WIN32)
 #include "qwen3_cached_slim_moe_causallm.h"
 #endif
+#include "lfm2/lfm2_causallm.h"
 #include "qwen3_causallm.h"
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
 #include "vjepa2_vit/vjepa2_vit.h"
-#include "lfm2/lfm2_causallm.h"
 
 using json = nlohmann::json;
 using DataType = ml::train::TensorDim::DataType;
@@ -334,15 +334,15 @@ void registerAllModels() {
                           return std::make_unique<causallm::EmbeddingGemma>(
                             cfg, generation_cfg, nntr_cfg);
                         });
-  factory.registerModel("VJEPA2ViT",
+  factory.registerModel("VJEPA2ViT", [](json cfg, json generation_cfg,
+                                        json nntr_cfg) {
+    return std::make_unique<causallm::VJEPA2ViT>(cfg, generation_cfg, nntr_cfg);
+  });
+  factory.registerModel("Lfm2ForCausalLM",
                         [](json cfg, json generation_cfg, json nntr_cfg) {
-                          return std::make_unique<causallm::VJEPA2ViT>(
+                          return std::make_unique<causallm::Lfm2CausalLM>(
                             cfg, generation_cfg, nntr_cfg);
                         });
-  factory.registerModel(
-    "Lfm2ForCausalLM", [](json cfg, json generation_cfg, json nntr_cfg) {
-      return std::make_unique<causallm::Lfm2CausalLM>(cfg, generation_cfg, nntr_cfg);
-    });
 }
 
 /**

@@ -124,10 +124,10 @@ Tensor VJEPA2ViT::createPatchEmbed(Tensor input) {
   // patch_embed is a plain FC, so it follows the model's global weight dtype
   // (FP32 for the FP32 model, Q4_0 for the quantized model — nntr_quantize
   // includes "patch_embed/proj" in its FC dtype map).
-  LayerHandle proj(createLayer(
-    "fully_connected", {withKey("name", "patch_embed/proj"),
-                        withKey("unit", std::to_string(DIM)),
-                        withKey("disable_bias", "false")}));
+  LayerHandle proj(
+    createLayer("fully_connected", {withKey("name", "patch_embed/proj"),
+                                    withKey("unit", std::to_string(DIM)),
+                                    withKey("disable_bias", "false")}));
   return proj(input);
 }
 
@@ -137,10 +137,9 @@ Tensor VJEPA2ViT::createPatchEmbed(Tensor input) {
 Tensor VJEPA2ViT::createAttention(const int layer_id, Tensor input) {
   const std::string prefix = "layer" + std::to_string(layer_id) + "_";
 
-  LayerHandle norm(
-    createLayer("vjepa_layernorm",
-                {withKey("name", prefix + "attention_norm"),
-                 withKey("epsilon", std::to_string(NORM_EPS))}));
+  LayerHandle norm(createLayer("vjepa_layernorm",
+                               {withKey("name", prefix + "attention_norm"),
+                                withKey("epsilon", std::to_string(NORM_EPS))}));
   Tensor normed = norm(input);
 
   // Names follow the LLM convention (wq/wk/wv/attention_out, ffn_up/ffn_down)
@@ -204,10 +203,9 @@ Tensor VJEPA2ViT::createAttention(const int layer_id, Tensor input) {
 Tensor VJEPA2ViT::createMlp(const int layer_id, Tensor input) {
   const std::string prefix = "layer" + std::to_string(layer_id) + "_";
 
-  LayerHandle norm(
-    createLayer("vjepa_layernorm",
-                {withKey("name", prefix + "ffn_norm"),
-                 withKey("epsilon", std::to_string(NORM_EPS))}));
+  LayerHandle norm(createLayer("vjepa_layernorm",
+                               {withKey("name", prefix + "ffn_norm"),
+                                withKey("epsilon", std::to_string(NORM_EPS))}));
   Tensor h = norm(input);
 
   LayerHandle fc_up(createLayer(
@@ -257,10 +255,9 @@ std::pair<Tensor, Tensor> VJEPA2ViT::constructModel() {
     h = createTransformerDecoderBlock(i, h);
   }
 
-  LayerHandle output_norm(
-    createLayer("vjepa_layernorm",
-                {withKey("name", "output_norm"),
-                 withKey("epsilon", std::to_string(NORM_EPS))}));
+  LayerHandle output_norm(createLayer(
+    "vjepa_layernorm", {withKey("name", "output_norm"),
+                        withKey("epsilon", std::to_string(NORM_EPS))}));
   h = output_norm(h);
 
   return {input, h};
@@ -368,9 +365,10 @@ void VJEPA2ViT::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
  * [C, T, H, W] video tensor and processed in one pass, following the
  * same pipeline as run(): patchify → incremental_inference.
  */
-multimodal_pointer VJEPA2ViT::run_image(
-  const std::vector<std::vector<float>> &images,
-  unsigned int original_height, unsigned int original_width, bool log_output) {
+multimodal_pointer
+VJEPA2ViT::run_image(const std::vector<std::vector<float>> &images,
+                     unsigned int original_height, unsigned int original_width,
+                     bool log_output) {
   (void)original_height;
   (void)original_width;
 
@@ -380,13 +378,12 @@ multimodal_pointer VJEPA2ViT::run_image(
   }
 
   if (images.size() != NUM_FRAMES) {
-    throw std::runtime_error(
-      "Expected " + std::to_string(NUM_FRAMES) +
-      " frames for run_image(), got " + std::to_string(images.size()) + ".");
+    throw std::runtime_error("Expected " + std::to_string(NUM_FRAMES) +
+                             " frames for run_image(), got " +
+                             std::to_string(images.size()) + ".");
   }
 
-  const size_t frame_size =
-    static_cast<size_t>(IN_CHANS) * IMG_SIZE * IMG_SIZE;
+  const size_t frame_size = static_cast<size_t>(IN_CHANS) * IMG_SIZE * IMG_SIZE;
 
   // Assemble frames into [C, T, H, W] video buffer (same layout as run()).
   const size_t video_size =

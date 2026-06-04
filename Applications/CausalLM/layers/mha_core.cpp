@@ -819,16 +819,16 @@ static inline float32x4_t vjepa_expq_f32(float32x4_t x) {
   y = vmulq_f32(y, z);
   y = vaddq_f32(y, x);
   y = vaddq_f32(y, one);
-  int32x4_t mm = vshlq_n_s32(
-    vaddq_s32(vcvtq_s32_f32(fx), vdupq_n_s32(0x7f)), 23);
+  int32x4_t mm =
+    vshlq_n_s32(vaddq_s32(vcvtq_s32_f32(fx), vdupq_n_s32(0x7f)), 23);
   return vmulq_f32(y, vreinterpretq_f32_s32(mm));
 }
 #endif
 
 void MHACoreLayer::gemm_attention_noncausal(
   nntrainer::Tensor &query_step, nntrainer::Tensor &b_cached_key,
-  nntrainer::Tensor &b_cached_value,
-  nntrainer::Tensor &attention_output_step, unsigned int seq_len) {
+  nntrainer::Tensor &b_cached_value, nntrainer::Tensor &attention_output_step,
+  unsigned int seq_len) {
   const unsigned int N = seq_len;
   const unsigned int d = head_dim;
   const unsigned int HD = num_heads_Q * d; // row stride (interleaved heads)
@@ -882,90 +882,89 @@ void MHACoreLayer::gemm_attention_noncausal(
 
   // Phase 2: flash attention over balanced (head x query-block) work units so
   // all workers stay busy (num_heads is not a multiple of the worker count).
-  tm.parallel_for(
-    0, static_cast<size_t>(num_heads_Q) * num_qb, [&](size_t u) {
-      const unsigned int h = static_cast<unsigned int>(u / num_qb);
-      const unsigned int qb = static_cast<unsigned int>(u % num_qb) * Bq;
-      const unsigned int bq = std::min(Bq, N - qb);
-      const float *Qp = Qa.data() + (size_t)h * N * d;
-      const _FP16 *Kp = Ka.data() + (size_t)h * N * d;
-      const _FP16 *Vp = Va.data() + (size_t)h * N * d;
-      float *Oh = O + h * d;
+  tm.parallel_for(0, static_cast<size_t>(num_heads_Q) * num_qb, [&](size_t u) {
+    const unsigned int h = static_cast<unsigned int>(u / num_qb);
+    const unsigned int qb = static_cast<unsigned int>(u % num_qb) * Bq;
+    const unsigned int bq = std::min(Bq, N - qb);
+    const float *Qp = Qa.data() + (size_t)h * N * d;
+    const _FP16 *Kp = Ka.data() + (size_t)h * N * d;
+    const _FP16 *Vp = Va.data() + (size_t)h * N * d;
+    float *Oh = O + h * d;
 
-      // per-thread scratch, reused across work units (no per-unit alloc)
-      thread_local std::vector<float> S, Pacc, Ol, mrow, lrow;
-      S.resize((size_t)Bq * Bk);
-      Pacc.resize((size_t)Bq * d);
-      Ol.resize((size_t)Bq * d);
-      mrow.resize(Bq);
-      lrow.resize(Bq);
+    // per-thread scratch, reused across work units (no per-unit alloc)
+    thread_local std::vector<float> S, Pacc, Ol, mrow, lrow;
+    S.resize((size_t)Bq * Bk);
+    Pacc.resize((size_t)Bq * d);
+    Ol.resize((size_t)Bq * d);
+    mrow.resize(Bq);
+    lrow.resize(Bq);
 
-      std::fill(Ol.begin(), Ol.begin() + (size_t)bq * d, 0.0f);
+    std::fill(Ol.begin(), Ol.begin() + (size_t)bq * d, 0.0f);
+    for (unsigned int i = 0; i < bq; ++i) {
+      mrow[i] = -3.0e38f;
+      lrow[i] = 0.0f;
+    }
+
+    for (unsigned int kb = 0; kb < N; kb += Bk) {
+      const unsigned int bk = std::min(Bk, N - kb);
+      nntrainer::shgemm(order, false, true, bq, bk, d, inv_sqrt,
+                        Qp + (size_t)qb * d, d, Kp + (size_t)kb * d, d, 0.0f,
+                        S.data(), bk);
+
       for (unsigned int i = 0; i < bq; ++i) {
-        mrow[i] = -3.0e38f;
-        lrow[i] = 0.0f;
-      }
-
-      for (unsigned int kb = 0; kb < N; kb += Bk) {
-        const unsigned int bk = std::min(Bk, N - kb);
-        nntrainer::shgemm(order, false, true, bq, bk, d, inv_sqrt,
-                          Qp + (size_t)qb * d, d, Kp + (size_t)kb * d, d, 0.0f,
-                          S.data(), bk);
-
-        for (unsigned int i = 0; i < bq; ++i) {
-          float *s = S.data() + (size_t)i * bk;
-          float bm = -3.0e38f;
-          {
-            float32x4_t vmx = vdupq_n_f32(-3.0e38f);
-            unsigned int k = 0;
-            for (; k + 4 <= bk; k += 4)
-              vmx = vmaxq_f32(vmx, vld1q_f32(s + k));
-            bm = vmaxvq_f32(vmx);
-            for (; k < bk; ++k)
-              bm = std::max(bm, s[k]);
-          }
-          const float nm = std::max(mrow[i], bm);
-          const float c = std::exp(mrow[i] - nm);
-          float bs = 0.0f;
-          {
-            float32x4_t vsum = vdupq_n_f32(0.0f), vnm = vdupq_n_f32(nm);
-            unsigned int k = 0;
-            for (; k + 4 <= bk; k += 4) {
-              float32x4_t e = vjepa_expq_f32(vsubq_f32(vld1q_f32(s + k), vnm));
-              vst1q_f32(s + k, e);
-              vsum = vaddq_f32(vsum, e);
-            }
-            bs = vaddvq_f32(vsum);
-            for (; k < bk; ++k) {
-              float e = std::exp(s[k] - nm);
-              s[k] = e;
-              bs += e;
-            }
-          }
-          lrow[i] = lrow[i] * c + bs;
-          mrow[i] = nm;
-          float *ol = Ol.data() + (size_t)i * d;
-          for (unsigned int x = 0; x < d; ++x)
-            ol[x] *= c;
+        float *s = S.data() + (size_t)i * bk;
+        float bm = -3.0e38f;
+        {
+          float32x4_t vmx = vdupq_n_f32(-3.0e38f);
+          unsigned int k = 0;
+          for (; k + 4 <= bk; k += 4)
+            vmx = vmaxq_f32(vmx, vld1q_f32(s + k));
+          bm = vmaxvq_f32(vmx);
+          for (; k < bk; ++k)
+            bm = std::max(bm, s[k]);
         }
-
-        nntrainer::shgemm(order, false, false, bq, d, bk, 1.0f, S.data(), bk,
-                          Vp + (size_t)kb * d, d, 0.0f, Pacc.data(), d);
-        for (unsigned int i = 0; i < bq; ++i) {
-          float *ol = Ol.data() + (size_t)i * d;
-          const float *pa = Pacc.data() + (size_t)i * d;
-          for (unsigned int x = 0; x < d; ++x)
-            ol[x] += pa[x];
+        const float nm = std::max(mrow[i], bm);
+        const float c = std::exp(mrow[i] - nm);
+        float bs = 0.0f;
+        {
+          float32x4_t vsum = vdupq_n_f32(0.0f), vnm = vdupq_n_f32(nm);
+          unsigned int k = 0;
+          for (; k + 4 <= bk; k += 4) {
+            float32x4_t e = vjepa_expq_f32(vsubq_f32(vld1q_f32(s + k), vnm));
+            vst1q_f32(s + k, e);
+            vsum = vaddq_f32(vsum, e);
+          }
+          bs = vaddvq_f32(vsum);
+          for (; k < bk; ++k) {
+            float e = std::exp(s[k] - nm);
+            s[k] = e;
+            bs += e;
+          }
         }
-      }
-      for (unsigned int i = 0; i < bq; ++i) {
-        const float inv = 1.0f / lrow[i];
-        const float *ol = Ol.data() + (size_t)i * d;
-        float *oh = Oh + (size_t)(qb + i) * HD;
+        lrow[i] = lrow[i] * c + bs;
+        mrow[i] = nm;
+        float *ol = Ol.data() + (size_t)i * d;
         for (unsigned int x = 0; x < d; ++x)
-          oh[x] = ol[x] * inv;
+          ol[x] *= c;
       }
-    });
+
+      nntrainer::shgemm(order, false, false, bq, d, bk, 1.0f, S.data(), bk,
+                        Vp + (size_t)kb * d, d, 0.0f, Pacc.data(), d);
+      for (unsigned int i = 0; i < bq; ++i) {
+        float *ol = Ol.data() + (size_t)i * d;
+        const float *pa = Pacc.data() + (size_t)i * d;
+        for (unsigned int x = 0; x < d; ++x)
+          ol[x] += pa[x];
+      }
+    }
+    for (unsigned int i = 0; i < bq; ++i) {
+      const float inv = 1.0f / lrow[i];
+      const float *ol = Ol.data() + (size_t)i * d;
+      float *oh = Oh + (size_t)(qb + i) * HD;
+      for (unsigned int x = 0; x < d; ++x)
+        oh[x] = ol[x] * inv;
+    }
+  });
 #else
   (void)Q;
   (void)O;

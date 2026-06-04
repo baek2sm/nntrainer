@@ -87,12 +87,9 @@ public:
    * @param factor       Downsample factor (2)
    */
   static void pixelUnshuffle(const float *input, float *output,
-                              unsigned int num_tokens,
-                              unsigned int temporal_dim,
-                              unsigned int spatial_h,
-                              unsigned int spatial_w,
-                              unsigned int vision_dim,
-                              unsigned int factor);
+                             unsigned int num_tokens, unsigned int temporal_dim,
+                             unsigned int spatial_h, unsigned int spatial_w,
+                             unsigned int vision_dim, unsigned int factor);
 
 protected:
   /**
@@ -118,12 +115,13 @@ private:
   unsigned int MERGER_HIDDEN_2 = 1536; /**< Merger FC2 hidden size */
   unsigned int TEXT_DIM = 1024;        /**< Text model hidden size */
   unsigned int NUM_TOKENS = 4608;      /**< Number of input vision tokens */
-  unsigned int OUTPUT_TOKENS = 1152;   /**< Number of output tokens after unshuffle */
-  unsigned int INPUT_DIM = 3072;       /**< Input dim after unshuffle (768*4) */
+  unsigned int OUTPUT_TOKENS =
+    1152;                        /**< Number of output tokens after unshuffle */
+  unsigned int INPUT_DIM = 3072; /**< Input dim after unshuffle (768*4) */
 
-  unsigned int TEMPORAL_DIM = 8;       /**< T = num_frames / tubelet_size */
-  unsigned int SPATIAL_H = 24;         /**< H = img_size / patch_size */
-  unsigned int SPATIAL_W = 24;         /**< W = img_size / patch_size */
+  unsigned int TEMPORAL_DIM = 8; /**< T = num_frames / tubelet_size */
+  unsigned int SPATIAL_H = 24;   /**< H = img_size / patch_size */
+  unsigned int SPATIAL_W = 24;   /**< W = img_size / patch_size */
 
   /** Output from the last run() call. */
   std::vector<float> last_output_;
