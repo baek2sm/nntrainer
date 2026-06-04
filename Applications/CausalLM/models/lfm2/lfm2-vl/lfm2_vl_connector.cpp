@@ -27,10 +27,10 @@ float Lfm2VlConnector::gelu(float x) {
   return 0.5f * x * (1.0f + std::erf(x / 1.4142135623730951f));
 }
 
-std::vector<float>
-Lfm2VlConnector::layerNorm(const std::vector<float> &x,
-                           const std::vector<float> &w,
-                           const std::vector<float> &b, float eps) {
+std::vector<float> Lfm2VlConnector::layerNorm(const std::vector<float> &x,
+                                              const std::vector<float> &w,
+                                              const std::vector<float> &b,
+                                              float eps) {
   size_t n = x.size();
   float mean = 0.0f;
   for (float v : x)
