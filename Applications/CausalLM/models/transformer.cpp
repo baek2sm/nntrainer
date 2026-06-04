@@ -152,8 +152,8 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
 
   NUM_VOCAB = cfg["vocab_size"];
   DIM = cfg["hidden_size"];
-  INTERMEDIATE_SIZE = cfg.contains("intermediate_size")
-                      ? cfg["intermediate_size"].get<int>() : 0;
+  INTERMEDIATE_SIZE =
+    cfg.contains("intermediate_size") ? cfg["intermediate_size"].get<int>() : 0;
   NUM_LAYERS = cfg["num_hidden_layers"];
   NUM_HEADS = cfg["num_attention_heads"];
   HEAD_DIM = cfg.contains("head_dim")
@@ -177,11 +177,10 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
     ROPE_THETA = cfg["rope_parameters"]["rope_theta"].get<unsigned int>();
   }
   TIE_WORD_EMBEDDINGS = cfg.contains("tie_word_embeddings")
-                      ? cfg["tie_word_embeddings"].get<bool>()
-                      : false;
-  NORM_EPS = cfg.contains("rms_norm_eps")
-            ? cfg["rms_norm_eps"].get<float>()
-            : 1e-5;
+                          ? cfg["tie_word_embeddings"].get<bool>()
+                          : false;
+  NORM_EPS =
+    cfg.contains("rms_norm_eps") ? cfg["rms_norm_eps"].get<float>() : 1e-5;
   GQA_SIZE = NUM_HEADS / NUM_KEY_VALUE_HEADS;
 
   return;

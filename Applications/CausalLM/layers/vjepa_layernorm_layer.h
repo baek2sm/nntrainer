@@ -42,6 +42,9 @@ public:
 };
 } // namespace props
 
+/**
+ * @brief Per-token-parallel LayerNorm over the last (width) axis.
+ */
 WIN_EXPORT class VjepaLayerNormLayer final : public nntrainer::Layer {
 public:
   VjepaLayerNormLayer() : layernorm_props(props::VjepaLnEpsilon()) {}

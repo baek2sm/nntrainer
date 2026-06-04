@@ -43,6 +43,9 @@
 
 namespace causallm {
 
+/**
+ * @brief Causal depthwise Conv1D layer with conv-state cache for CausalLM.
+ */
 class CausalConv1DLayer : public nntrainer::LayerImpl {
 public:
   CausalConv1DLayer();

@@ -29,6 +29,9 @@
 
 namespace causallm {
 
+/**
+ * @brief Token-parallel GELU activation layer using ThreadManager pool.
+ */
 WIN_EXPORT class VjepaGeluLayer final : public nntrainer::Layer {
 public:
   VjepaGeluLayer() = default;
