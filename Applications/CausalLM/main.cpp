@@ -48,8 +48,8 @@
 #if !defined(_WIN32)
 #include "qwen3_cached_slim_moe_causallm.h"
 #endif
-#include "lfm2_causallm.h"
 #include "lfm2-vl/lfm2_vl_model.h"
+#include "lfm2_causallm.h"
 #include "qwen3_causallm.h"
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
@@ -397,8 +397,7 @@ int main(int argc, char *argv[]) {
 
       std::string image_tensor_path;
       if (nntr_cfg.contains("image_tensor_path")) {
-        image_tensor_path =
-          nntr_cfg["image_tensor_path"].get<std::string>();
+        image_tensor_path = nntr_cfg["image_tensor_path"].get<std::string>();
       }
 #ifdef PROFILE
       start_peak_tracker();
@@ -408,8 +407,8 @@ int main(int argc, char *argv[]) {
       stop_and_print_peak();
 #endif
     } else {
-      auto model = causallm::Factory::Instance().create(architecture, cfg,
-                                                        generation_cfg, nntr_cfg);
+      auto model = causallm::Factory::Instance().create(
+        architecture, cfg, generation_cfg, nntr_cfg);
       if (!model) {
         std::cerr << "Unknown architecture: " << architecture << std::endl;
         std::cerr << "Registered architectures:";

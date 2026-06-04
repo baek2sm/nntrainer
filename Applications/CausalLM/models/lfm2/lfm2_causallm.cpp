@@ -202,9 +202,8 @@ void Lfm2Transformer::registerCustomLayers() {
     {
       std::function<std::unique_ptr<nntrainer::Layer>(
         const std::vector<std::string> &)>
-        conv1d_factory =
-        [](const std::vector<std::string> &props)
-          -> std::unique_ptr<nntrainer::Layer> {
+        conv1d_factory = [](const std::vector<std::string> &props)
+        -> std::unique_ptr<nntrainer::Layer> {
         auto *ptr = create_causal_conv1d_layer();
         if (!props.empty())
           ptr->setProperty(props);

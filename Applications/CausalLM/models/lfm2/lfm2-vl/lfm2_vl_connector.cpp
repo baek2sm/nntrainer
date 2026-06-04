@@ -17,10 +17,10 @@ namespace causallm {
 
 Lfm2VlConnector::Lfm2VlConnector(unsigned int in_features,
                                  unsigned int hidden_size,
-                                 unsigned int out_features)
-  : in_features_(in_features),
-    hidden_size_(hidden_size),
-    out_features_(out_features) {}
+                                 unsigned int out_features) :
+  in_features_(in_features),
+  hidden_size_(hidden_size),
+  out_features_(out_features) {}
 
 /* static */ float Lfm2VlConnector::gelu(float x) {
   // Exact GELU (erf-based) matching torch.nn.functional.gelu
@@ -30,8 +30,7 @@ Lfm2VlConnector::Lfm2VlConnector(unsigned int in_features,
 /* static */ std::vector<float>
 Lfm2VlConnector::layerNorm(const std::vector<float> &x,
                            const std::vector<float> &w,
-                           const std::vector<float> &b,
-                           float eps) {
+                           const std::vector<float> &b, float eps) {
   size_t n = x.size();
   float mean = 0.0f;
   for (float v : x)
@@ -50,12 +49,9 @@ Lfm2VlConnector::layerNorm(const std::vector<float> &x,
   return y;
 }
 
-/* static */ std::vector<float>
-Lfm2VlConnector::linearForward(const std::vector<float> &W,
-                               const std::vector<float> &b,
-                               const std::vector<float> &x,
-                               unsigned int rows,
-                               unsigned int cols) {
+/* static */ std::vector<float> Lfm2VlConnector::linearForward(
+  const std::vector<float> &W, const std::vector<float> &b,
+  const std::vector<float> &x, unsigned int rows, unsigned int cols) {
   std::vector<float> y(rows, 0.0f);
   for (unsigned int r = 0; r < rows; ++r) {
     float s = b[r];
@@ -82,18 +78,17 @@ void Lfm2VlConnector::loadWeights(const std::string &weight_path) {
   };
 
   readFloats(ln_weight_, in_features_);
-  readFloats(ln_bias_,   in_features_);
+  readFloats(ln_bias_, in_features_);
   readFloats(fc1_weight_, static_cast<size_t>(hidden_size_) * in_features_);
-  readFloats(fc1_bias_,   hidden_size_);
+  readFloats(fc1_bias_, hidden_size_);
   readFloats(fc2_weight_, static_cast<size_t>(out_features_) * hidden_size_);
-  readFloats(fc2_bias_,   out_features_);
+  readFloats(fc2_bias_, out_features_);
 
   weights_loaded_ = true;
 }
 
-std::vector<float>
-Lfm2VlConnector::forward(const std::vector<float> &x,
-                         unsigned int n_patches) const {
+std::vector<float> Lfm2VlConnector::forward(const std::vector<float> &x,
+                                            unsigned int n_patches) const {
   if (!weights_loaded_)
     throw std::runtime_error("Lfm2VlConnector: call loadWeights() first");
 
@@ -109,14 +104,14 @@ Lfm2VlConnector::forward(const std::vector<float> &x,
     xp = layerNorm(xp, ln_weight_, ln_bias_);
 
     // fc1 + gelu
-    auto h = linearForward(fc1_weight_, fc1_bias_, xp,
-                           hidden_size_, in_features_);
+    auto h =
+      linearForward(fc1_weight_, fc1_bias_, xp, hidden_size_, in_features_);
     for (auto &v : h)
       v = gelu(v);
 
     // fc2
-    auto y = linearForward(fc2_weight_, fc2_bias_, h,
-                           out_features_, hidden_size_);
+    auto y =
+      linearForward(fc2_weight_, fc2_bias_, h, out_features_, hidden_size_);
     out.insert(out.end(), y.begin(), y.end());
   }
   return out;
@@ -124,17 +119,15 @@ Lfm2VlConnector::forward(const std::vector<float> &x,
 
 std::vector<float> pixelUnshuffle(const std::vector<float> &features,
                                   unsigned int n_patches,
-                                  unsigned int embed_dim,
-                                  unsigned int patch_h,
-                                  unsigned int patch_w,
-                                  unsigned int factor) {
+                                  unsigned int embed_dim, unsigned int patch_h,
+                                  unsigned int patch_w, unsigned int factor) {
   if (patch_h % factor != 0 || patch_w % factor != 0)
     throw std::invalid_argument(
       "pixelUnshuffle: patch grid dimensions must be divisible by factor");
 
-  unsigned int out_h   = patch_h / factor;
-  unsigned int out_w   = patch_w / factor;
-  unsigned int out_n   = out_h * out_w;
+  unsigned int out_h = patch_h / factor;
+  unsigned int out_w = patch_w / factor;
+  unsigned int out_n = out_h * out_w;
   unsigned int out_dim = embed_dim * factor * factor;
 
   std::vector<float> out(static_cast<size_t>(out_n) * out_dim, 0.0f);

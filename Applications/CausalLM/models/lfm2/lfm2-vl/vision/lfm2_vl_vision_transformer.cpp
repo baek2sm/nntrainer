@@ -296,9 +296,8 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,
   }
 
   // Load preprocessed image tensor (raw fp32, NCHW, BATCH_SIZE x C x H x W).
-  const size_t n_elems =
-    static_cast<size_t>(BATCH_SIZE) * NUM_CHANNELS * PATCH_H * PATCH_SIZE *
-    PATCH_W * PATCH_SIZE;
+  const size_t n_elems = static_cast<size_t>(BATCH_SIZE) * NUM_CHANNELS *
+                         PATCH_H * PATCH_SIZE * PATCH_W * PATCH_SIZE;
   std::vector<float> image(n_elems);
   std::ifstream in(image_tensor_path, std::ios::binary);
   if (!in) {

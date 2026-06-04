@@ -21,9 +21,9 @@
 #include <vector>
 
 namespace {
-static std::vector<float>
-interpPosEmbed(const float *src, unsigned int src_h, unsigned int src_w,
-               unsigned int dst_h, unsigned int dst_w, unsigned int dim) {
+static std::vector<float> interpPosEmbed(const float *src, unsigned int src_h,
+                                         unsigned int src_w, unsigned int dst_h,
+                                         unsigned int dst_w, unsigned int dim) {
   if (src_h == dst_h && src_w == dst_w)
     return std::vector<float>(src, src + src_h * src_w * dim);
   std::vector<float> out(dst_h * dst_w * dim);
@@ -49,7 +49,7 @@ interpPosEmbed(const float *src, unsigned int src_h, unsigned int src_w,
       for (unsigned int d = 0; d < dim; ++d) {
         out[oi + d] =
           (1.f - ty) * ((1.f - tx) * src[(sy0 * src_w + sx0) * dim + d] +
-                         tx * src[(sy0 * src_w + sx1) * dim + d]) +
+                        tx * src[(sy0 * src_w + sx1) * dim + d]) +
           ty * ((1.f - tx) * src[(sy1 * src_w + sx0) * dim + d] +
                 tx * src[(sy1 * src_w + sx1) * dim + d]);
       }
@@ -212,13 +212,10 @@ TEST(Lfm2VlVisionTransformer, initialize_supports_larger_grid) {
 
 TEST(Lfm2VlVisionTransformer, naflex_interp_identity_2x2) {
   // Interpolating a 2x2 grid to itself must return identical values.
-  std::vector<float> src = {1.f,  2.f,  3.f,  4.f,
-                            5.f,  6.f,  7.f,  8.f,
-                            9.f,  10.f, 11.f, 12.f,
-                            13.f, 14.f, 15.f, 16.f};
+  std::vector<float> src = {1.f, 2.f,  3.f,  4.f,  5.f,  6.f,  7.f,  8.f,
+                            9.f, 10.f, 11.f, 12.f, 13.f, 14.f, 15.f, 16.f};
   // 4 patches (2x2 grid), dim=4
-  auto out = interpPosEmbed(
-    src.data(), 2, 2, 2, 2, 4);
+  auto out = interpPosEmbed(src.data(), 2, 2, 2, 2, 4);
   ASSERT_EQ(out.size(), src.size());
   for (size_t i = 0; i < src.size(); ++i)
     EXPECT_FLOAT_EQ(out[i], src[i]);
@@ -228,8 +225,7 @@ TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_1x1_to_2x2) {
   // 1x1 grid (single embedding vector [1.0, 2.0]) -> 2x2 grid.
   // Expected: all 4 outputs equal the single source vector.
   std::vector<float> src = {1.f, 2.f};
-  auto out = interpPosEmbed(
-    src.data(), 1, 1, 2, 2, 2);
+  auto out = interpPosEmbed(src.data(), 1, 1, 2, 2, 2);
   ASSERT_EQ(out.size(), 8u);
   for (size_t i = 0; i < out.size(); ++i)
     EXPECT_FLOAT_EQ(out[i], src[i % 2]);
@@ -238,8 +234,7 @@ TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_1x1_to_2x2) {
 TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_1x1_to_3x3) {
   // 1x1 -> 3x3: align_corners=False, all outputs equal the single source.
   std::vector<float> src = {3.f, 7.f};
-  auto out = interpPosEmbed(
-    src.data(), 1, 1, 3, 3, 2);
+  auto out = interpPosEmbed(src.data(), 1, 1, 3, 3, 2);
   ASSERT_EQ(out.size(), 18u);
   for (size_t i = 0; i < out.size(); ++i)
     EXPECT_FLOAT_EQ(out[i], src[i % 2]);
@@ -247,13 +242,10 @@ TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_1x1_to_3x3) {
 
 TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_2x2_to_4x4) {
   std::vector<float> src = {1.f, 3.f, 5.f, 7.f};
-  std::vector<float> expected = {1.f, 1.5f, 2.5f, 3.f,
-                                 2.f, 2.5f, 3.5f, 4.f,
-                                 4.f, 4.5f, 5.5f, 6.f,
-                                 5.f, 5.5f, 6.5f, 7.f};
+  std::vector<float> expected = {1.f, 1.5f, 2.5f, 3.f, 2.f, 2.5f, 3.5f, 4.f,
+                                 4.f, 4.5f, 5.5f, 6.f, 5.f, 5.5f, 6.5f, 7.f};
 
-  auto out = interpPosEmbed(
-    src.data(), 2, 2, 4, 4, 1);
+  auto out = interpPosEmbed(src.data(), 2, 2, 4, 4, 1);
 
   ASSERT_EQ(out.size(), expected.size());
   for (size_t i = 0; i < out.size(); ++i)
@@ -262,24 +254,22 @@ TEST(Lfm2VlVisionTransformer, naflex_interp_upscale_2x2_to_4x4) {
 
 TEST(Lfm2VlVisionTransformer, naflex_mode_patch_counts_nonsquare) {
   // image_height=32, image_width=64, patch_size=16 -> PATCH_H=2, PATCH_W=4
-  causallm::json cfg = {
-    {"hidden_size", 16},      {"num_attention_heads", 2},
-    {"num_hidden_layers", 1}, {"intermediate_size", 32},
-    {"image_size", 32},      {"image_height", 32},
-    {"image_width", 64},     {"patch_size", 16},
-    {"num_channels", 3},     {"layer_norm_eps", 1e-6},
-    {"naflex_mode", true},   {"naflex_base_grid", 16}};
+  causallm::json cfg = {{"hidden_size", 16},      {"num_attention_heads", 2},
+                        {"num_hidden_layers", 1}, {"intermediate_size", 32},
+                        {"image_size", 32},       {"image_height", 32},
+                        {"image_width", 64},      {"patch_size", 16},
+                        {"num_channels", 3},      {"layer_norm_eps", 1e-6},
+                        {"naflex_mode", true},    {"naflex_base_grid", 16}};
   causallm::json gen_cfg = causallm::json::object();
-  causallm::json nntr_cfg = {
-    {"batch_size", 1},
-    {"model_type", "embedding"},
-    {"model_tensor_type", "FP32-FP32"},
-    {"embedding_dtype", "FP32"},
-    {"fc_layer_dtype", "FP32"},
-    {"init_seq_len", 8},
-    {"max_seq_len", 8},
-    {"num_to_generate", 0},
-    {"skip_tokenizer", true}};
+  causallm::json nntr_cfg = {{"batch_size", 1},
+                             {"model_type", "embedding"},
+                             {"model_tensor_type", "FP32-FP32"},
+                             {"embedding_dtype", "FP32"},
+                             {"fc_layer_dtype", "FP32"},
+                             {"init_seq_len", 8},
+                             {"max_seq_len", 8},
+                             {"num_to_generate", 0},
+                             {"skip_tokenizer", true}};
 
   TestableLfm2Vl vit(cfg, gen_cfg, nntr_cfg);
   EXPECT_EQ(vit.patchH(), 2u);
@@ -293,27 +283,21 @@ TEST(Lfm2VlVisionTransformer, naflex_mode_patch_counts_nonsquare) {
 
 TEST(Lfm2VlVisionTransformer, setup_parameters_lfm2vl_450m_vision_config) {
   // Verify that the LFM2-VL-450M vision_config parameters are accepted.
-  causallm::json cfg = {{"hidden_size", 768},
-                        {"num_attention_heads", 16},
-                        {"num_hidden_layers", 27},
-                        {"intermediate_size", 3072},
-                        {"image_size", 256},
-                        {"patch_size", 16},
-                        {"num_channels", 3},
-                        {"layer_norm_eps", 1e-6},
-                        {"naflex_mode", true},
-                        {"naflex_base_grid", 16}};
+  causallm::json cfg = {{"hidden_size", 768},      {"num_attention_heads", 16},
+                        {"num_hidden_layers", 27}, {"intermediate_size", 3072},
+                        {"image_size", 256},       {"patch_size", 16},
+                        {"num_channels", 3},       {"layer_norm_eps", 1e-6},
+                        {"naflex_mode", true},     {"naflex_base_grid", 16}};
   causallm::json gen_cfg = causallm::json::object();
-  causallm::json nntr_cfg = {
-    {"batch_size", 1},
-    {"model_type", "embedding"},
-    {"model_tensor_type", "FP32-FP32"},
-    {"embedding_dtype", "FP32"},
-    {"fc_layer_dtype", "FP32"},
-    {"init_seq_len", 256},
-    {"max_seq_len", 256},
-    {"num_to_generate", 0},
-    {"skip_tokenizer", true}};
+  causallm::json nntr_cfg = {{"batch_size", 1},
+                             {"model_type", "embedding"},
+                             {"model_tensor_type", "FP32-FP32"},
+                             {"embedding_dtype", "FP32"},
+                             {"fc_layer_dtype", "FP32"},
+                             {"init_seq_len", 256},
+                             {"max_seq_len", 256},
+                             {"num_to_generate", 0},
+                             {"skip_tokenizer", true}};
 
   TestableLfm2Vl vit(cfg, gen_cfg, nntr_cfg);
   EXPECT_EQ(vit.hiddenDim(), 768);

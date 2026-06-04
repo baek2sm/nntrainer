@@ -110,7 +110,8 @@ protected:
   unsigned int NUM_PATCHES;  /**< PATCH_H * PATCH_W */
   unsigned int PATCH_H;      /**< patch grid height (IMAGE_H / PATCH_SIZE) */
   unsigned int PATCH_W;      /**< patch grid width  (IMAGE_W / PATCH_SIZE) */
-  std::vector<float> last_features_; /**< Output feature cache from last run() */
+  std::vector<float>
+    last_features_; /**< Output feature cache from last run() */
 };
 
 } // namespace causallm

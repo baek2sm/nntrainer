@@ -48,8 +48,7 @@ namespace causallm {
  */
 class Lfm2VlForConditionalGeneration {
 public:
-  static constexpr const char *architectures =
-    "Lfm2VlForConditionalGeneration";
+  static constexpr const char *architectures = "Lfm2VlForConditionalGeneration";
   static constexpr int DEFAULT_IMAGE_TOKEN_ID = 396;
 
   /**
@@ -74,8 +73,9 @@ public:
    *
    * nntr_cfg keys used:
    *   "model_file_name"       -> LM weight binary
-   *   "vision_model_file"     -> ViT weight binary (optional; skipped if absent)
-   *   "connector_model_file"  -> connector weight binary (optional; skipped if absent)
+   *   "vision_model_file"     -> ViT weight binary (optional; skipped if
+   * absent) "connector_model_file"  -> connector weight binary (optional;
+   * skipped if absent)
    */
   void load_weight(const std::string &base_path);
 

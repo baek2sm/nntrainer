@@ -41,8 +41,8 @@ Lfm2VlForConditionalGeneration::splitConfig(const json &top) {
  * ---------------------------------------------------------------------- */
 
 Lfm2VlForConditionalGeneration::Lfm2VlForConditionalGeneration(
-  json &cfg, json &generation_cfg, json &nntr_cfg)
-  : cfg_(cfg), generation_cfg_(generation_cfg), nntr_cfg_(nntr_cfg) {
+  json &cfg, json &generation_cfg, json &nntr_cfg) :
+  cfg_(cfg), generation_cfg_(generation_cfg), nntr_cfg_(nntr_cfg) {
 
   image_token_id_ = cfg.value("image_token_id", DEFAULT_IMAGE_TOKEN_ID);
   downsample_factor_ = cfg.value("downsample_factor", 2u);
@@ -50,19 +50,17 @@ Lfm2VlForConditionalGeneration::Lfm2VlForConditionalGeneration(
 
   auto [text_cfg, vision_cfg] = splitConfig(cfg);
 
-  // Vision encoder: Transformer base checks nntr_cfg["model_type"] == "embedding".
-  // Patch the stored copy before constructing so the check passes.
+  // Vision encoder: Transformer base checks nntr_cfg["model_type"] ==
+  // "embedding". Patch the stored copy before constructing so the check passes.
   nntr_cfg_["model_type"] = "embedding";
-  vit_ = std::make_unique<Lfm2VlVisionTransformer>(
-    vision_cfg, generation_cfg_, nntr_cfg_);
+  vit_ = std::make_unique<Lfm2VlVisionTransformer>(vision_cfg, generation_cfg_,
+                                                   nntr_cfg_);
 
   // Connector dimensions
-  unsigned int vit_embed =
-    vision_cfg.value("hidden_size", 768u);
+  unsigned int vit_embed = vision_cfg.value("hidden_size", 768u);
   unsigned int r = downsample_factor_;
   unsigned int connector_in = vit_embed * r * r;
-  unsigned int lm_hidden =
-    text_cfg.value("hidden_size", 1024u);
+  unsigned int lm_hidden = text_cfg.value("hidden_size", 1024u);
 
   connector_ = std::make_unique<Lfm2VlConnector>(
     connector_in, projector_hidden_size_, lm_hidden);
@@ -111,8 +109,7 @@ void Lfm2VlForConditionalGeneration::load_weight(const std::string &base_path) {
  * loadImageTensor
  * ---------------------------------------------------------------------- */
 
-std::vector<float>
-Lfm2VlForConditionalGeneration::loadImageTensor(
+std::vector<float> Lfm2VlForConditionalGeneration::loadImageTensor(
   const std::string &image_tensor_path) {
   std::ifstream f(image_tensor_path, std::ios::binary | std::ios::ate);
   if (!f)
@@ -155,9 +152,9 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
 
     // Determine patch grid from ViT config
     auto [text_cfg, vision_cfg] = splitConfig(cfg_);
-    unsigned int img_size   = vision_cfg.value("image_size", 256u);
+    unsigned int img_size = vision_cfg.value("image_size", 256u);
     unsigned int patch_size = vision_cfg.value("patch_size", 16u);
-    unsigned int vit_embed  = vision_cfg.value("hidden_size", 768u);
+    unsigned int vit_embed = vision_cfg.value("hidden_size", 768u);
     unsigned int ph = img_size / patch_size;
     unsigned int pw = img_size / patch_size;
     unsigned int n_patches = ph * pw; // e.g. 256 for 256x256 / patch16
@@ -172,8 +169,8 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
         "Lfm2VlForConditionalGeneration: ViT produced no features");
 
     // --- 2. Pixel-unshuffle ---
-    auto unshuffled = pixelUnshuffle(vit_features, n_patches, vit_embed,
-                                     ph, pw, downsample_factor_);
+    auto unshuffled = pixelUnshuffle(vit_features, n_patches, vit_embed, ph, pw,
+                                     downsample_factor_);
 
     // --- 3. MLP connector ---
     n_img_tokens = connector_->outTokens(n_patches);
@@ -196,8 +193,7 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
 
     // Chat template without image placeholder.
     std::string text_templated =
-      "<|im_start|>user\n" + prompt +
-      "<|im_end|>\n<|im_start|>assistant\n";
+      "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n";
 
     std::vector<int64_t> text_ids = lm_->tokenize(text_templated);
 
@@ -246,9 +242,11 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
   }
 
   // Allocate merged embedding buffer.
-  // Total tokens = 1 (BOS) + (token_ids.size() - n_image_placeholders) + n_img_tokens * n_image_placeholders
+  // Total tokens = 1 (BOS) + (token_ids.size() - n_image_placeholders) +
+  // n_img_tokens * n_image_placeholders
   size_t n_text_tokens = token_ids.size() - n_image_placeholders;
-  size_t n_total_tokens = 1 + n_text_tokens + n_img_tokens * n_image_placeholders;
+  size_t n_total_tokens =
+    1 + n_text_tokens + n_img_tokens * n_image_placeholders;
   std::vector<float> merged;
   merged.reserve(n_total_tokens * lm_hidden);
 
@@ -277,10 +275,9 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
 
   // Sanity check.
   if (merged.size() != n_total_tokens * lm_hidden) {
-    throw std::runtime_error(
-      "[LFM2-VL] merged embedding size mismatch: got " +
-      std::to_string(merged.size()) + " expected " +
-      std::to_string(n_total_tokens * lm_hidden));
+    throw std::runtime_error("[LFM2-VL] merged embedding size mismatch: got " +
+                             std::to_string(merged.size()) + " expected " +
+                             std::to_string(n_total_tokens * lm_hidden));
   }
 
   if (log_output) {

@@ -194,7 +194,6 @@ void destroy_causal_conv1d_layer(nntrainer::Layer *layer) {
 #ifdef _WIN32
 __declspec(dllexport)
 #endif
-nntrainer::LayerPluggable ml_train_layer_pluggable{
-  create_causal_conv1d_layer, destroy_causal_conv1d_layer};
+nntrainer::LayerPluggable ml_train_layer_pluggable{create_causal_conv1d_layer,
+                                                   destroy_causal_conv1d_layer};
 }
-

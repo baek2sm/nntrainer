@@ -37,9 +37,9 @@ namespace causallm {
  * @return Pixel-unshuffled feature vector [(N/(r*r)) * (C*r*r) floats].
  */
 std::vector<float> pixelUnshuffle(const std::vector<float> &features,
-                                  unsigned int n_patches, unsigned int embed_dim,
-                                  unsigned int patch_h, unsigned int patch_w,
-                                  unsigned int factor);
+                                  unsigned int n_patches,
+                                  unsigned int embed_dim, unsigned int patch_h,
+                                  unsigned int patch_w, unsigned int factor);
 
 /**
  * @brief Lfm2VlConnector: MLP projection after pixel-unshuffle.
@@ -94,9 +94,9 @@ public:
     return n_input_patches / (r * r);
   }
 
-  unsigned int inFeatures()  const { return in_features_; }
+  unsigned int inFeatures() const { return in_features_; }
   unsigned int outFeatures() const { return out_features_; }
-  unsigned int hiddenSize()  const { return hidden_size_; }
+  unsigned int hiddenSize() const { return hidden_size_; }
 
 private:
   unsigned int in_features_;
@@ -120,8 +120,7 @@ private:
   static std::vector<float> linearForward(const std::vector<float> &W,
                                           const std::vector<float> &b,
                                           const std::vector<float> &x,
-                                          unsigned int rows,
-                                          unsigned int cols);
+                                          unsigned int rows, unsigned int cols);
 
   /** @brief Layer normalization over a single feature vector. */
   static std::vector<float> layerNorm(const std::vector<float> &x,
