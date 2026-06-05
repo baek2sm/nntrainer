@@ -59,6 +59,13 @@ public:
                                       const WSTR system_prompt = "",
                                       const WSTR tail_prompt = "");
 
+  /**
+   * @brief Embedding output dimensionality (hidden size of the produced
+   *        sentence embedding). Valid after the model is constructed.
+   * @return DIM (number of floats per batch row in encode()'s result buffer)
+   */
+  int getEmbeddingDim() const { return DIM; }
+
 protected:
   /**
    * @brief Setup the parameters for the SentenceTransformer model
