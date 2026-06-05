@@ -109,8 +109,8 @@ def conv_layer_keys(index):
     ]
 
 
-def write_tensor(handle, out_file, key, transpose=False, permute=None,
-                 flip_dims=None):
+def write_tensor(handle, out_file, key,  # pylint: disable=too-many-arguments
+                 transpose=False, permute=None, flip_dims=None):
     hf_key = PREFIX + key
     tensor = handle.get_tensor(hf_key).to(torch.float32)
     if flip_dims is not None:
