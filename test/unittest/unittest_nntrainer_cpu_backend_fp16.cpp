@@ -12,6 +12,7 @@
 #include "kleidiai_interface.h"
 #include "nntrainer_test_util.h"
 #include <cfloat>
+#include <cmath>
 #include <cpu_backend.h>
 #include <fallback_internal.h>
 #include <gtest/gtest.h>
@@ -28,6 +29,24 @@ using std::chrono::microseconds;
 using std::chrono::milliseconds;
 using std::chrono::nanoseconds;
 using std::chrono::seconds;
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+TEST(nntrainer_cpu_backend_standalone,
+     rms_norm_fp16_intrinsic_uses_fp32_accumulator) {
+  const size_t H = 2;
+  const size_t W = 4099;
+  const std::vector<float> input(H * W, 300.0f);
+  std::vector<float> output(H * W, 0.0f);
+
+  nntrainer::rms_norm_wrt_width_fp16_intrinsic(input.data(), output.data(), H,
+                                               W, 1.0e-5f);
+
+  for (const auto value : output) {
+    ASSERT_TRUE(std::isfinite(value));
+    EXPECT_NEAR(value, 1.0f, 1.0e-2f);
+  }
+}
+#endif
 
 template <typename T>
 static inline double find_max_diff(T *src, T *src2, int M, int N) {
