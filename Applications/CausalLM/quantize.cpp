@@ -546,7 +546,8 @@ int main(int argc, char *argv[]) {
     std::cout << "==========================================================\n";
     std::cout << "[1/5] Loading configurations from: " << model_path << "\n";
 
-    json cfg = causallm::LoadJsonFile(model_path + "/config.json");
+    json cfg = causallm::SelectTextConfig(
+      causallm::LoadJsonFile(model_path + "/config.json"));
     json generation_cfg =
       causallm::LoadJsonFile(model_path + "/generation_config.json");
     json nntr_cfg = causallm::LoadJsonFile(model_path + "/nntr_config.json");
@@ -603,8 +604,7 @@ int main(int argc, char *argv[]) {
     std::string dst_weight_path = output_dir + "/" + output_bin_name;
 
     int num_layers = cfg["num_hidden_layers"].get<int>();
-    std::string architecture =
-      cfg["architectures"].get<std::vector<std::string>>()[0];
+    std::string architecture = causallm::GetArchitectureFromConfig(cfg);
 
     std::cout << "  Architecture: " << architecture << "\n";
     std::cout << "  Num layers:   " << num_layers << "\n";

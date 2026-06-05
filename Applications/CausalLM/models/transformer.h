@@ -34,12 +34,16 @@
 #define WCHAR_P std::string &
 #endif
 
+#include <cerrno>
+#include <cstring>
 #include <layer.h>
 #include <map>
 #include <model.h>
 #include <random>
+#include <stdexcept>
 #include <tensor_api.h>
 #include <utility>
+#include <vector>
 
 #include <limits.h>
 
@@ -263,6 +267,51 @@ inline json LoadJsonFile(const std::string &file_path) {
     throw std::runtime_error("JSON parse error in " + file_path +
                              " | Details: " + e.what());
   }
+}
+
+/**
+ * @brief Select the text model config from a root or multimodal config.
+ *
+ * Multimodal Hugging Face configs keep text model parameters under
+ * "text_config". Text-only configs already store them at the root.
+ */
+inline json SelectTextConfig(const json &cfg) {
+  if (!cfg.contains("text_config") || !cfg["text_config"].is_object()) {
+    return cfg;
+  }
+
+  json text_cfg = cfg["text_config"];
+  if (!text_cfg.contains("architectures") && cfg.contains("architectures")) {
+    text_cfg["architectures"] = cfg["architectures"];
+  }
+  if (!text_cfg.contains("architecture") && cfg.contains("architecture")) {
+    text_cfg["architecture"] = cfg["architecture"];
+  }
+  if (!text_cfg.contains("model_type") && cfg.contains("model_type")) {
+    text_cfg["model_type"] = cfg["model_type"];
+  }
+
+  return text_cfg;
+}
+
+/**
+ * @brief Read the architecture string from a selected model config.
+ */
+inline std::string GetArchitectureFromConfig(const json &cfg) {
+  if (cfg.contains("architectures") && cfg["architectures"].is_array() &&
+      !cfg["architectures"].empty()) {
+    return cfg["architectures"].get<std::vector<std::string>>()[0];
+  }
+  if (cfg.contains("architecture") && cfg["architecture"].is_string()) {
+    return cfg["architecture"].get<std::string>();
+  }
+  if (cfg.contains("model_type") && cfg["model_type"].is_string()) {
+    return cfg["model_type"].get<std::string>();
+  }
+
+  throw std::invalid_argument(
+    "config.json must contain 'architectures', 'architecture', or "
+    "'model_type' at root or under 'text_config'.");
 }
 } // namespace causallm
 

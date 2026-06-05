@@ -476,7 +476,8 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
       model_dir_path = resolve_model_path(target_model_name, quant_type);
 
       // Load configuration files
-      cfg = causallm::LoadJsonFile(model_dir_path + "/config.json");
+      cfg = causallm::SelectTextConfig(
+        causallm::LoadJsonFile(model_dir_path + "/config.json"));
       generation_cfg =
         causallm::LoadJsonFile(model_dir_path + "/generation_config.json");
       nntr_cfg = causallm::LoadJsonFile(model_dir_path + "/nntr_config.json");
@@ -519,13 +520,9 @@ ErrorCode loadModel(BackendType compute, ModelType modeltype,
     // Determine architecture from config or ModelType
     // Priority: Config file architecture > ModelType mapping (fallback)
     std::string architecture;
-    if (cfg.contains("architectures") && cfg["architectures"].is_array() &&
-        !cfg["architectures"].empty()) {
-      architecture = cfg["architectures"].get<std::vector<std::string>>()[0];
-    } else {
-      // No fallback mapping from specific ModelType instances to generic
-      // architecture strings for now, as specific types should have config or
-      // be loaded from valid file with config.json
+    try {
+      architecture = causallm::GetArchitectureFromConfig(cfg);
+    } catch (const std::invalid_argument &) {
       return CAUSAL_LM_ERROR_INVALID_PARAMETER;
     }
 

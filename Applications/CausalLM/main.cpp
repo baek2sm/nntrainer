@@ -299,7 +299,8 @@ int main(int argc, char *argv[]) {
 
   try {
     // Load configuration files
-    json cfg = causallm::LoadJsonFile(model_path + "/config.json");
+    json cfg = causallm::SelectTextConfig(
+      causallm::LoadJsonFile(model_path + "/config.json"));
     json generation_cfg = json::object();
     std::string generation_config_path = model_path + "/generation_config.json";
     if (std::filesystem::exists(generation_config_path)) {
@@ -321,20 +322,7 @@ int main(int argc, char *argv[]) {
     std::cout << weight_file << std::endl;
 
     // Initialize and run model
-    std::string architecture;
-    if (cfg.contains("architectures") && cfg["architectures"].is_array() &&
-        !cfg["architectures"].empty()) {
-      architecture = cfg["architectures"].get<std::vector<std::string>>()[0];
-    } else if (cfg.contains("architecture") &&
-               cfg["architecture"].is_string()) {
-      architecture = cfg["architecture"].get<std::string>();
-    } else if (cfg.contains("model_type") && cfg["model_type"].is_string()) {
-      architecture = cfg["model_type"].get<std::string>();
-    } else {
-      throw std::invalid_argument(
-        "config.json must contain 'architectures', 'architecture', or "
-        "'model_type'.");
-    }
+    std::string architecture = causallm::GetArchitectureFromConfig(cfg);
 
     if (nntr_cfg.contains("model_type")) {
       std::string model_type = nntr_cfg["model_type"].get<std::string>();
