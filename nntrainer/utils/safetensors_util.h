@@ -28,12 +28,16 @@ namespace nntrainer::safetensors {
 struct TensorEntry {
   std::string name;
   std::string dtype;
+  std::string nntr_dtype;
   std::vector<size_t> shape;
+  std::vector<size_t> nntr_logical_shape;
   size_t offset_start;
   size_t offset_end;
 };
 
 const char *dtypeToString(ml::train::TensorDim::DataType dtype);
+
+const char *nntrDtypeToString(ml::train::TensorDim::DataType dtype);
 
 std::string buildHeader(const std::vector<TensorEntry> &entries);
 

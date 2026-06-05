@@ -700,7 +700,14 @@ void NeuralNetwork::save(
         safetensors::TensorEntry entry;
         entry.name = t.getName();
         entry.dtype = safetensors::dtypeToString(dim.getDataType());
-        entry.shape = {dim.batch(), dim.channel(), dim.height(), dim.width()};
+        entry.nntr_dtype = safetensors::nntrDtypeToString(dim.getDataType());
+        if (entry.nntr_dtype.empty()) {
+          entry.shape = {dim.batch(), dim.channel(), dim.height(), dim.width()};
+        } else {
+          entry.shape = {nbytes};
+          entry.nntr_logical_shape = {dim.batch(), dim.channel(), dim.height(),
+                                      dim.width()};
+        }
         entry.offset_start = data_offset;
         entry.offset_end = data_offset + nbytes;
         entries.push_back(std::move(entry));

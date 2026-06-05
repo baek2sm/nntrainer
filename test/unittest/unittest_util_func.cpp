@@ -26,6 +26,7 @@
 #include <nntrainer_log.h>
 #include <nntrainer_logger.h>
 #include <nntrainer_test_util.h>
+#include <safetensors_util.h>
 #include <util_func.h>
 
 TEST(nntrainer_util_func, sqrtFloat_01_p) {
@@ -54,6 +55,30 @@ TEST(nntrainer_util_func, logFloat_01_p) {
   for (int i = 0; i < batch * height * width; ++i) {
     EXPECT_NEAR(data[i], (float)log(indata[i]), tolerance);
   }
+}
+
+TEST(nntrainer_safetensors_util, quant_dtype_header_has_nntr_dtype) {
+  using DataType = ml::train::TensorDim::DataType;
+
+  EXPECT_STREQ(nntrainer::safetensors::dtypeToString(DataType::Q4_0), "U8");
+  EXPECT_STREQ(nntrainer::safetensors::nntrDtypeToString(DataType::Q4_0),
+               "Q4_0");
+
+  nntrainer::safetensors::TensorEntry entry;
+  entry.name = "layer0:weight";
+  entry.dtype = nntrainer::safetensors::dtypeToString(DataType::Q4_0);
+  entry.nntr_dtype = nntrainer::safetensors::nntrDtypeToString(DataType::Q4_0);
+  entry.shape = {18};
+  entry.nntr_logical_shape = {1, 1, 32, 32};
+  entry.offset_start = 0;
+  entry.offset_end = 18;
+
+  const std::string header = nntrainer::safetensors::buildHeader({entry});
+  EXPECT_NE(header.find("\"dtype\":\"U8\""), std::string::npos);
+  EXPECT_NE(header.find("\"shape\":[18]"), std::string::npos);
+  EXPECT_NE(header.find("\"nntr_dtype\":\"Q4_0\""), std::string::npos);
+  EXPECT_NE(header.find("\"nntr_logical_shape\":[1,1,32,32]"),
+            std::string::npos);
 }
 
 // TEST(nntrainer_util_func, rotate_180_p) {

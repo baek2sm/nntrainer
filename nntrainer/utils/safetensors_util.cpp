@@ -39,8 +39,26 @@ const char *dtypeToString(ml::train::TensorDim::DataType dtype) {
     return "U16";
   case DT::UINT32:
     return "U32";
+  case DT::Q4_0:
+  case DT::Q4_K:
+  case DT::Q6_K:
+    return "U8";
   default:
     return "F32";
+  }
+}
+
+const char *nntrDtypeToString(ml::train::TensorDim::DataType dtype) {
+  using DT = ml::train::TensorDim::DataType;
+  switch (dtype) {
+  case DT::Q4_0:
+    return "Q4_0";
+  case DT::Q4_K:
+    return "Q4_K";
+  case DT::Q6_K:
+    return "Q6_K";
+  default:
+    return "";
   }
 }
 
@@ -55,7 +73,20 @@ std::string buildHeader(const std::vector<TensorEntry> &entries) {
       out << e.shape[i];
     }
     out << "],\"data_offsets\":[" << e.offset_start << "," << e.offset_end
-        << "]}";
+        << "]";
+    if (!e.nntr_dtype.empty()) {
+      out << ",\"nntr_dtype\":\"" << e.nntr_dtype << "\"";
+    }
+    if (!e.nntr_logical_shape.empty()) {
+      out << ",\"nntr_logical_shape\":[";
+      for (size_t i = 0; i < e.nntr_logical_shape.size(); ++i) {
+        if (i > 0)
+          out << ",";
+        out << e.nntr_logical_shape[i];
+      }
+      out << "]";
+    }
+    out << "}";
   }
   out << "}";
   std::string s = out.str();
