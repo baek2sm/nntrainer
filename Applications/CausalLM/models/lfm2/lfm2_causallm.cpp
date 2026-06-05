@@ -310,32 +310,34 @@ std::pair<Tensor, Tensor> Lfm2CausalLM::constructModel() {
   Tensor input_tensor;
   Tensor x;
 
-  // Always create embedding0 for: weight loading, lookupEmbedding(),
-  // and TIE_WORD_EMBEDDINGS shared_from reference.
-  const std::string embedding_type =
-    TIE_WORD_EMBEDDINGS ? "tie_word_embeddings" : "embedding_layer";
-  LayerHandle embedding(createLayer(
-    embedding_type,
-    {withKey("name", "embedding0"), withKey("weight_dtype", EMBEDDING_DTYPE),
-     withKey("in_dim", NUM_VOCAB), withKey("out_dim", DIM)}));
-
-  if (!USE_EMBEDDING) {
+  if (USE_EMBEDDING) {
+    // VL path: pre-computed embeddings are passed directly as float tensors.
+    // No embedding layer in the graph; weight file layout is:
+    //   [layer weights (body)] | [output_norm weight] | [lm_head weight]
+    // The embedding table is loaded separately from embedding_bin_path via
+    // loadEmbeddingWeight() and used for generation-step token lookup.
+    LayerHandle input_layer = createLayer(
+      "input",
+      {withKey("name", "input0"),
+       withKey("input_shape",
+               "1:1:" + std::to_string(INIT_SEQ_LEN) + ":" +
+                 std::to_string(DIM))});
+    input_tensor = input_layer(Tensor());
+    x = input_tensor;
+  } else {
     // Standard path: token IDs → embedding → transformer
     LayerHandle input_layer = createLayer(
       "input", {withKey("name", "input0"),
                 withKey("input_shape", "1:1:" + std::to_string(INIT_SEQ_LEN))});
     input_tensor = input_layer(Tensor());
+
+    const std::string embedding_type =
+      TIE_WORD_EMBEDDINGS ? "tie_word_embeddings" : "embedding_layer";
+    LayerHandle embedding(createLayer(
+      embedding_type,
+      {withKey("name", "embedding0"), withKey("weight_dtype", EMBEDDING_DTYPE),
+       withKey("in_dim", NUM_VOCAB), withKey("out_dim", DIM)}));
     x = embedding(input_tensor);
-  } else {
-    // Embedding bypass: pre-computed embeddings → transformer directly.
-    // embedding0 exists in graph but is disconnected from the data path,
-    // so it is not executed during forward but its weights are still loaded.
-    LayerHandle input_layer = createLayer(
-      "input", {withKey("name", "input0"),
-                withKey("input_shape", "1:" + std::to_string(INIT_SEQ_LEN) +
-                                         ":" + std::to_string(DIM))});
-    input_tensor = input_layer(Tensor());
-    x = input_tensor;
   }
 
   // Hybrid transformer blocks
