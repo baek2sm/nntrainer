@@ -614,6 +614,31 @@ void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
 #if defined(__aarch64__) || defined(_M_ARM64)
   nntrainer::neon::causal_depthwise_conv1d_k3(input, packed_weight, bias,
                                               output, B, H, W);
+#else
+  const float *w0 = packed_weight;
+  const float *w1 = packed_weight + W;
+  const float *w2 = packed_weight + 2 * W;
+
+  for (unsigned int b = 0; b < B; ++b) {
+    const float *x_base = input + static_cast<size_t>(b) * H * W;
+    float *y_base = output + static_cast<size_t>(b) * H * W;
+
+    for (unsigned int c = 0; c < W; ++c) {
+      float prev2 = 0.0f;
+      float prev1 = 0.0f;
+
+      for (unsigned int t = 0; t < H; ++t) {
+        const float cur = x_base[static_cast<size_t>(t) * W + c];
+        float acc = cur * w0[c] + prev1 * w1[c] + prev2 * w2[c];
+        if (bias)
+          acc += bias[c];
+        y_base[static_cast<size_t>(t) * W + c] = acc;
+
+        prev2 = prev1;
+        prev1 = cur;
+      }
+    }
+  }
 #endif
 }
 

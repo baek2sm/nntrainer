@@ -33,11 +33,12 @@
 
 #include "nntr_ggml_impl_common.h"
 
-#ifdef ARMV7
-#define VFMAQ_F32(_X, _Y, _Z) vaddq_f32(_X, vmulq_f32(_Y, _Z))
+#if defined(__aarch64__) || defined(_M_ARM64)
+#define NEON_MACC_F32(_X, _Y, _Z) vfmaq_f32(_X, _Y, _Z)
 #else
-#define VFMAQ_F32(_X, _Y, _Z) vfmaq_f32(_X, _Y, _Z)
+#define NEON_MACC_F32(_X, _Y, _Z) vmlaq_f32(_X, _Y, _Z)
 #endif
+#define VFMAQ_F32(_X, _Y, _Z) NEON_MACC_F32(_X, _Y, _Z)
 
 namespace nntrainer::neon {
 static inline void __ele_qmul_kernel(int8_t *lhs, int8_t *rhs, int8_t *res,
@@ -2200,8 +2201,8 @@ void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
           const float32x4_t cur = vld1q_f32(x_ptr);
 
           float32x4_t vy = vmulq_f32(cur, vw0);
-          vy = vmlaq_f32(vy, prev1, vw1);
-          vy = vmlaq_f32(vy, prev2, vw2);
+          vy = NEON_MACC_F32(vy, prev1, vw1);
+          vy = NEON_MACC_F32(vy, prev2, vw2);
           vy = vaddq_f32(vy, vb);
 
           vst1q_f32(y_ptr, vy);
@@ -2245,8 +2246,8 @@ void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
           const float32x4_t cur = vld1q_f32(x_ptr);
 
           float32x4_t vy = vmulq_f32(cur, vw0);
-          vy = vmlaq_f32(vy, prev1, vw1);
-          vy = vmlaq_f32(vy, prev2, vw2);
+          vy = NEON_MACC_F32(vy, prev1, vw1);
+          vy = NEON_MACC_F32(vy, prev2, vw2);
 
           vst1q_f32(y_ptr, vy);
 
@@ -2302,8 +2303,8 @@ void causal_depthwise_conv1d_k3_decode(const float *x_cur,
     const float32x4_t vs0 = vld1q_f32(s0 + c);
 
     float32x4_t vy = vmulq_f32(vw0, vx);
-    vy = vmlaq_f32(vy, vw1, vs1);
-    vy = vmlaq_f32(vy, vw2, vs0);
+    vy = NEON_MACC_F32(vy, vw1, vs1);
+    vy = NEON_MACC_F32(vy, vw2, vs0);
     vst1q_f32(y_cur + c, vy);
 
     // Update state: s0 <- s1, s1 <- x_cur
