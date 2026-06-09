@@ -243,7 +243,7 @@ pattern each family uses.
 - `Qwen3SlimMoeForCausalLM` -> `Qwen3SlimMoECausalLM`
 - `Qwen3CachedSlimMoeForCausalLM` -> `Qwen3CachedSlimMoECausalLM`
 - `GptOssForCausalLM` -> `GptOssForCausalLM`
-- `GptOssCachedSlimForCausalLM` -> `GptOssCachedSlimCausalLM`
+- `GptOssCachedSlimCausalLM` -> `GptOssCachedSlimCausalLM`
 - `Gemma3ForCausalLM` -> `Gemma3CausalLM`
 
 ### 7.2 Embedding and encoder-style models
@@ -258,6 +258,137 @@ pattern each family uses.
 
 ### 7.3 Platform differences
 
+The model list is not identical across platforms.
+
+- Windows excludes some cached-slim and BERT-family variants.
+- Android follows the same overall family graph as non-Windows, but the build
+  system still applies platform guards in the entry points.
+- The exact buildable set is documented in [`07-causallm-model-index.md`](07-causallm-model-index.md).
+
+---
+
+## 8. Implementation patterns
+
+This section is the part that matters when you need to understand how a model
+is actually built. The code does not define models as one monolithic block.
+It composes them from reusable nntrainer layers through `createLayer()`.
+
+### 8.1 Shared construction pattern
+
+Most model classes follow the same shape:
+
+1. `setupParameters()` reads config and fills derived dimensions or flags.
+2. `registerCustomLayers()` registers application-only layer factories.
+3. `constructModel()` builds the symbolic graph.
+4. `createAttention()` and `createMlp()` are overridden where the family needs
+   a different block shape.
+5. `run()` in the runtime class drives tokenization, cache binding, and
+   decoding.
+
+The key point is that `createLayer()` is the assembly primitive. A family
+class does not handcraft a tensor engine. It instantiates named layer objects,
+feeds tensors between them, and lets nntrainer compile the resulting graph.
+
+### 8.2 Base transformer graph
+
+`Transformer::constructModel()` defines the shared skeleton:
+
+- input tensor creation,
+- token embedding or shared embedding,
+- repeated decoder block construction,
+- final RMSNorm,
+- return of graph endpoints.
+
+`Transformer::createTransformerDecoderBlock()` is the template for one block:
+
+1. attention norm
+2. `createAttention()`
+3. residual addition
+4. FFN norm
+5. `createMlp()`
+6. final residual addition
+
+This is the common contract that all decoder-style model families inherit.
+
+### 8.3 Attention pattern
+
+The default attention path is assembled from the following pieces:
+
+- `fully_connected` for `wq`
+- `fully_connected` for `wk`
+- `fully_connected` for `wv`
+- `mha_core` for the attention core
+- `fully_connected` for `wo`
+
+The family override changes the pre-processing around the attention core, not
+the fact that attention is built from named sublayers.
+
+Examples:
+
+- `Qwen3Transformer` adds `reshaped_rms_norm` on the query and key branches
+  before `mha_core`.
+- `Gemma3Transformer` adds query/key normalization and uses family-specific
+  `mha_core` settings such as sliding-window and position limits.
+- `BertTransformer` and `DebertaV2` use their own attention wiring but still
+  assemble the graph by composing `createLayer()` calls.
+
+### 8.4 MLP pattern
+
+The default feed-forward path is:
+
+- `fully_connected` for up projection,
+- `fully_connected` for gate projection,
+- `swiglu`,
+- `fully_connected` for down projection.
+
+Families override this when the architecture needs a different block:
+
+- `Qwen3MoE` and `GptOss` use the custom `qwen_moe` layer for MoE routing.
+- `Gemma3Transformer` uses a gated MLP with `gelu` and `multiply`.
+- Vision and encoder-style models often replace the causal MLP contract with
+  their own per-block projection stack.
+
+### 8.5 Custom layer registration
+
+Model code registers application-only layers at runtime through the app
+context:
+
+- `SwiGLULayer`
+- `RMSNormLayer`
+- `MHACoreLayer`
+- `TieWordEmbedding`
+- `EmbeddingLayer`
+- `LmHeadLayer`
+- `ReshapedRMSNormLayer`
+- `MoELayer`
+
+This registration step matters because the graph builder refers to these
+layers by string name. The factory registration makes those names resolvable
+when the model graph is constructed.
+
+### 8.6 Family-specific examples
+
+- `Qwen3*` families share the same base attention contract and extend it with
+  query/key reshaping and cache-aware attention.
+- `Qwen3Moe*` families replace the FFN branch with MoE routing.
+- `GptOss*` families follow the same pattern as Qwen3 but use their own
+  MoE-specific wiring.
+- `Gemma3*` families add q/k norm stages and a gated MLP variant.
+- `DebertaV2` and `MultilingualTinyBert` are encoder-style paths and should be
+  read as model-specific graph builders rather than simple decoder clones.
+- `TimmViT` is the clearest non-text example: it builds patch embedding,
+  attention blocks, and projection heads from the same `createLayer()` pattern.
+
+### 8.7 What to read in code when debugging a model
+
+1. `models/transformer.cpp` for the shared skeleton.
+2. The relevant family file for attention or MLP overrides.
+3. `models/causal_lm.cpp` for LM-head and generation behavior.
+4. `layers/` for custom ops used by the family.
+5. `main.cpp` and `api/causal_lm_api.cpp` for registration and entry-point
+   behavior.
+
+---
 - Windows builds intentionally exclude some model variants that are only wired
   in on non-Windows platforms, such as certain cached-slim variants and BERT
   family paths in `meson.build`.

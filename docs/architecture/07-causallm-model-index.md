@@ -1,159 +1,104 @@
-# L7 CausalLM Model Index
+# L7 CausalLM Supported Models
 
-> **Layer 7.** Folder-by-folder index for `Applications/CausalLM/models/`.
-> This page exists so a contributor can find the right implementation family
-> before reading code.
+> **Layer 7.** This page is the support matrix for `Applications/CausalLM/`.
+> It focuses on the models you can actually load, the class families behind
+> them, and the platform split. It intentionally does not split the tree by
+> implementation folder.
 
 ---
 
 ## 1. Responsibility
 
-Map each model family folder to the concrete classes, the shared base classes,
-and the platform constraints that matter.
+Document the supported model list, the class family behind each model, and the
+platform matrix that determines whether the model is available on Windows,
+Android, or non-Windows builds.
 
 ---
 
-## 2. Shared model files
+## 2. Supported model list
 
-These are the files every model family builds on.
+### 2.1 Decoder-only causal models
 
-| File | Role |
-|---|---|
-| `transformer.{h,cpp}` | Shared runtime foundation: config parsing, tokenizer loading, graph construction, initialize/load/run flow, save/load helpers. |
-| `causal_lm.{h,cpp}` | Decoder-only specialization: LM head, KV cache, generation loop, output decoding. |
-| `sentence_transformer.{h,cpp}` | Embedding / sentence-style runtime path. |
-| `performance_metrics.h` | Runtime metrics structure returned by the model paths. |
-| `meson.build` | Root model build graph and platform-gated subdirectories. |
+| Model key | Runtime class | Notes |
+|---|---|---|
+| `LlamaForCausalLM` | `causallm::CausalLM` | Base decoder-only path. |
+| `Qwen2ForCausalLM` | `causallm::Qwen2CausalLM` | Qwen2 causal path. |
+| `Qwen3ForCausalLM` | `causallm::Qwen3CausalLM` | Main Qwen3 causal path. |
+| `Qwen3MoeForCausalLM` | `causallm::Qwen3MoECausalLM` | Qwen3 MoE causal path. |
+| `Qwen3SlimMoeForCausalLM` | `causallm::Qwen3SlimMoECausalLM` | Slim MoE path. |
+| `Qwen3CachedSlimMoeForCausalLM` | `causallm::Qwen3CachedSlimMoECausalLM` | Cached slim MoE path. |
+| `GptOssForCausalLM` | `causallm::GptOssForCausalLM` | GPT-OSS causal path. |
+| `GptOssCachedSlimCausalLM` | `causallm::GptOssCachedSlimCausalLM` | Cached slim GPT-OSS path. |
+| `Gemma3ForCausalLM` | `causallm::Gemma3CausalLM` | Gemma3 causal path. |
 
----
+### 2.2 Embedding / encoder-style models
 
-## 3. Family folders
-
-### 3.1 `qwen2/`
-
-- `qwen2_causallm.{h,cpp}`
-- `qwen2_embedding.{h,cpp}`
-
-Role:
-- Qwen2 causal and embedding paths.
-
-### 3.2 `qwen3/`
-
-- `qwen3_causallm.{h,cpp}`
-- `qwen3_embedding.{h,cpp}`
-
-Role:
-- Main Qwen3 family for causal and embedding models.
-
-### 3.3 `qwen3_moe/`
-
-- `qwen3_moe_causallm.{h,cpp}`
-- `qwen_moe_layer.{h,cpp}`
-
-Role:
-- Qwen3 MoE path and its expert-routing layer implementation.
-
-### 3.4 `qwen3_slim_moe/`
-
-- `qwen3_slim_moe_causallm.{h,cpp}`
-- `qwen_moe_layer_fsu.{h,cpp}`
-
-Role:
-- Slim MoE path with FSU-style on-the-fly expert loading.
-
-### 3.5 `qwen3_cached_slim_moe/`
-
-- `qwen3_cached_slim_moe_causallm.{h,cpp}`
-- `qwen_moe_layer_cached.{h,cpp}`
-
-Role:
-- Cached slim MoE path, used on non-Windows builds.
-
-### 3.6 `gpt_oss/`
-
-- `gptoss_causallm.{h,cpp}`
-- `gpt_oss_moe_layer.{h,cpp}`
-
-Role:
-- GPT-OSS causal and MoE support.
-
-### 3.7 `gpt_oss_cached_slim/`
-
-- `gptoss_cached_slim_causallm.{h,cpp}`
-- `gpt_oss_moe_layer_cached.{h,cpp}`
-
-Role:
-- Cached slim GPT-OSS path, non-Windows only.
-
-### 3.8 `gemma3/`
-
-- `gemma3_causallm.{h,cpp}`
-- `embedding_gemma.{h,cpp}`
-- `function.{h,cpp}`
-
-Role:
-- Gemma3 causal, embedding, and function/chat-template helpers.
-
-### 3.9 `deberta_v2/`
-
-- `deberta_v2.{h,cpp}`
-
-Role:
-- DeBERTa-v2 masked-LM / embedding-style path.
-
-### 3.10 `bert/`
-
-- `bert_transformer.{h,cpp}`
-- `multilingual_tinybert_16mb.{h,cpp}`
-
-Role:
-- TinyBERT / BERT-style embedding path.
-
-This folder is not built on Windows and is also excluded from Android.
-
-### 3.11 `timm_vit/`
-
-- `timm_vit_transformer.{h,cpp}`
-
-Role:
-- Vision transformer path used by the multimodal stacks.
+| Model key | Runtime class | Notes |
+|---|---|---|
+| `Qwen2Embedding` | `causallm::Qwen2Embedding` | Qwen2 embedding path. |
+| `Qwen3Embedding` | `causallm::Qwen3Embedding` | Qwen3 embedding path. |
+| `EmbeddingGemma` | `causallm::EmbeddingGemma` | Gemma3 embedding path. |
+| `DebertaV2` | `causallm::DebertaV2` | DeBERTa-v2 masked-LM / embedding path. |
+| `MultilingualTinyBert` | `causallm::MultilingualTinyBert` | TinyBERT / BERT embedding path. |
+| `TimmViT` | `causallm::TimmViTTransformer` | Vision transformer path. |
 
 ---
 
-## 4. Platform split
+## 3. Support matrix
 
 ### Windows
 
-Built:
-- `qwen2/`
-- `qwen3/`
-- `qwen3_moe/`
-- `qwen3_slim_moe/`
-- `gpt_oss/`
-- `gemma3/`
-- `deberta_v2/`
-- `timm_vit/`
+Available:
+- `LlamaForCausalLM`
+- `Qwen2ForCausalLM`
+- `Qwen2Embedding`
+- `Qwen3ForCausalLM`
+- `Qwen3MoeForCausalLM`
+- `Qwen3SlimMoeForCausalLM`
+- `Qwen3Embedding`
+- `GptOssForCausalLM`
+- `Gemma3ForCausalLM`
+- `EmbeddingGemma`
+- `DebertaV2`
+- `TimmViT`
 
-Not built:
-- `qwen3_cached_slim_moe/`
-- `gpt_oss_cached_slim/`
-- `bert/`
+Not available:
+- `Qwen3CachedSlimMoeForCausalLM`
+- `GptOssCachedSlimCausalLM`
+- `MultilingualTinyBert`
 
 ### Non-Windows
 
-Full model matrix is available, including the cached-slim and BERT paths.
+Available:
+- full list above, including the cached-slim and BERT family paths
 
 ### Android
 
-Same high-level model groups as non-Windows, but some registrations are
-guarded in `main.cpp` and `causal_lm_api.cpp` depending on the platform.
+Available:
+- same broad model families as non-Windows, but platform guards in
+  `main.cpp`, `causal_lm_api.cpp`, and `models/meson.build` may exclude some
+  variants
 
 ---
 
-## 5. What to read first
+## 4. Registration sources
 
-1. `models/meson.build`
-2. `main.cpp` or `api/causal_lm_api.cpp`
-3. The family folder you care about
-4. The shared base files if the change crosses families
+The support list comes from three places:
 
+1. `Applications/CausalLM/main.cpp` for the CLI binary
+2. `Applications/CausalLM/api/causal_lm_api.cpp` for the C API path
+3. `Applications/CausalLM/models/meson.build` for what actually gets built
+
+When those three disagree, the platform build graph wins.
+
+---
+
+## 5. What a reader should learn here
+
+- Which model names are valid entry points.
+- Which C++ class implements each model.
+- Which models are intentionally missing on Windows.
+- Which model families are embedding vs causal.
+- Which files to inspect first when a model fails to load.
+- Which families are built from the shared `createLayer()`-based transformer
+  skeleton and which ones override attention or FFN assembly.
