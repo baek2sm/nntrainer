@@ -48,6 +48,8 @@ Read top-down. Each layer zooms in one level deeper.
 | **L4 Cross-cutting** | [`03-crosscutting/`](03-crosscutting/) | Concerns that span subsystems: dispatch, cross-platform, memory, errors, concurrency | Anyone touching the relevant concern. |
 | **L5 Repository map** | [`05-repository-map.md`](05-repository-map.md) | A project-wide guide to the root folders, application surfaces, and build entry points | New contributors, agents, reviewers. |
 | **L6 CausalLM surface** | [`06-application-surface-causallm.md`](06-application-surface-causallm.md) | The C++ model hierarchy and runtime path for `Applications/CausalLM/` | Anyone touching CausalLM models or app resources. |
+| **L7 CausalLM model index** | [`07-causallm-model-index.md`](07-causallm-model-index.md) | Folder-by-folder model family map and platform split | People changing model families or their build wiring. |
+| **L8 CausalLM resources** | [`08-causallm-resources.md`](08-causallm-resources.md) | The `res/` tree, weights, conversion scripts, and on-disk contract | People changing models, converters, or packaging. |
 | **Quality system** | [`04-quality-system/`](04-quality-system/) | The TDD + CI + AI-review + human-review process that makes high-velocity change safe | Maintainers, CI owners. |
 | **Decisions** | [`adr/`](adr/) | Architecture Decision Records for why the structure is the way it is | Everyone, when questioning a constraint. |
 
@@ -61,6 +63,8 @@ Read top-down. Each layer zooms in one level deeper.
 | `02-components/*.md` | `docs/components.md`, `.github/models/pr-desc/context/modules/*.md` | We give an architectural view: contracts, invariants, dependencies. `components.md` stays the feature catalog. |
 | `05-repository-map.md` | repository root folders | We give a project-wide map that tells agents where to look first before opening code. |
 | `06-application-surface-causallm.md` | `Applications/CausalLM/` | We document the C++ implementation hierarchy and runtime assembly path for the main application stack. |
+| `07-causallm-model-index.md` | `Applications/CausalLM/models/` | We document the family-by-family implementation matrix and platform availability. |
+| `08-causallm-resources.md` | `Applications/CausalLM/res/` | We document the on-disk model and weight contract, including converters. |
 | `04-quality-system/*` | `AGENTS.md`, `.github/workflows/`, `review-for-nntr` | We design the target system. The workflows and `AGENTS.md` are the current implementation; the quality-system docs describe both current state and the enhancement plan. |
 
 ---

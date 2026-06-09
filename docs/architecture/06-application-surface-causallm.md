@@ -223,6 +223,8 @@ what graph to execute.
 | `res/` | Shipped model assets and conversion scripts. |
 | `api/` | C API surface for embedding the runtime elsewhere. |
 | `third_party/minja/` | Chat template engine used at runtime. |
+| [`07-causallm-model-index.md`](07-causallm-model-index.md) | Model-family map and platform split. |
+| [`08-causallm-resources.md`](08-causallm-resources.md) | Resource tree, weight formats, and conversion scripts. |
 
 ---
 
