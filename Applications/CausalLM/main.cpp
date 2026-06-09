@@ -323,6 +323,28 @@ int main(int argc, char *argv[]) {
       generation_cfg = causallm::LoadJsonFile(generation_config_path);
     }
     json nntr_cfg = causallm::LoadJsonFile(model_path + "/nntr_config.json");
+    // Resolve relative paths in nntr_cfg against model_path so that
+    // config files with bare filenames work when run as:
+    //   nntr_causallm <model_dir>
+    // Absolute paths (e.g. for CI override) are left unchanged.
+    {
+      auto resolve_path = [&](const std::string &key) {
+        if (!nntr_cfg.contains(key))
+          return;
+        const auto val = nntr_cfg[key];
+        if (!val.is_string())
+          return;
+        const std::string s = val.get<std::string>();
+        if (s.empty())
+          return;
+        if (!std::filesystem::path(s).is_absolute())
+          nntr_cfg[key] = model_path + "/" + s;
+      };
+      resolve_path("tokenizer_file");
+      resolve_path("embedding_bin_path");
+      resolve_path("image_path");
+      resolve_path("image_tensor_path");
+    }
 
     if (nntr_cfg.contains("system_prompt")) {
       system_head_prompt =

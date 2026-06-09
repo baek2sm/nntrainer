@@ -7,53 +7,127 @@ format consumed by Lfm2CausalLM and ClipVitTransformer.
 pip install torch safetensors numpy transformers pillow huggingface_hub
 
 ## 1. Download the HuggingFace model
+```
 huggingface-cli download LiquidAI/LFM2-VL-450M --local-dir /path/to/hf_model
-(scripts only need model.safetensors)
+```
+Scripts only need `model.safetensors` from the download.
 
-## 2. Convert each component
+## 2. Create the output model directory
+```
+mkdir /path/to/model_dir
+```
+
+## 3. Convert each weight component
+
+Run all four converters from the `res/lfm2-vl/` directory:
 
 ### Vision tower
-python convert_vision_hf.py --hf-model /path/to/hf_model/model.safetensors --out-dir /path/to/out --out-name lfm2_vl_450m_vision.bin
-Note: GGUF path (vision/gguf_to_nntrainer.py) additionally writes the learnable positional
-embedding; the HF safetensors path does not.
+```
+python convert_vision_hf.py \
+  --hf-model /path/to/hf_model/model.safetensors \
+  --out-dir /path/to/model_dir \
+  --out-name lfm2_vl_450m_vision.bin
+```
 
 ### Language model
-python convert_lm.py --hf-model /path/to/hf_model/model.safetensors --out-dir /path/to/out
+```
+python convert_lm.py \
+  --hf-model /path/to/hf_model/model.safetensors \
+  --out-dir /path/to/model_dir
+```
+Output: `lfm2_vl_450m_lm.bin`
 
 ### Connector
-python convert_connector.py --hf-model /path/to/hf_model/model.safetensors --out-dir /path/to/out
-Note: connector includes LayerNorm (3072-dim) before linear_1 and linear_2.
-projector_hidden_size = 2560. Expected file size: 41,981,952 bytes.
+```
+python convert_connector.py \
+  --hf-model /path/to/hf_model/model.safetensors \
+  --out-dir /path/to/model_dir
+```
+Output: `lfm2_vl_450m_connector.bin` (includes LayerNorm 3072-dim + linear_1 + linear_2;
+projector_hidden_size=2560; expected size: 41,981,952 bytes)
 
 ### Embedding table
-python convert_embedding.py --hf-model /path/to/hf_model/model.safetensors --out-dir /path/to/out
-Shape [65536, 1024] FP32. Expected file size: 268,435,456 bytes.
+```
+python convert_embedding.py \
+  --hf-model /path/to/hf_model/model.safetensors \
+  --out-dir /path/to/model_dir
+```
+Output: `lfm2_vl_450m_embedding.bin` (shape [65536, 1024] FP32; expected size: 268,435,456 bytes)
 
-## 3. Output directory layout
+## 4. Copy tokenizer and config files
+```
+cp /path/to/hf_model/tokenizer.json          /path/to/model_dir/
+cp /path/to/hf_model/tokenizer_config.json   /path/to/model_dir/
+cp /path/to/hf_model/special_tokens_map.json /path/to/model_dir/
+```
+
+## 5. Copy model config and generation config
+```
+cp res/lfm2-vl/config.json           /path/to/model_dir/
+cp res/lfm2-vl/nntr_config.json      /path/to/model_dir/
+```
+
+Create `generation_config.json` in the model dir:
+```json
+{
+  "bos_token_id": 1,
+  "eos_token_id": [7],
+  "do_sample": false,
+  "top_k": 50,
+  "top_p": 0.95,
+  "temperature": 1.0,
+  "max_new_tokens": 20
+}
+```
+
+## 6. Place an input image
+Copy or symlink any JPEG/PNG image as `sample.png` in the model dir:
+```
+cp /path/to/your/photo.jpg /path/to/model_dir/sample.png
+```
+The binary decodes the file, resizes to 256x256, and normalizes internally
+(SigLIP2: mean=std=0.5). Supported formats: JPEG, PNG, BMP.
+
+## 7. Expected model directory layout
+After steps 3-6 the directory must contain exactly these files:
+```
+lfm2_vl_450m_lm.bin           LFM2 language model (16x hybrid conv/attn layers)
 lfm2_vl_450m_vision.bin       SigLIP2 vision encoder (ClipVitTransformer)
-lfm2_vl_450m_lm.bin           LFM2 language model (16x full_attention)
 lfm2_vl_450m_connector.bin    MultiModalProjector (LayerNorm + linear_1 + linear_2)
 lfm2_vl_450m_embedding.bin    LM embedding table [65536 x 1024] FP32
-tokenizer.json                (copy from HF model dir)
-tokenizer_config.json
-special_tokens_map.json
-nntr_config.json              (see Applications/CausalLM/res/lfm2-vl/nntr_config.json)
+tokenizer.json                HuggingFace tokenizer
+tokenizer_config.json         HuggingFace tokenizer config
+special_tokens_map.json       HuggingFace special tokens map
+config.json                   Model architecture config (from res/lfm2-vl/)
+nntr_config.json              NNTrainer runtime config (from res/lfm2-vl/)
+generation_config.json        Generation parameters (bos=1, eos=[7])
+sample.png                    Input image (any JPEG/PNG/BMP)
+```
 
-## 4. Key verified facts
+## 8. Build nntr_causallm
+See `Applications/CausalLM/README.md` for build instructions.
+
+## 9. Run inference
+```
+nntr_causallm /path/to/model_dir
+```
+Or with an explicit prompt:
+```
+nntr_causallm /path/to/model_dir "What is in this image?"
+```
+
+The binary will:
+1. Load `config.json` and `nntr_config.json` from the model dir
+2. Resolve all filenames (tokenizer, weights, image) relative to the model dir
+3. Run the vision encoder on `sample.png`
+4. Merge image features with text embeddings
+5. Generate up to `num_to_generate` tokens and print the caption
+
+## 10. Key verified facts
 - Image wrapper tokens: image_start=498, image=396, image_end=499
 - Connector LayerNorm: 3072-dim, before linear projections
 - projector_hidden_size: 2560
 - Vocab size: 65536
 - Vision: SigLIP2-NaFlex 86M, 12 layers, hidden 768, patch 16, image 256x256
 - Downsample factor: 2 (pixel_unshuffle: 256 patches to 64 tokens, 768 to 3072 dim)
-- LM: 16x full_attention, hidden 1024, intermediate 3584, GQA 16/8 heads
-
-## 5. Running inference
-Build nntr_causallm.exe (see Applications/CausalLM/README.md), then:
-  nntr_causallm.exe /path/to/out "Describe the image."
-
-To pass a real image file (jpg/png/bmp), set `image_path` in nntr_config.json:
-  "image_path": "/path/to/photo.jpg"
-The binary decodes the file, resizes to 256x256, and normalizes internally
-(SigLIP2: mean=std=0.5). For a pre-made FP32 NCHW binary use `image_tensor_path`;
-if both are set, `image_path` takes precedence.
+- LM: 16x hybrid (conv/full_attention), hidden 1024, intermediate 4458 (adjusted), GQA 16/8 heads
