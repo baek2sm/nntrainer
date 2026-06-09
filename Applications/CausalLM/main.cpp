@@ -343,7 +343,6 @@ int main(int argc, char *argv[]) {
       resolve_path("tokenizer_file");
       resolve_path("embedding_bin_path");
       resolve_path("image_path");
-      resolve_path("image_tensor_path");
     }
 
     if (nntr_cfg.contains("system_prompt")) {
@@ -417,19 +416,17 @@ int main(int argc, char *argv[]) {
       vl_model.initialize();
       vl_model.load_weight(model_path);
 
-      std::string image_tensor_path;
-      // "image_path" (real image file) takes precedence over "image_tensor_path" (raw binary).
-      if (nntr_cfg.contains("image_path") &&
-          !nntr_cfg["image_path"].get<std::string>().empty()) {
-        image_tensor_path = nntr_cfg["image_path"].get<std::string>();
-      } else if (nntr_cfg.contains("image_tensor_path")) {
-        image_tensor_path =
-          nntr_cfg["image_tensor_path"].get<std::string>();
+      if (!nntr_cfg.contains("image_path") ||
+          nntr_cfg["image_path"].get<std::string>().empty()) {
+        throw std::invalid_argument(
+          "nntr_config.json must contain a non-empty 'image_path' key "
+          "pointing to a valid image file (JPEG/PNG/BMP).");
       }
+      const std::string image_path = nntr_cfg["image_path"].get<std::string>();
 #ifdef PROFILE
       start_peak_tracker();
 #endif
-      vl_model.run(image_tensor_path, input_text, do_sample, true);
+      vl_model.run(image_path, input_text, do_sample, true);
 #ifdef PROFILE
       stop_and_print_peak();
 #endif

@@ -5,7 +5,6 @@
   "embedding_bin_path": "lfm2_vl_450m_embedding.bin",
   "tokenizer_file": "tokenizer.json",
   "image_path": "sample.png",
-  "image_tensor_path": "",
   "sample_input": "Describe the image.",
   "model_tensor_type": "FP32-FP32",
   "fc_layer_dtype": "FP32",
