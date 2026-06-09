@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""LFM2-VL language model converter.
-
-Binary layout order (matching nntrainer graph node idx order):
-  1. embed_tokens.weight TRANSPOSED [DIM, NUM_VOCAB] -> embedding0 (idx=1)
-  2. Per-layer transformer weights (layers 0..15, idx=3+)
-  3. embedding_norm.weight -> output_norm (second-to-last node)
-  lm_head shares embedding0 via nntrainer weight dedup (no separate write)
-"""
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Samsung Electronics Co., Ltd. All Rights Reserved.
 ##
@@ -146,22 +138,19 @@ def main():
 
     total_bytes = 0
     with safe_open(args.hf_model, framework="pt", device="cpu") as handle:
-            with open(out_path, "wb") as out_file:
-                # embedding0 weight FIRST (graph node idx=1, before transformer layers)
-                # lm_head deduplicates with embedding0, so only one copy needed
-                total_bytes += write_tensor(handle, out_file, "embed_tokens.weight", True)
+        with open(out_path, "wb") as out_file:
+            for index in range(NUM_LAYERS):
+                ltype = LAYER_TYPES[index]
+                if ltype == "full_attention":
+                    keys = attn_layer_keys(index)
+                else:
+                    keys = conv_layer_keys(index)
+                for key, transpose, permute, flip_dims in keys:
+                    total_bytes += write_tensor(handle, out_file, key,
+                                                transpose, permute, flip_dims)
 
-                for index in range(NUM_LAYERS):
-                    ltype = LAYER_TYPES[index]
-                    if ltype == "full_attention":
-                        keys = attn_layer_keys(index)
-                    else:
-                        keys = conv_layer_keys(index)
-                    for key, transpose, permute, flip_dims in keys:
-                        total_bytes += write_tensor(handle, out_file, key,
-                                                    transpose, permute, flip_dims)
-
-                total_bytes += write_tensor(handle, out_file, "embedding_norm.weight")
+            total_bytes += write_tensor(handle, out_file, "embedding_norm.weight")
+            total_bytes += write_tensor(handle, out_file, "embed_tokens.weight", True)
 
     print(f"total bytes: {total_bytes}")
 
