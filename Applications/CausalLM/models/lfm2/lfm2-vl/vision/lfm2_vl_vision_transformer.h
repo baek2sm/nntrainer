@@ -115,6 +115,30 @@ public:
   void allocateAndBindVitKVCache();
 
   /**
+   * @brief Bilinear interpolation (align_corners=False) of position embedding.
+   *
+   * Interpolates a stored (src_h*src_w, dim) flat tensor to (dst_h*dst_w, dim).
+   * Matches HF Siglip2VisionEmbeddings.resize_positional_embeddings.
+   */
+  static std::vector<float>
+  naflexInterpPosEmbed(const std::vector<float> &src, int src_h, int src_w,
+                       int dst_h, int dst_w);
+
+  /**
+   * @brief Override load_weight to apply runtime pos-emb interpolation.
+   */
+  void load_weight(const std::string &weight_path) override;
+
+  /**
+   * @brief Run the ViT on a single pre-cropped, normalized tile.
+   *
+   * @param tile_pixels CHW float buffer
+   *                    [3 * PATCH_H*PATCH_SIZE * PATCH_W*PATCH_SIZE].
+   * @return Feature vector [BATCH_SIZE * NUM_PATCHES * DIM]
+   */
+  std::vector<float> runOnTile(const std::vector<float> &tile_pixels);
+
+  /**
    * @brief Return raw feature buffer from the last run()/runFromPixels() call.
    *        Layout: [BATCH_SIZE * NUM_PATCHES * DIM] floats (FP32).
    */
@@ -127,6 +151,7 @@ protected:
   unsigned int NUM_PATCHES;  /**< PATCH_H * PATCH_W */
   unsigned int PATCH_H;      /**< patch grid height (IMAGE_H / PATCH_SIZE) */
   unsigned int PATCH_W;      /**< patch grid width  (IMAGE_W / PATCH_SIZE) */
+  unsigned int NAFLEX_BASE_GRID{16}; /**< Base pos_embed grid size */
   std::vector<float> last_features_; /**< Output feature cache from last run()/runFromPixels() call */
 
   KVCacheManager vit_kv_cache_;       /**< External KV cache for ViT encoder. */

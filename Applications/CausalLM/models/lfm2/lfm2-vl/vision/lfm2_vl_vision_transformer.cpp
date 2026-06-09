@@ -12,9 +12,13 @@
 #include <model.h>
 
 #include "../../../../image_util.h"
+#include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -47,7 +51,9 @@ json &Lfm2VlVisionTransformer::sanitizeConfig(json &cfg) {
   if (!cfg.contains("vocab_size"))
     cfg["vocab_size"] = 0u;
   if (!cfg.contains("max_position_embeddings")) {
-    unsigned int img = cfg.value("image_size", 256u);
+    unsigned int img = cfg.contains("naflex_tile_size")
+                         ? cfg.value("naflex_tile_size", 512u)
+                         : cfg.value("image_size", 256u);
     unsigned int patch = cfg.value("patch_size", 16u);
     cfg["max_position_embeddings"] = (img / patch) * (img / patch);
   }
@@ -89,9 +95,16 @@ void Lfm2VlVisionTransformer::setupParameters(json &cfg, json &generation_cfg,
   IMAGE_SIZE = cfg.value("image_size", 256u);
   PATCH_SIZE = cfg.value("patch_size", 16u);
   NUM_CHANNELS = cfg.value("num_channels", 3u);
+  NAFLEX_BASE_GRID = cfg.value("naflex_base_grid", 16u);
+  if (cfg.contains("naflex_tile_size"))
+    IMAGE_SIZE = cfg.value("naflex_tile_size", IMAGE_SIZE);
   {
-    unsigned int img_h = cfg.value("image_height", IMAGE_SIZE);
-    unsigned int img_w = cfg.value("image_width", IMAGE_SIZE);
+    unsigned int img_h = cfg.contains("naflex_tile_size")
+                           ? IMAGE_SIZE
+                           : cfg.value("image_height", IMAGE_SIZE);
+    unsigned int img_w = cfg.contains("naflex_tile_size")
+                           ? IMAGE_SIZE
+                           : cfg.value("image_width", IMAGE_SIZE);
     PATCH_H = img_h / PATCH_SIZE;
     PATCH_W = img_w / PATCH_SIZE;
   }
@@ -351,6 +364,164 @@ void Lfm2VlVisionTransformer::allocateAndBindVitKVCache() {
   }
 
   vit_kv_cache_bound_ = true;
+}
+
+/* static */ std::vector<float>
+Lfm2VlVisionTransformer::naflexInterpPosEmbed(const std::vector<float> &src,
+                                              int src_h, int src_w, int dst_h,
+                                              int dst_w) {
+  if (src_h == dst_h && src_w == dst_w)
+    return src;
+
+  int dim = static_cast<int>(src.size()) / (src_h * src_w);
+  std::vector<float> dst(static_cast<size_t>(dst_h) * dst_w * dim);
+
+  for (int dy = 0; dy < dst_h; ++dy) {
+    float sy_f = (dy + 0.5f) * static_cast<float>(src_h) / dst_h - 0.5f;
+    sy_f = std::max(0.0f, std::min(sy_f, static_cast<float>(src_h - 1)));
+    int sy0 = static_cast<int>(sy_f);
+    int sy1 = std::min(sy0 + 1, src_h - 1);
+    float ty = sy_f - sy0;
+
+    for (int dx = 0; dx < dst_w; ++dx) {
+      float sx_f = (dx + 0.5f) * static_cast<float>(src_w) / dst_w - 0.5f;
+      sx_f = std::max(0.0f, std::min(sx_f, static_cast<float>(src_w - 1)));
+      int sx0 = static_cast<int>(sx_f);
+      int sx1 = std::min(sx0 + 1, src_w - 1);
+      float tx = sx_f - sx0;
+
+      const float *v00 = src.data() + (sy0 * src_w + sx0) * dim;
+      const float *v01 = src.data() + (sy0 * src_w + sx1) * dim;
+      const float *v10 = src.data() + (sy1 * src_w + sx0) * dim;
+      const float *v11 = src.data() + (sy1 * src_w + sx1) * dim;
+      float *out = dst.data() + (dy * dst_w + dx) * dim;
+
+      for (int d = 0; d < dim; ++d) {
+        float top = v00[d] * (1.0f - tx) + v01[d] * tx;
+        float bot = v10[d] * (1.0f - tx) + v11[d] * tx;
+        out[d] = top * (1.0f - ty) + bot * ty;
+      }
+    }
+  }
+  return dst;
+}
+
+void Lfm2VlVisionTransformer::load_weight(const std::string &weight_path) {
+  const size_t dim = static_cast<size_t>(DIM);
+  const size_t patch_size = static_cast<size_t>(PATCH_SIZE);
+  const size_t n_channels = static_cast<size_t>(NUM_CHANNELS);
+  const size_t base_n =
+    static_cast<size_t>(NAFLEX_BASE_GRID) * NAFLEX_BASE_GRID;
+  const size_t target_n = static_cast<size_t>(PATCH_H) * PATCH_W;
+
+  if (base_n == target_n) {
+    Transformer::load_weight(weight_path);
+    return;
+  }
+
+  const size_t filter_floats = dim * n_channels * patch_size * patch_size;
+  const size_t bias_floats = dim;
+  const size_t pre_pos_bytes = (filter_floats + bias_floats) * sizeof(float);
+  const size_t pos_base_bytes = base_n * dim * sizeof(float);
+
+  std::ifstream fin(weight_path, std::ios::binary | std::ios::ate);
+  if (!fin)
+    throw std::runtime_error(
+      "Lfm2VlVisionTransformer::load_weight: cannot open: " + weight_path);
+  auto file_size = static_cast<size_t>(fin.tellg());
+  fin.seekg(0, std::ios::beg);
+  std::vector<char> file_bytes(file_size);
+  fin.read(file_bytes.data(), static_cast<std::streamsize>(file_size));
+  fin.close();
+
+  if (file_size < pre_pos_bytes + pos_base_bytes)
+    throw std::runtime_error(
+      "Lfm2VlVisionTransformer::load_weight: bin too small for pos_embed");
+
+  std::vector<float> base_pos(base_n * dim);
+  std::memcpy(base_pos.data(), file_bytes.data() + pre_pos_bytes,
+              pos_base_bytes);
+
+  auto interp_pos = naflexInterpPosEmbed(
+    base_pos, static_cast<int>(NAFLEX_BASE_GRID),
+    static_cast<int>(NAFLEX_BASE_GRID), static_cast<int>(PATCH_H),
+    static_cast<int>(PATCH_W));
+
+  const size_t target_pos_bytes = target_n * dim * sizeof(float);
+  const size_t tail_offset = pre_pos_bytes + pos_base_bytes;
+  const size_t tail_size = file_size - tail_offset;
+  const size_t new_size = pre_pos_bytes + target_pos_bytes + tail_size;
+
+  std::vector<char> patched(new_size);
+  std::memcpy(patched.data(), file_bytes.data(), pre_pos_bytes);
+  std::memcpy(patched.data() + pre_pos_bytes, interp_pos.data(),
+              target_pos_bytes);
+  if (tail_size > 0)
+    std::memcpy(patched.data() + pre_pos_bytes + target_pos_bytes,
+                file_bytes.data() + tail_offset, tail_size);
+
+  std::string tmp_path = weight_path + ".naflex_tmp.bin";
+  {
+    std::ofstream fout(tmp_path, std::ios::binary);
+    if (!fout)
+      throw std::runtime_error(
+        "Lfm2VlVisionTransformer::load_weight: cannot write tmp: " + tmp_path);
+    fout.write(patched.data(), static_cast<std::streamsize>(new_size));
+  }
+
+  try {
+    Transformer::load_weight(tmp_path);
+  } catch (...) {
+    std::remove(tmp_path.c_str());
+    throw;
+  }
+  std::remove(tmp_path.c_str());
+}
+
+std::vector<float>
+Lfm2VlVisionTransformer::runOnTile(const std::vector<float> &tile_pixels) {
+  if (!is_initialized)
+    throw std::runtime_error("runOnTile: call initialize() first");
+
+  const size_t expected = static_cast<size_t>(BATCH_SIZE) * NUM_CHANNELS *
+                          PATCH_H * PATCH_SIZE * PATCH_W * PATCH_SIZE;
+  if (tile_pixels.size() != expected)
+    throw std::runtime_error("runOnTile: pixel buffer size mismatch: got " +
+                             std::to_string(tile_pixels.size()) +
+                             " expected " + std::to_string(expected));
+
+  allocateAndBindVitKVCache();
+  vit_kv_cache_.reset();
+
+  std::vector<std::pair<std::string, float *>> cache_inputs;
+  cache_inputs.reserve(static_cast<size_t>(NUM_LAYERS) * 2);
+  for (int i = 0; i < NUM_LAYERS; ++i) {
+    cache_inputs.emplace_back(
+      "cache_k_l" + std::to_string(i),
+      reinterpret_cast<float *>(vit_kv_cache_.getKeyCache(i).getData()));
+    cache_inputs.emplace_back(
+      "cache_v_l" + std::to_string(i),
+      reinterpret_cast<float *>(vit_kv_cache_.getValueCache(i).getData()));
+  }
+  std::sort(cache_inputs.begin(), cache_inputs.end(),
+            [](const auto &a, const auto &b) { return a.first < b.first; });
+
+  std::vector<float *> in_ptrs;
+  in_ptrs.reserve(1 + cache_inputs.size());
+  in_ptrs.push_back(const_cast<float *>(tile_pixels.data()));
+  for (const auto &ci : cache_inputs)
+    in_ptrs.push_back(ci.second);
+
+  std::vector<float *> vit_label;
+  auto out_ptrs = model->incremental_inference(BATCH_SIZE, in_ptrs, vit_label,
+                                               NUM_PATCHES, 0, NUM_PATCHES,
+                                               false);
+
+  if (out_ptrs.empty() || out_ptrs[0] == nullptr)
+    throw std::runtime_error("runOnTile: ViT produced no output");
+
+  const size_t n_out = static_cast<size_t>(BATCH_SIZE) * NUM_PATCHES * DIM;
+  return std::vector<float>(out_ptrs[0], out_ptrs[0] + n_out);
 }
 
 void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,

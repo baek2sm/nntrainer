@@ -8,6 +8,7 @@
  */
 
 #include "lfm2_vl_model.h"
+#include "naflex_tile.h"
 
 #include <llm_util.hpp>
 
@@ -49,6 +50,12 @@ Lfm2VlForConditionalGeneration::Lfm2VlForConditionalGeneration(
   projector_hidden_size_ = cfg.value("projector_hidden_size", 2560u);
 
   auto [text_cfg, vision_cfg] = splitConfig(cfg);
+
+  if (cfg.value("do_image_splitting", false)) {
+    unsigned int tile_size = cfg.value("tile_size", 512u);
+    vision_cfg["naflex_tile_size"] = tile_size;
+    vision_cfg["naflex_base_grid"] = 16u;
+  }
 
   // Vision encoder: Transformer base checks nntr_cfg["model_type"] == "embedding".
   // Patch the stored copy before constructing so the check passes.
@@ -136,8 +143,81 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
   if (!initialized_)
     throw std::runtime_error(
       "Lfm2VlForConditionalGeneration: call initialize() first");
-  // ViT reads an image file (stb decode + 256 resize + normalize); the patch
-  // features are cached in vit_->getLastFeatures() afterwards.
+
+  bool do_splitting = cfg_.value("do_image_splitting", false);
+  if (do_splitting) {
+    // Multi-tile NaFlex path: split the image into tiles, run ViT on each,
+    // accumulate connector embeddings, then assemble and run the LM.
+    auto [text_cfg2, vision_cfg2] = splitConfig(cfg_);
+    unsigned int patch_size = vision_cfg2.value("patch_size", 16u);
+    unsigned int vit_embed  = vision_cfg2.value("hidden_size", 768u);
+    unsigned int tile_size  = cfg_.value("tile_size", 512u);
+
+    NaFlexTilingParams tiling_params;
+    tiling_params.tile_size = static_cast<int>(tile_size);
+    tiling_params.max_tiles = cfg_.value("max_tiles", 10);
+    tiling_params.min_tiles = cfg_.value("min_tiles", 2);
+    tiling_params.use_thumbnail =
+      nntr_cfg_.value("use_thumbnail", true);
+    tiling_params.downsample_factor = static_cast<int>(downsample_factor_);
+    tiling_params.max_image_tokens = cfg_.value("max_image_tokens", 256);
+    tiling_params.encoder_patch_size = static_cast<int>(patch_size);
+    tiling_params.max_pixels_tolerance =
+      cfg_.value("max_pixels_tolerance", 2.0f);
+    tiling_params.min_image_tokens = cfg_.value("min_image_tokens", 64);
+
+    NaFlexTileResult tile_result =
+      naflexTileImage(image_tensor_path, tiling_params);
+
+    unsigned int ph = tile_size / patch_size;
+    unsigned int pw = ph;
+    unsigned int n_patches_per_tile = ph * pw;
+
+    std::cout << "[LFM2-VL] NaFlex tiling: " << tile_result.n_tiles
+              << " tile(s) (grid " << tile_result.grid_w << "x"
+              << tile_result.grid_h << "), each " << tile_size << "x"
+              << tile_size << " -> " << n_patches_per_tile << " patches"
+              << std::endl;
+
+    const char *vit_out_path = std::getenv("NNTR_VIT_OUT");
+    std::ofstream vit_dump_file;
+    if (vit_out_path)
+      vit_dump_file.open(vit_out_path, std::ios::binary | std::ios::trunc);
+
+    unsigned int n_img_tokens = 0;
+    std::vector<float> image_embeds;
+    for (int t = 0; t < tile_result.n_tiles; ++t) {
+      auto tile_features = vit_->runOnTile(tile_result.tiles[t]);
+      if (vit_dump_file.is_open())
+        vit_dump_file.write(
+          reinterpret_cast<const char *>(tile_features.data()),
+          static_cast<std::streamsize>(tile_features.size() * sizeof(float)));
+      auto tile_unshuffled =
+        pixelUnshuffle(tile_features, n_patches_per_tile, vit_embed, ph, pw,
+                       downsample_factor_);
+
+      unsigned int tile_out_tokens = connector_->outTokens(n_patches_per_tile);
+      auto tile_embeds =
+        connector_->forward(tile_unshuffled, tile_out_tokens);
+
+      image_embeds.insert(image_embeds.end(), tile_embeds.begin(),
+                          tile_embeds.end());
+      n_img_tokens += tile_out_tokens;
+    }
+    if (vit_dump_file.is_open()) {
+      vit_dump_file.close();
+      std::cout << "[NNTR_VIT_OUT] wrote " << tile_result.n_tiles
+                << " tile(s) of raw ViT features to " << vit_out_path
+                << std::endl;
+    }
+
+    runLMWithImageEmbeds(image_embeds, n_img_tokens, prompt, do_sample,
+                         log_output);
+    return;
+  }
+
+  // Single-tile path: ViT reads an image file (stb decode + resize + normalize)
+  // and caches patch features; generateFromViTFeatures handles the rest.
   vit_->run(image_tensor_path, false, "", "", true);
   generateFromViTFeatures(prompt, do_sample, log_output);
 }
@@ -183,6 +263,13 @@ void Lfm2VlForConditionalGeneration::generateFromViTFeatures(
   std::vector<float> image_embeds = // [n_img_tokens * lm_hidden]
     connector_->forward(unshuffled, n_img_tokens);
 
+  runLMWithImageEmbeds(image_embeds, n_img_tokens, prompt, do_sample,
+                       log_output);
+}
+
+void Lfm2VlForConditionalGeneration::runLMWithImageEmbeds(
+  const std::vector<float> &image_embeds, unsigned int n_img_tokens,
+  const std::string &prompt, bool do_sample, bool log_output) {
   // --- 4. Build full chat-template input_embeds ---
   // HF chat template (from hf_model/chat_template.jinja):
   //   {{bos_token}}<|im_start|>user\n<image>PROMPT<|im_end|>\n<|im_start|>assistant\n
@@ -222,9 +309,11 @@ void Lfm2VlForConditionalGeneration::generateFromViTFeatures(
   }
 
   // Allocate merged embedding buffer.
-  // Total tokens = 1 (BOS) + (token_ids.size() - n_image_placeholders) + n_img_tokens * n_image_placeholders
+  // Total tokens = 1 (BOS) + (token_ids.size() - n_image_placeholders) +
+  //                n_img_tokens * n_image_placeholders
   size_t n_text_tokens = token_ids.size() - n_image_placeholders;
-  size_t n_total_tokens = 1 + n_text_tokens + n_img_tokens * n_image_placeholders;
+  size_t n_total_tokens =
+    1 + n_text_tokens + n_img_tokens * n_image_placeholders;
   std::vector<float> merged;
   merged.reserve(n_total_tokens * lm_hidden);
 
@@ -241,7 +330,6 @@ void Lfm2VlForConditionalGeneration::generateFromViTFeatures(
     if (static_cast<int>(tid) == image_token_id_) {
       // Replace this placeholder with n_img_tokens image feature vectors.
       size_t offset = image_chunks_used * n_img_tokens * lm_hidden;
-      const float *img_start = image_embeds.data() + offset;
       merged.insert(merged.end(),
                     image_embeds.begin() + static_cast<ptrdiff_t>(offset),
                     image_embeds.begin() + static_cast<ptrdiff_t>(offset) +

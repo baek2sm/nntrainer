@@ -156,6 +156,16 @@ private:
    */
   void generateFromViTFeatures(const std::string &prompt, bool do_sample,
                                bool log_output);
+
+  /**
+   * @brief Build chat-template embeddings from pre-computed image_embeds
+   *        (n_img_tokens connector vectors per image placeholder) and run the
+   *        LM decoder.  Shared by single-tile and multi-tile NaFlex paths.
+   */
+  void runLMWithImageEmbeds(const std::vector<float> &image_embeds,
+                            unsigned int n_img_tokens,
+                            const std::string &prompt, bool do_sample,
+                            bool log_output);
 };
 
 } // namespace causallm
