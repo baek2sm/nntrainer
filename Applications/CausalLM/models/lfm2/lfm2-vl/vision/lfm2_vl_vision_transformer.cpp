@@ -11,10 +11,10 @@
 #include <llm_util.hpp>
 #include <model.h>
 
-#include <algorithm>
+#include "../../../../image_util.h"
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
-#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -361,26 +361,31 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,
       "Lfm2VlVisionTransformer is not initialized. Call initialize() first.");
   }
 
-  // Load preprocessed image tensor (raw fp32, NCHW, BATCH_SIZE x C x H x W).
+  // Load image: decode, resize to IMAGE_SIZE x IMAGE_SIZE, normalize (SigLIP2: mean=std=0.5).
   const size_t n_elems =
     static_cast<size_t>(BATCH_SIZE) * NUM_CHANNELS * PATCH_H * PATCH_SIZE *
     PATCH_W * PATCH_SIZE;
-  std::vector<float> image(n_elems);
-  std::ifstream in(image_tensor_path, std::ios::binary);
-  if (!in) {
-    throw std::runtime_error("Failed to open image tensor file: " +
-                             image_tensor_path);
-  }
-  in.read(reinterpret_cast<char *>(image.data()),
-          static_cast<std::streamsize>(n_elems * sizeof(float)));
-  if (in.gcount() != static_cast<std::streamsize>(n_elems * sizeof(float))) {
+  std::vector<float> image;
+
+  if (image_tensor_path.empty())
+    throw std::invalid_argument(
+      "Lfm2VlVisionTransformer::run(): image_path is empty. "
+      "Set 'image_path' in nntr_config.json to a valid JPEG/PNG/BMP file.");
+
+  std::cout << "[LFM2-VL ViT] loading image file: " << image_tensor_path
+            << " -> " << IMAGE_SIZE << "x" << IMAGE_SIZE << std::endl;
+  image = loadAndPreprocessImage(image_tensor_path,
+                                 static_cast<int>(IMAGE_SIZE),
+                                 static_cast<int>(IMAGE_SIZE), true);
+  if (image.size() != n_elems)
     throw std::runtime_error(
-      "Image tensor file is smaller than expected. Need " +
-      std::to_string(n_elems) + " fp32 elements (NCHW=" +
-      std::to_string(BATCH_SIZE) + "x" + std::to_string(NUM_CHANNELS) + "x" +
+      "loadAndPreprocessImage returned unexpected size for '" +
+      image_tensor_path + "'. Expected " + std::to_string(n_elems) +
+      " fp32 elements (NCHW=" + std::to_string(BATCH_SIZE) + "x" +
+      std::to_string(NUM_CHANNELS) + "x" +
       std::to_string(PATCH_H * PATCH_SIZE) + "x" +
-      std::to_string(PATCH_W * PATCH_SIZE) + ").");
-  }
+      std::to_string(PATCH_W * PATCH_SIZE) + "). " +
+      "Ensure the file is a decodable JPEG/PNG/BMP image.");
 
   // Allocate and bind external KV cache buffers (no-op after first call).
   allocateAndBindVitKVCache();

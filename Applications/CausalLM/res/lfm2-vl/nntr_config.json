@@ -1,0 +1,19 @@
+{
+  "model_file_name": "lfm2_vl_450m_lm.bin",
+  "vision_model_file": "lfm2_vl_450m_vision.bin",
+  "connector_model_file": "lfm2_vl_450m_connector.bin",
+  "embedding_bin_path": "lfm2_vl_450m_embedding.bin",
+  "tokenizer_file": "tokenizer.json",
+  "image_path": "sample.png",
+  "sample_input": "Describe the image.",
+  "model_tensor_type": "FP32-FP32",
+  "fc_layer_dtype": "FP32",
+  "embedding_dtype": "FP32",
+  "batch_size": 1,
+  "init_seq_len": 128,
+  "max_seq_len": 512,
+  "num_to_generate": 20,
+  "use_embedding": true,
+  "skip_tokenizer": false,
+  "bad_word_ids": []
+}

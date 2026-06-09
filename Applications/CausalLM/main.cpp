@@ -323,6 +323,27 @@ int main(int argc, char *argv[]) {
       generation_cfg = causallm::LoadJsonFile(generation_config_path);
     }
     json nntr_cfg = causallm::LoadJsonFile(model_path + "/nntr_config.json");
+    // Resolve relative paths in nntr_cfg against model_path so that
+    // config files with bare filenames work when run as:
+    //   nntr_causallm <model_dir>
+    // Absolute paths (e.g. for CI override) are left unchanged.
+    {
+      auto resolve_path = [&](const std::string &key) {
+        if (!nntr_cfg.contains(key))
+          return;
+        const auto val = nntr_cfg[key];
+        if (!val.is_string())
+          return;
+        const std::string s = val.get<std::string>();
+        if (s.empty())
+          return;
+        if (!std::filesystem::path(s).is_absolute())
+          nntr_cfg[key] = model_path + "/" + s;
+      };
+      resolve_path("tokenizer_file");
+      resolve_path("embedding_bin_path");
+      resolve_path("image_path");
+    }
 
     if (nntr_cfg.contains("system_prompt")) {
       system_head_prompt =
@@ -395,15 +416,17 @@ int main(int argc, char *argv[]) {
       vl_model.initialize();
       vl_model.load_weight(model_path);
 
-      std::string image_tensor_path;
-      if (nntr_cfg.contains("image_tensor_path")) {
-        image_tensor_path =
-          nntr_cfg["image_tensor_path"].get<std::string>();
+      if (!nntr_cfg.contains("image_path") ||
+          nntr_cfg["image_path"].get<std::string>().empty()) {
+        throw std::invalid_argument(
+          "nntr_config.json must contain a non-empty 'image_path' key "
+          "pointing to a valid image file (JPEG/PNG/BMP).");
       }
+      const std::string image_path = nntr_cfg["image_path"].get<std::string>();
 #ifdef PROFILE
       start_peak_tracker();
 #endif
-      vl_model.run(image_tensor_path, input_text, do_sample, true);
+      vl_model.run(image_path, input_text, do_sample, true);
 #ifdef PROFILE
       stop_and_print_peak();
 #endif
