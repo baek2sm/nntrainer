@@ -215,8 +215,8 @@ void LayerNormalizationLayer::incremental_forwarding(RunLayerContext &context,
   deviation.multiply(inv_std_dev, output);
 #else
   // Optimized path for FP32 tensors with width-axis-only normalization.
-  // Uses NEON intrinsic (rms_norm_wrt_width_fp16_intrinsic) which:
-  // - Accumulates in FP16 for better performance
+  // Uses NEON/AVX2 intrinsic (rms_norm_wrt_width_fp32_intrinsic) which:
+  // - Accumulates in FP32 (the fp16 variant is deprecated: overflows in fp16)
   // - Computes: output = deviation / sqrt(mean(deviation^2) + epsilon)
   // - Supports incremental decoding with [from, to) row range
   // - Processes all batches and channels
@@ -237,13 +237,13 @@ void LayerNormalizationLayer::incremental_forwarding(RunLayerContext &context,
       for (unsigned int c = 0; c < input_dim.channel(); ++c) {
         const float *src = deviation.getAddress<float>(b, c, row_begin, 0);
         float *dst = output.getAddress<float>(b, c, row_begin, 0);
-        // NOTE: rms_norm_wrt_width_fp16_intrinsic is reused here for Layer
+        // NOTE: rms_norm_wrt_width_fp32_intrinsic is reused here for Layer
         // Normalization. Since 'deviation' is already centered (X - mean),
         // computing:
         //   output = deviation / sqrt(mean(deviation^2) + epsilon)
         // is equivalent to Layer Norm's formula:
         //   output = (X - mean_X) / sqrt(variance + epsilon)
-        nntrainer::rms_norm_wrt_width_fp16_intrinsic(src, dst, row_count, W,
+        nntrainer::rms_norm_wrt_width_fp32_intrinsic(src, dst, row_count, W,
                                                      epsilon);
       }
     }

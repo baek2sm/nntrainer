@@ -345,36 +345,56 @@ void MHACoreLayer::forwarding(nntrainer::RunLayerContext &context,
 
     if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
 #if ENABLE_FP16 && defined(__ANDROID__)
-      nntrainer::TensorDim Q_step_dim = query_step_dim;
-      nntrainer::TensorDim K_step_dim = key_step_dim;
-      nntrainer::TensorDim V_step_dim = value_step_dim;
-      nntrainer::TensorDim O_step_dim = output_step_dim;
-      Q_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
-      K_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
-      V_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
-      O_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+      // The Android decode path runs attention in FP16, but only when the
+      // external KV cache is itself FP16 (the autoregressive LM case). A
+      // bidirectional encoder (e.g. the SigLIP2 vision tower) binds an FP32
+      // KV cache; converting Q/K/V to FP16 against an FP32 cache yields a
+      // dtype mismatch and garbage output, so route FP32 caches through the
+      // FP32 path used on host.
+      const bool fp16_cache =
+        cache_key.getDataType() == ml::train::TensorDim::DataType::FP16;
+      if (fp16_cache) {
+        nntrainer::TensorDim Q_step_dim = query_step_dim;
+        nntrainer::TensorDim K_step_dim = key_step_dim;
+        nntrainer::TensorDim V_step_dim = value_step_dim;
+        nntrainer::TensorDim O_step_dim = output_step_dim;
+        Q_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+        K_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+        V_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+        O_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
 
-      nntrainer::Tensor Q_step = nntrainer::Tensor(Q_step_dim, true);
-      nntrainer::Tensor K_step = nntrainer::Tensor(K_step_dim, true);
-      nntrainer::Tensor V_step = nntrainer::Tensor(V_step_dim, true);
-      nntrainer::Tensor O_step = nntrainer::Tensor(O_step_dim, true);
+        nntrainer::Tensor Q_step = nntrainer::Tensor(Q_step_dim, true);
+        nntrainer::Tensor K_step = nntrainer::Tensor(K_step_dim, true);
+        nntrainer::Tensor V_step = nntrainer::Tensor(V_step_dim, true);
+        nntrainer::Tensor O_step = nntrainer::Tensor(O_step_dim, true);
 
-      Q_step.copyData(query_step);
-      K_step.copyData(key_step);
-      V_step.copyData(value_step);
+        Q_step.copyData(query_step);
+        K_step.copyData(key_step);
+        V_step.copyData(value_step);
 
-      if (use_sink) {
+        if (use_sink) {
+          one_batch_incremental_forwarding(
+            batch, from, from, to, Q_step, K_step, V_step, O_step, cache_key,
+            cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
+            cache_value_step_dim, sink);
+        } else {
+          one_batch_incremental_forwarding(
+            batch, from, from, to, Q_step, K_step, V_step, O_step, cache_key,
+            cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
+            cache_value_step_dim);
+        }
+        output_step.copyData(O_step);
+      } else if (use_sink) {
         one_batch_incremental_forwarding(
-          batch, from, from, to, Q_step, K_step, V_step, O_step, cache_key,
-          cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
-          cache_value_step_dim, sink);
+          batch, from, from, to, query_step, key_step, value_step, output_step,
+          cache_key, cache_value, cache_key_dim, cache_key_step_dim,
+          cache_value_dim, cache_value_step_dim, sink);
       } else {
-        one_batch_incremental_forwarding(batch, from, from, to, Q_step, K_step,
-                                         V_step, O_step, cache_key, cache_value,
-                                         cache_key_dim, cache_key_step_dim,
-                                         cache_value_dim, cache_value_step_dim);
+        one_batch_incremental_forwarding(
+          batch, from, from, to, query_step, key_step, value_step, output_step,
+          cache_key, cache_value, cache_key_dim, cache_key_step_dim,
+          cache_value_dim, cache_value_step_dim);
       }
-      output_step.copyData(O_step);
 #else
       if (use_sink) {
         one_batch_incremental_forwarding(
