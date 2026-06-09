@@ -13,9 +13,7 @@
 
 #include "timm_vit_transformer.h"
 #define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.inc"
-#include <algorithm>
-#include <cmath>
+#include "../../image_util.h"
 #include <factory.h>
 #include <iomanip>
 #include <llm_util.hpp>
@@ -24,106 +22,6 @@
 #include <vector>
 
 namespace causallm {
-
-/**
- * @brief Resize an interleaved image buffer with bilinear interpolation.
- */
-static std::vector<unsigned char> resizeImage(const unsigned char *src,
-                                              int src_w, int src_h,
-                                              int channels, int dst_w,
-                                              int dst_h) {
-  std::vector<unsigned char> dst(dst_w * dst_h * channels);
-  float x_ratio = static_cast<float>(src_w) / static_cast<float>(dst_w);
-  float y_ratio = static_cast<float>(src_h) / static_cast<float>(dst_h);
-
-  for (int y = 0; y < dst_h; ++y) {
-    for (int x = 0; x < dst_w; ++x) {
-      float px = x * x_ratio;
-      float py = y * y_ratio;
-      int x0 = static_cast<int>(std::floor(px));
-      int y0 = static_cast<int>(std::floor(py));
-      int x1 = std::min(x0 + 1, src_w - 1);
-      int y1 = std::min(y0 + 1, src_h - 1);
-      float fx = px - x0;
-      float fy = py - y0;
-
-      for (int c = 0; c < channels; ++c) {
-        float v00 = src[(y0 * src_w + x0) * channels + c];
-        float v10 = src[(y0 * src_w + x1) * channels + c];
-        float v01 = src[(y1 * src_w + x0) * channels + c];
-        float v11 = src[(y1 * src_w + x1) * channels + c];
-        float v0 = v00 * (1.0f - fx) + v10 * fx;
-        float v1 = v01 * (1.0f - fx) + v11 * fx;
-        dst[(y * dst_w + x) * channels + c] =
-          static_cast<unsigned char>(std::round(v0 * (1.0f - fy) + v1 * fy));
-      }
-    }
-  }
-
-  return dst;
-}
-
-/**
- * @brief Load, resize, and normalize an image into CHW float data.
- */
-static std::vector<float> loadAndPreprocessImage(const std::string &filepath,
-                                                 int target_width,
-                                                 int target_height,
-                                                 bool normalize) {
-  int width, height, channels;
-  unsigned char *image =
-    stbi_load(filepath.c_str(), &width, &height, &channels, STBI_default);
-  if (!image) {
-    throw std::runtime_error("Failed to load image: " + filepath);
-  }
-
-  unsigned char *data = image;
-  std::vector<unsigned char> resized_data;
-  if (width != target_width || height != target_height) {
-    resized_data =
-      resizeImage(image, width, height, channels, target_width, target_height);
-    data = resized_data.data();
-  }
-
-  std::vector<unsigned char> rgb_data;
-  unsigned char *rgb = data;
-  if (channels == 1) {
-    rgb_data.resize(target_width * target_height * 3);
-    for (int i = 0; i < target_width * target_height; ++i) {
-      rgb_data[i * 3] = data[i];
-      rgb_data[i * 3 + 1] = data[i];
-      rgb_data[i * 3 + 2] = data[i];
-    }
-    rgb = rgb_data.data();
-  } else if (channels == 4) {
-    rgb_data.resize(target_width * target_height * 3);
-    for (int i = 0; i < target_width * target_height; ++i) {
-      rgb_data[i * 3] = data[i * 4];
-      rgb_data[i * 3 + 1] = data[i * 4 + 1];
-      rgb_data[i * 3 + 2] = data[i * 4 + 2];
-    }
-    rgb = rgb_data.data();
-  } else if (channels != 3) {
-    stbi_image_free(image);
-    throw std::runtime_error("Unsupported number of channels: " +
-                             std::to_string(channels));
-  }
-
-  std::vector<float> output(3 * target_height * target_width);
-  for (int c = 0; c < 3; ++c) {
-    for (int y = 0; y < target_height; ++y) {
-      for (int x = 0; x < target_width; ++x) {
-        unsigned char val = rgb[y * target_width * 3 + x * 3 + c];
-        float pixel =
-          normalize ? (val / 255.0f - 0.5f) / 0.5f : static_cast<float>(val);
-        output[c * target_height * target_width + y * target_width + x] = pixel;
-      }
-    }
-  }
-
-  stbi_image_free(image);
-  return output;
-}
 
 /**
  * @brief Set ViT-specific parameters from model and runtime configs.

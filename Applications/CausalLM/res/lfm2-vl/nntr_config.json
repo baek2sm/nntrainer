@@ -1,0 +1,10 @@
+{
+  "model_file_name": "lfm2_vl_450m_lm.bin",
+  "vision_model_file": "lfm2_vl_450m_vision.bin",
+  "connector_model_file": "lfm2_vl_450m_connector.bin",
+  "image_path": "",
+  "image_tensor_path": "",
+  "sample_input": "Describe the image.",
+  "max_new_tokens": 128,
+  "skip_tokenizer": false
+}

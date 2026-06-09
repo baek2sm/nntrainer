@@ -11,8 +11,11 @@
 #include <llm_util.hpp>
 #include <model.h>
 
+#include "../../../../image_util.h"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -361,25 +364,54 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,
       "Lfm2VlVisionTransformer is not initialized. Call initialize() first.");
   }
 
-  // Load preprocessed image tensor (raw fp32, NCHW, BATCH_SIZE x C x H x W).
+  // Load image: detect whether path is a real image file or a raw FP32 binary.
   const size_t n_elems =
     static_cast<size_t>(BATCH_SIZE) * NUM_CHANNELS * PATCH_H * PATCH_SIZE *
     PATCH_W * PATCH_SIZE;
-  std::vector<float> image(n_elems);
-  std::ifstream in(image_tensor_path, std::ios::binary);
-  if (!in) {
-    throw std::runtime_error("Failed to open image tensor file: " +
-                             image_tensor_path);
-  }
-  in.read(reinterpret_cast<char *>(image.data()),
-          static_cast<std::streamsize>(n_elems * sizeof(float)));
-  if (in.gcount() != static_cast<std::streamsize>(n_elems * sizeof(float))) {
-    throw std::runtime_error(
-      "Image tensor file is smaller than expected. Need " +
-      std::to_string(n_elems) + " fp32 elements (NCHW=" +
-      std::to_string(BATCH_SIZE) + "x" + std::to_string(NUM_CHANNELS) + "x" +
-      std::to_string(PATCH_H * PATCH_SIZE) + "x" +
-      std::to_string(PATCH_W * PATCH_SIZE) + ").");
+  std::vector<float> image;
+
+  // Check for known image-file extensions (case-insensitive suffix match).
+  auto isImageFile = [](const std::string &p) -> bool {
+    static const char *exts[] = {".jpg", ".jpeg", ".png", ".bmp",
+                                 ".gif", ".tga",  ".hdr", ".pic"};
+    std::string lp = p;
+    std::transform(lp.begin(), lp.end(), lp.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    for (const char *e : exts) {
+      if (lp.size() >= strlen(e) &&
+          lp.compare(lp.size() - strlen(e), strlen(e), e) == 0)
+        return true;
+    }
+    return false;
+  };
+
+  if (isImageFile(image_tensor_path)) {
+    // Real image file: decode, resize to IMAGE_SIZE x IMAGE_SIZE, normalize.
+    std::cout << "[LFM2-VL ViT] loading image file: " << image_tensor_path
+              << " -> " << IMAGE_SIZE << "x" << IMAGE_SIZE << std::endl;
+    image = loadAndPreprocessImage(image_tensor_path,
+                                   static_cast<int>(IMAGE_SIZE),
+                                   static_cast<int>(IMAGE_SIZE), true);
+    if (image.size() != n_elems)
+      throw std::runtime_error("loadAndPreprocessImage returned unexpected size");
+  } else {
+    // Legacy raw FP32 binary (NCHW, BATCH_SIZE x C x H x W).
+    image.resize(n_elems);
+    std::ifstream in(image_tensor_path, std::ios::binary);
+    if (!in) {
+      throw std::runtime_error("Failed to open image tensor file: " +
+                               image_tensor_path);
+    }
+    in.read(reinterpret_cast<char *>(image.data()),
+            static_cast<std::streamsize>(n_elems * sizeof(float)));
+    if (in.gcount() != static_cast<std::streamsize>(n_elems * sizeof(float))) {
+      throw std::runtime_error(
+        "Image tensor file is smaller than expected. Need " +
+        std::to_string(n_elems) + " fp32 elements (NCHW=" +
+        std::to_string(BATCH_SIZE) + "x" + std::to_string(NUM_CHANNELS) + "x" +
+        std::to_string(PATCH_H * PATCH_SIZE) + "x" +
+        std::to_string(PATCH_W * PATCH_SIZE) + ").");
+    }
   }
 
   // Allocate and bind external KV cache buffers (no-op after first call).

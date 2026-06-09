@@ -396,7 +396,11 @@ int main(int argc, char *argv[]) {
       vl_model.load_weight(model_path);
 
       std::string image_tensor_path;
-      if (nntr_cfg.contains("image_tensor_path")) {
+      // "image_path" (real image file) takes precedence over "image_tensor_path" (raw binary).
+      if (nntr_cfg.contains("image_path") &&
+          !nntr_cfg["image_path"].get<std::string>().empty()) {
+        image_tensor_path = nntr_cfg["image_path"].get<std::string>();
+      } else if (nntr_cfg.contains("image_tensor_path")) {
         image_tensor_path =
           nntr_cfg["image_tensor_path"].get<std::string>();
       }
