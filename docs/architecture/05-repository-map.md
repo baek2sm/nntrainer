@@ -40,8 +40,10 @@ This tree is organized around two distinct axes:
 1. The **core library path**: `nntrainer/` is the runtime engine, tensor system,
    backends, and layer implementations.
 2. The **application path**: `Applications/CausalLM/` is a full product surface
-   on top of the core library, with its own CLI, API, models, layers, and
-   shipped resources.
+   on top of the core library, with its own CLI, API, C++ model hierarchy,
+   custom layers, and shipped resources. This is the most important application
+   tree in the repository and should usually be read before the smaller example
+   apps.
 
 The documentation in `docs/architecture/` describes the core library in the
 same layered way as the runtime itself. This file bridges that core map to the
@@ -123,7 +125,7 @@ scripts.
 Applications/CausalLM/
   main.cpp                  CLI entry point
   api/                      C API wrapper and model config registry
-  models/                   Model families and shared transformer runtime
+  models/                   Shared Transformer/CausalLM runtime and model families
   layers/                   Custom layers used by application models
   res/                      Shipped model assets and conversion scripts
   third_party/minja/        Chat-template renderer
@@ -138,7 +140,7 @@ The major runtime path is:
 flowchart TD
   A[main.cpp] --> B[Load config JSON]
   B --> C[Factory / architecture selection]
-  C --> D[Construct model family]
+  C --> D[Construct Transformer or CausalLM subclass]
   D --> E[initialize()]
   E --> F[load_weight()]
   F --> G[run() / inference loop]
@@ -149,20 +151,28 @@ flowchart TD
 Important internal roles:
 
 - `main.cpp` is the CLI entry point.
-- `factory.h` and the model registration code decide which model family class
-  is instantiated for a given `architecture`.
-- `models/transformer.*` provides the shared base runtime for tokenizer,
-  weight-loading, and generation scaffolding.
-- `models/causal_lm.*` specializes the shared runtime for decoder-only
-  generation and KV-cache management.
-- `models/sentence_transformer.*` is a separate embedding-style path.
-- `models/<family>/` contains the family-specific overrides and custom wiring
-  for Qwen, Gemma, GPT-OSS, DeBERTa, TIMM, and multimodal variants.
+- `factory.h` and the model registration code decide which concrete class is
+  instantiated for a given `architecture`.
+- `models/transformer.*` is the shared base runtime: tokenizer setup, weight
+  loading, model graph construction, `initialize()`, and prompt execution
+  scaffolding.
+- `models/causal_lm.*` is the decoder-only specialization: LM head, KV cache,
+  sampling, output decoding, and token-generation loop.
+- `models/sentence_transformer.*` is the embedding-style branch for sentence
+  vector workloads.
+- `models/<family>/` contains the architecture-specific implementations.
+  These are usually the code paths you want for "how does model X actually
+  work?" questions.
+- `models/README.md` is the index for the model hierarchy and should point you
+  to the right family folder before you read the code.
 - `api/` exposes the same runtime through a C ABI and config helpers.
-- `layers/` contains the application-only custom ops used by the model
-  families.
-- `res/` packages model weights, configs, and conversion scripts.
+- `layers/` contains application-specific custom layers and fused building
+  blocks used by the model families.
+- `res/` packages model weights, configs, and conversion scripts that produce
+  the runtime binaries.
 - `third_party/minja/` renders chat templates without a Python dependency.
+- `build_*.sh` and `build_*.ps1` are platform entry points, not architecture
+  sources, but they matter for understanding how the app is assembled.
 
 The detailed application surface has its own README, but this folder is the
 main place to look when you need to understand how CausalLM is assembled from

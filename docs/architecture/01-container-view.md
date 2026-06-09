@@ -91,6 +91,13 @@ What this means in practice:
    one path through `NeuralNetwork -> NetworkGraph -> LayerNode -> Tensor ->
    Context`.
 
+Important correction: the compiler path is only one of the entry points.
+Many application stacks, especially `Applications/CausalLM/`, construct model
+graphs through C++ model classes instead of starting from INI/ONNX/TFLite.
+That means the architecture story is not "file format first"; it is "runtime
+graph first", with file formats and C++ builders both feeding the same graph
+and execution layers.
+
 ---
 
 ## Subsystems at a glance
