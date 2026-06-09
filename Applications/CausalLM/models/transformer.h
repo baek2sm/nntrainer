@@ -202,6 +202,12 @@ public:
   /** Current KV-cache length (0 if the model has no persistent KV cache). */
   virtual int getKvLen() const { return 0; }
 
+  /** Producer: FP32 element count run_image expects (0 ⇒ legacy 512² calc). */
+  virtual size_t expectedPixelElems() const { return 0; }
+
+  /** Consumer: token id used as the image placeholder (<0 ⇒ use "<|image|>"). */
+  virtual int imagePlaceholderTokenId() const { return -1; }
+
   /**
    * @brief Get TransformerPerformanceMetrics
    */
