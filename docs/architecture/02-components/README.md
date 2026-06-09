@@ -20,6 +20,12 @@
 | [optimizers.md](optimizers.md) | Optimizers + LR schedulers | `nntrainer/optimizers/` |
 | [dataset.md](dataset.md) | Data producers/loaders | `nntrainer/dataset/` |
 
+For repository-wide class ownership and exact declaration locations, use
+[`../09-class-map.md`](../09-class-map.md) and
+[`../09-class-map-inventory.md`](../09-class-map-inventory.md). For files that
+do not declare class-like types, use
+[`../09-source-file-coverage.md`](../09-source-file-coverage.md).
+
 ## Per-document template
 
 Every L3 doc follows the same skeleton so reviewers and the AI bot know where to

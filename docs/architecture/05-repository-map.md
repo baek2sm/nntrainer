@@ -109,6 +109,12 @@ Read the component docs for the exact contracts:
 - [`02-components/layers.md`](02-components/layers.md)
 - [`02-components/tensor.md`](02-components/tensor.md)
 - [`02-components/backends.md`](02-components/backends.md)
+- [`09-class-map.md`](09-class-map.md) for class ownership and relationships.
+- [`09-class-map-inventory.md`](09-class-map-inventory.md) for the generated
+  file-level declaration index.
+- [`09-source-file-coverage.md`](09-source-file-coverage.md) for the generated
+  maintained source file coverage list, including files without class-like
+  declarations.
 
 ---
 
