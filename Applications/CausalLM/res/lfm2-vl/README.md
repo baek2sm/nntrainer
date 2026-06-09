@@ -61,32 +61,23 @@ cp /path/to/hf_model/tokenizer_config.json   /path/to/model_dir/
 cp /path/to/hf_model/special_tokens_map.json /path/to/model_dir/
 ```
 
-## 5. Copy model config and generation config
+## 5. Copy config files
+`config.json` and `generation_config.json` ship with the HuggingFace download;
+only `nntr_config.json` comes from this repo.
 ```
-cp res/lfm2-vl/config.json           /path/to/model_dir/
-cp res/lfm2-vl/nntr_config.json      /path/to/model_dir/
-```
-
-Create `generation_config.json` in the model dir:
-```json
-{
-  "bos_token_id": 1,
-  "eos_token_id": [7],
-  "do_sample": false,
-  "top_k": 50,
-  "top_p": 0.95,
-  "temperature": 1.0,
-  "max_new_tokens": 20
-}
+cp /path/to/hf_model/config.json            /path/to/model_dir/
+cp /path/to/hf_model/generation_config.json /path/to/model_dir/
+cp res/lfm2-vl/nntr_config.json             /path/to/model_dir/
 ```
 
 ## 6. Place an input image
-Copy or symlink any JPEG/PNG image as `sample.png` in the model dir:
+Copy any image as the file named by `image_path` in `nntr_config.json` (default `sample.png`):
 ```
 cp /path/to/your/photo.jpg /path/to/model_dir/sample.png
 ```
 The binary decodes the file, resizes to 256x256, and normalizes internally
-(SigLIP2: mean=std=0.5). Supported formats: JPEG, PNG, BMP.
+(SigLIP2: mean=std=0.5). Format is auto-detected from file content (stb_image):
+JPEG, PNG, BMP, GIF, TGA, PSD, HDR, PIC, PNM — the file extension does not matter.
 
 ## 7. Expected model directory layout
 After steps 3-6 the directory must contain exactly these files:
@@ -98,10 +89,10 @@ lfm2_vl_450m_embedding.bin    LM embedding table [65536 x 1024] FP32
 tokenizer.json                HuggingFace tokenizer
 tokenizer_config.json         HuggingFace tokenizer config
 special_tokens_map.json       HuggingFace special tokens map
-config.json                   Model architecture config (from res/lfm2-vl/)
+config.json                   Model architecture config (from hf_model)
 nntr_config.json              NNTrainer runtime config (from res/lfm2-vl/)
-generation_config.json        Generation parameters (bos=1, eos=[7])
-sample.png                    Input image (any JPEG/PNG/BMP)
+generation_config.json        Generation parameters (from hf_model)
+sample.png                    Input image (any format stb_image decodes)
 ```
 
 ## 8. Build nntr_causallm
