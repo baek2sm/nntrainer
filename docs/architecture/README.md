@@ -38,10 +38,12 @@ documentation maintenance contract in
 
 ## 2. How the documents are layered
 
-Read top-down. Each layer zooms in one level deeper.
+Read top-down. Each layer zooms in one level deeper. If you are new to the
+project, start with the visual map before opening component-level docs.
 
 | Layer | Document | Scope | Audience / change cadence |
 |---|---|---|---|
+| **L0 Visual map** | [`00-visual-system-map.md`](00-visual-system-map.md) | Diagram-first overview of the whole system, runtime lifecycle, backend dispatch, and core class relationships | New contributors, agents, reviewers. Read first. |
 | **L1 Context** | [`00-system-context.md`](00-system-context.md) | What NNTrainer is, who uses it, external dependencies, supported targets | Everyone. Changes rarely. |
 | **L2 Containers** | [`01-container-view.md`](01-container-view.md) | The major subsystems, their responsibilities, and the dispatch backbone | Reviewers, new contributors. Changes on subsystem-level work. |
 | **L3 Components** | [`02-components/`](02-components/) | Per-subsystem internal structure, key types, contracts, invariants | Feature authors in that area. Changes with feature work. |
@@ -60,6 +62,7 @@ Read top-down. Each layer zooms in one level deeper.
 
 | This tree | Existing doc | Relationship |
 |---|---|---|
+| `00-visual-system-map.md` | whole repository | We give a diagram-first map that explains the system before a reader opens detailed docs. |
 | `01-container-view.md`, `03-crosscutting/dispatch-and-backends.md` | `docs/backend_guide/ARCHITECTURE.md` | We summarize the dispatch chain at L2/L4 and link down to the backend guide for the full contract. |
 | `02-components/*.md` | `docs/components.md`, `.github/models/pr-desc/context/modules/*.md` | We give an architectural view: contracts, invariants, dependencies. `components.md` stays the feature catalog. |
 | `05-repository-map.md` | repository root folders | We give a project-wide map that tells agents where to look first before opening code. |
@@ -73,7 +76,10 @@ Read top-down. Each layer zooms in one level deeper.
 
 ## 4. How to use this tree
 
-- New contributor: read L1 and L2, then the L3 doc for the area you will touch.
+- New contributor: read `00-visual-system-map.md`, then L1/L2, then the L3 doc
+  for the area you will touch.
+- Human first pass: read `00-visual-system-map.md`, then
+  `01-container-view.md`.
 - Reviewer: read the PR's architecture-doc diff first, then use the human
   review playbook.
 - Feature author: before coding, find the L3 or L4 doc you'll affect; after
@@ -88,6 +94,7 @@ Read top-down. Each layer zooms in one level deeper.
 - Each L2, L3, and L4 doc starts with a Responsibility section, then Contracts
   and invariants, Dependencies, Change checklist, and Review focus.
 - Invariants are numbered as `INV-<AREA>-N` so reviews and tests can cite them.
-- Diagrams are ASCII so they diff cleanly in PRs.
+- Diagrams are Mermaid or simple ASCII so they render well and still diff
+  cleanly in PRs.
 - When code and a doc disagree, the code wins. The disagreement is a bug to fix
   in the doc.

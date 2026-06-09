@@ -55,7 +55,7 @@ rest of the repository.
 
 | Folder | Role | First file to read | Notes |
 |---|---|---|---|
-| `nntrainer/` | Core library runtime and model execution stack | [`docs/architecture/01-container-view.md`](01-container-view.md) | The main dependency stack: engine, context, tensor, layers, graph, models, compiler, utils. |
+| `nntrainer/` | Core library runtime and model execution stack | [`docs/architecture/00-visual-system-map.md`](00-visual-system-map.md) | Start with the visual map, then read the container and component docs. |
 | `Applications/CausalLM/` | Standalone CausalLM application and C API | [`Applications/CausalLM/README.md`](../../Applications/CausalLM/README.md) | Separate product surface that uses the core runtime. |
 | `docs/` | User docs, architecture docs, backend guide, images | [`docs/architecture/README.md`](README.md) | Architecture docs live here; backend guide remains the implementation reference for backend authors. |
 | `test/` | Unit and integration tests | `test/unittest/` | Tests are the enforcement layer for the architecture contracts. |
@@ -101,8 +101,10 @@ The load-bearing relationships are:
 - `engine` and `*_context` form the dispatch backbone that routes tensor ops to
   CPU, OpenCL, or QNN.
 
-Read the component docs for the exact contracts:
+Read the visual and component docs for the exact contracts:
 
+- [`00-visual-system-map.md`](00-visual-system-map.md)
+- [`01-container-view.md`](01-container-view.md)
 - [`02-components/models.md`](02-components/models.md)
 - [`02-components/compiler.md`](02-components/compiler.md)
 - [`02-components/graph.md`](02-components/graph.md)

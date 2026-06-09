@@ -48,6 +48,87 @@ The implementation is centered around a C++ inheritance hierarchy:
 
 ---
 
+## 2.1 Core class relationship
+
+```mermaid
+classDiagram
+  class Transformer {
+    setupParameters()
+    constructModel()
+    createAttention()
+    createMlp()
+    registerCustomLayers()
+    initialize()
+    load_weight()
+  }
+  class CausalLM {
+    constructModel()
+    run()
+    generate()
+    allocateAndBindKVCache()
+  }
+  class SentenceTransformer {
+    constructModel()
+    setupParameters()
+  }
+  class Qwen2Transformer
+  class Qwen3Transformer
+  class Gemma3Transformer
+  class BertTransformer
+  class TimmViTTransformer
+  class Qwen2CausalLM
+  class Qwen3CausalLM
+  class Gemma3CausalLM
+  class GptOssForCausalLM
+  class Qwen3MoECausalLM
+  class Qwen3SlimMoECausalLM
+  class Qwen3CachedSlimMoECausalLM
+  class LayerImpl
+  class MHACoreLayer
+  class RMSNormLayer
+  class MoELayer
+  class LmHeadLayer
+
+  Transformer <|-- CausalLM
+  Transformer <|-- SentenceTransformer
+  Transformer <|-- Qwen2Transformer
+  Transformer <|-- Qwen3Transformer
+  Transformer <|-- Gemma3Transformer
+  Transformer <|-- BertTransformer
+  Transformer <|-- TimmViTTransformer
+
+  CausalLM <|-- Qwen2CausalLM
+  Qwen2Transformer <|-- Qwen2CausalLM
+  CausalLM <|-- Qwen3CausalLM
+  Qwen3Transformer <|-- Qwen3CausalLM
+  CausalLM <|-- Gemma3CausalLM
+  Gemma3Transformer <|-- Gemma3CausalLM
+  CausalLM <|-- GptOssForCausalLM
+  Qwen3CausalLM <|-- Qwen3MoECausalLM
+  Qwen3CausalLM <|-- Qwen3SlimMoECausalLM
+  Qwen3CausalLM <|-- Qwen3CachedSlimMoECausalLM
+
+  LayerImpl <|-- MHACoreLayer
+  LayerImpl <|-- RMSNormLayer
+  LayerImpl <|-- MoELayer
+  LayerImpl <|-- LmHeadLayer
+
+  Transformer ..> LayerImpl : createLayer()
+  CausalLM ..> LmHeadLayer : output head
+  Qwen3MoECausalLM ..> MoELayer : FFN branch
+```
+
+The multiple-inheritance family classes combine two roles:
+
+- `CausalLM` or `SentenceTransformer` supplies runtime behavior.
+- The family `*Transformer` class supplies architecture-specific graph wiring.
+
+That is why debugging a family model usually starts in the family transformer
+override, then moves to `CausalLM` or `SentenceTransformer` only when the issue
+is runtime execution rather than graph shape.
+
+---
+
 ## 3. Runtime layers
 
 ### 3.1 `transformer.*`
@@ -388,22 +469,24 @@ when the model graph is constructed.
 5. `main.cpp` and `api/causal_lm_api.cpp` for registration and entry-point
    behavior.
 
----
-- Windows builds intentionally exclude some model variants that are only wired
-  in on non-Windows platforms, such as certain cached-slim variants and BERT
-  family paths in `meson.build`.
-- The important documentation rule is to treat the supported list as a build
-  matrix, not just a code list. If a model is compiled out on one platform, the
-  docs should say so.
+### 8.8 Platform build matrix rule
+
+Windows builds intentionally exclude some model variants that are only wired in
+on non-Windows platforms, such as certain cached-slim variants and BERT family
+paths in `meson.build`.
+
+The important documentation rule is to treat the supported list as a build
+matrix, not just a code list. If a model is compiled out on one platform, the
+docs should say so.
 
 ---
 
-## 8. Weight file system
+## 9. Weight file system
 
 The application uses a structured on-disk model directory. The runtime assumes
 the files exist and the names match the config.
 
-### 8.1 Core files
+### 9.1 Core files
 
 - `config.json`
 - `generation_config.json`
@@ -413,7 +496,7 @@ the files exist and the names match the config.
 - `special_tokens_map.json`
 - model weight file(s) named by `nntr_config.json["model_file_name"]`
 
-### 8.2 Runtime weight formats
+### 9.2 Runtime weight formats
 
 `Transformer::formatFromExtension()` uses the file extension to choose how to
 load the model:
@@ -425,7 +508,7 @@ That means the runtime supports both safetensors input and nntrainer binary
 weights, but the shipped application layout is generally organized around
 pre-converted `.bin` files.
 
-### 8.3 Conversion path
+### 9.3 Conversion path
 
 The `res/` tree contains the conversion scripts that produce the runtime
 artifacts:
@@ -440,7 +523,7 @@ artifacts:
 The conversion output is a directory containing the config files and one or
 more `.bin` files with the names expected by `nntr_config.json`.
 
-### 8.4 Directory layout pattern
+### 9.4 Directory layout pattern
 
 The common pattern is:
 
@@ -460,7 +543,7 @@ baseline.
 
 ---
 
-## 9. Tensor types and dtype policy
+## 10. Tensor types and dtype policy
 
 The application has to coordinate three different dtype layers:
 
@@ -468,7 +551,7 @@ The application has to coordinate three different dtype layers:
 2. the weight dtype,
 3. the per-layer runtime tensor dtype.
 
-### 9.1 Model tensor type
+### 10.1 Model tensor type
 
 The model-level tensor type comes from `nntr_config.json["model_tensor_type"]`.
 Examples seen in the codebase include:
@@ -478,7 +561,7 @@ Examples seen in the codebase include:
 
 This string encodes the weight dtype and activation dtype together.
 
-### 9.2 Supported weight dtypes
+### 10.2 Supported weight dtypes
 
 The application and core tensor system support these important weight formats:
 
@@ -491,7 +574,7 @@ The application and core tensor system support these important weight formats:
 The CausalLM application also uses `UINT16` and `FP16` for certain cache paths
 and internal tensor storage.
 
-### 9.3 CausalLM-specific layer dtype rules
+### 10.3 CausalLM-specific layer dtype rules
 
 - `embedding_layer.cpp` explicitly supports `FP32`, `Q4_0`, and `Q6_K`.
 - `tie_word_embedding.cpp` follows the same quantized/FP32 pattern.
@@ -500,7 +583,7 @@ and internal tensor storage.
 - `kv_cache_manager.*` defaults to `FP16` cache storage unless the model path
   overrides it.
 
-### 9.4 Runtime tensor types in the core library
+### 10.4 Runtime tensor types in the core library
 
 The underlying `nntrainer/tensor/` code supports a larger set of tensor data
 types, including:
@@ -522,12 +605,12 @@ CausalLM application path."
 
 ---
 
-## 10. Acceleration structure
+## 11. Acceleration structure
 
 The application itself does not own the low-level kernels. It sits on top of the
 nntrainer dispatch structure.
 
-### 10.1 Default path
+### 11.1 Default path
 
 - CPU is the default path.
 - The core runtime uses the `Engine -> Context -> ContextData -> ComputeOps`
@@ -535,14 +618,14 @@ nntrainer dispatch structure.
 - On CPU, the implementation reaches NEON on ARM and AVX on x86 through the
   tensor backend code.
 
-### 10.2 Optional accelerators
+### 11.2 Optional accelerators
 
 - OpenCL is available through the core backend stack.
 - QNN is available through the plugin/backend plumbing.
 - CausalLM-specific layers still need to respect the same dispatch and tensor
   compatibility rules as the core runtime.
 
-### 10.3 What the application adds
+### 11.3 What the application adds
 
 - `mha_core` provides the attention path used by the large language models.
 - `deberta_attention_layer` handles the special DeBERTa relative-attention
@@ -554,7 +637,7 @@ nntrainer dispatch structure.
 
 ---
 
-## 11. Where the model tree splits
+## 12. Where the model tree splits
 
 The main split is not file format. It is implementation shape:
 
@@ -568,7 +651,7 @@ That split should be visible in the docs before anyone opens code.
 
 ---
 
-## 12. Change checklist
+## 13. Change checklist
 
 - If you add a new model family, document where it sits in the hierarchy.
 - If you change `Transformer` or `CausalLM`, update the runtime flow here.
@@ -580,7 +663,7 @@ That split should be visible in the docs before anyone opens code.
 
 ---
 
-## 13. Review focus
+## 14. Review focus
 
 - Prefer reading this page before opening family code.
 - This page should tell a reviewer where a change belongs.
