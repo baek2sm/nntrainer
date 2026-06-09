@@ -247,14 +247,12 @@ std::string resolve_architecture(std::string model_type,
         "Unsupported architecture for embedding model: " + architecture);
   }
 
-<<<<<<< HEAD
   if (architecture == "Gemma4ForConditionalGeneration") {
     return "Gemma4ForCausalLM";
   }
-=======
+
   if (architecture == "vjepa2_1_vit_base_384")
     return "VJEPA2ViT";
->>>>>>> b982af8 ([Application/CausalLM] Add V-JEPA 2.1 ViT-B video encoder)
 
   return architecture;
 }

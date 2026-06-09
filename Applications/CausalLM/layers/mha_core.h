@@ -140,19 +140,6 @@ public:
 };
 
 /**
- * @brief UseGemmAttention property — accepted for API compatibility; the
- * GEMM non-causal attention path is not implemented in this base; the flag
- * is always treated as false and standard attention is used.
- */
-class UseGemmAttention : public nntrainer::Property<bool> {
-public:
-  UseGemmAttention(bool value = false) { set(value); };
-  static constexpr const char *key =
-    "use_gemm_attention";                        /**< unique key to access */
-  using prop_tag = nntrainer::bool_prop_tag;     /**< property type */
-};
-
-/**
  * @brief IsCausal property
  */
 class IsCausal : public nntrainer::Property<bool> {
@@ -369,14 +356,9 @@ private:
     nntrainer::props::AverageAttentionWeight, nntrainer::props::MaxTimestep,
     props::SlidingWindow, props::MaxNewTokens, props::RopeTheta, props::UseRope,
     props::MaxPositionEmbeddings, props::UseSink, props::RopeScalingType,
-<<<<<<< HEAD
     props::RopeScalingFactor, props::RopePartialRotaryFactor,
     props::RopeScalingMaxPositionEmbeddings, props::AttnLogitSoftcapping,
     props::IsCausal, props::UseGemmAttention>
-=======
-    props::RopeScalingFactor, props::RopeScalingMaxPositionEmbeddings,
-    props::AttnLogitSoftcapping, props::IsCausal, props::UseGemmAttention>
->>>>>>> b982af8 ([Application/CausalLM] Add V-JEPA 2.1 ViT-B video encoder)
     mha_core_props; /**< mha_core layer properties */
 
   /** softmax activation operation */
@@ -405,9 +387,7 @@ private:
   bool use_rope = true;
   float attn_logit_softcapping = 0.0f;
   bool is_causal;
-<<<<<<< HEAD
   bool skip_prefill = false;
-=======
   bool use_gemm_attention = false;
 
   /**
@@ -423,7 +403,6 @@ private:
                                 nntrainer::Tensor &b_cached_value,
                                 nntrainer::Tensor &attention_output_step,
                                 unsigned int seq_len);
->>>>>>> b982af8 ([Application/CausalLM] Add V-JEPA 2.1 ViT-B video encoder)
 
   enum INOUT_INDEX {
     /** input index */
