@@ -7,8 +7,7 @@
 
 """Convert the HF safetensors vision tower to nntrainer raw binary.
 
-The HF safetensors path does not include the learnable positional embedding, so
-this converter cannot write that tensor.
+Writes patch embedding, positional embedding, encoder blocks, and post-LN.
 """
 
 import argparse
@@ -78,6 +77,7 @@ def main():
                 handle, out_file, "embeddings.patch_embedding.weight"
             )
             total_bytes += write_tensor(handle, out_file, "embeddings.patch_embedding.bias")
+            total_bytes += write_tensor(handle, out_file, "embeddings.position_embedding.weight")
 
             for index in range(NUM_LAYERS):
                 for key, transpose in layer_keys(index):
