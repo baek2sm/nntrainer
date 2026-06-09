@@ -157,8 +157,11 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
     tiling_params.tile_size = static_cast<int>(tile_size);
     tiling_params.max_tiles = cfg_.value("max_tiles", 10);
     tiling_params.min_tiles = cfg_.value("min_tiles", 2);
-    tiling_params.use_thumbnail =
-      nntr_cfg_.value("use_thumbnail", true);
+    // HF Lfm2VlImageProcessor uses use_thumbnail=True for multi-tile images.
+    // The model config.json "use_thumbnail" is a training-time flag, not a
+    // processor flag, so it is not authoritative for inference. Default to
+    // True (matching HF processor) unless nntr_config.json explicitly overrides.
+    tiling_params.use_thumbnail = nntr_cfg_.value("use_thumbnail", true);
     tiling_params.downsample_factor = static_cast<int>(downsample_factor_);
     tiling_params.max_image_tokens = cfg_.value("max_image_tokens", 256);
     tiling_params.encoder_patch_size = static_cast<int>(patch_size);

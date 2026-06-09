@@ -414,12 +414,39 @@ void Lfm2VlVisionTransformer::load_weight(const std::string &weight_path) {
     static_cast<size_t>(NAFLEX_BASE_GRID) * NAFLEX_BASE_GRID;
   const size_t target_n = static_cast<size_t>(PATCH_H) * PATCH_W;
 
-  if (base_n == target_n) {
-    Transformer::load_weight(weight_path);
-    return;
-  }
+  // The HF converter writes patch_embedding.weight as a Linear weight
+  // (dim, n_channels * patch_size^2) with input dimensions ordered HWC:
+  //   col_idx = h * patch_size * n_channels + w * n_channels + c
+  // The C++ ViT uses a Conv2D layer which expects CHW-ordered input:
+  //   col_idx = c * patch_size^2 + h * patch_size + w
+  // Reorder columns from HWC to CHW so Conv2D produces the correct output.
+  const size_t in_dim = n_channels * patch_size * patch_size; // 768
+  const size_t filter_floats = dim * in_dim;                  // 589824
 
-  const size_t filter_floats = dim * n_channels * patch_size * patch_size;
+  auto reorderPatchWeightHwcToChw =
+    [&](std::vector<char> &buf, size_t offset) {
+      const size_t P = patch_size;
+      const size_t C = n_channels;
+      std::vector<float> src(filter_floats);
+      std::memcpy(src.data(), buf.data() + offset,
+                  filter_floats * sizeof(float));
+      // Build HWC->CHW column permutation:
+      // for CHW index (c,h,w): chw_idx = c*P*P + h*P + w
+      //                        hwc_idx = h*P*C + w*C + c
+      std::vector<size_t> perm(in_dim);
+      for (size_t c = 0; c < C; ++c)
+        for (size_t h = 0; h < P; ++h)
+          for (size_t w = 0; w < P; ++w)
+            perm[c * P * P + h * P + w] = h * P * C + w * C + c;
+      // Apply permutation to every row of the weight matrix
+      std::vector<float> dst(filter_floats);
+      for (size_t j = 0; j < dim; ++j)
+        for (size_t chw = 0; chw < in_dim; ++chw)
+          dst[j * in_dim + chw] = src[j * in_dim + perm[chw]];
+      std::memcpy(buf.data() + offset, dst.data(),
+                  filter_floats * sizeof(float));
+    };
+
   const size_t bias_floats = dim;
   const size_t pre_pos_bytes = (filter_floats + bias_floats) * sizeof(float);
   const size_t pos_base_bytes = base_n * dim * sizeof(float);
@@ -437,6 +464,29 @@ void Lfm2VlVisionTransformer::load_weight(const std::string &weight_path) {
   if (file_size < pre_pos_bytes + pos_base_bytes)
     throw std::runtime_error(
       "Lfm2VlVisionTransformer::load_weight: bin too small for pos_embed");
+
+  if (base_n == target_n) {
+    // No pos-embed interpolation needed; only reorder patch weight.
+    reorderPatchWeightHwcToChw(file_bytes, 0);
+    std::string tmp_path = weight_path + ".naflex_tmp.bin";
+    {
+      std::ofstream fout(tmp_path, std::ios::binary);
+      if (!fout)
+        throw std::runtime_error(
+          "Lfm2VlVisionTransformer::load_weight: cannot write tmp: " +
+          tmp_path);
+      fout.write(file_bytes.data(),
+                 static_cast<std::streamsize>(file_size));
+    }
+    try {
+      Transformer::load_weight(tmp_path);
+    } catch (...) {
+      std::remove(tmp_path.c_str());
+      throw;
+    }
+    std::remove(tmp_path.c_str());
+    return;
+  }
 
   std::vector<float> base_pos(base_n * dim);
   std::memcpy(base_pos.data(), file_bytes.data() + pre_pos_bytes,
@@ -459,6 +509,9 @@ void Lfm2VlVisionTransformer::load_weight(const std::string &weight_path) {
   if (tail_size > 0)
     std::memcpy(patched.data() + pre_pos_bytes + target_pos_bytes,
                 file_bytes.data() + tail_offset, tail_size);
+
+  // Reorder patch embedding columns from HWC (Linear) to CHW (Conv2D).
+  reorderPatchWeightHwcToChw(patched, 0);
 
   std::string tmp_path = weight_path + ".naflex_tmp.bin";
   {

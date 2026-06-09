@@ -6,6 +6,8 @@
  *
  * Provides resizeImage() and loadAndPreprocessImage() for use by
  * TimmViTTransformer and Lfm2VlVisionTransformer without duplicating code.
+ * resizeImage() uses antialias bicubic interpolation matching PIL BICUBIC and
+ * torchvision F.resize(antialias=True, mode='bicubic').
  *
  * IMPORTANT: Define STB_IMAGE_IMPLEMENTATION exactly once in a .cpp file
  * before including stb_image.inc; do NOT define it here.
@@ -27,7 +29,13 @@
 namespace causallm {
 
 /**
- * @brief Resize an interleaved (HWC) image buffer with bilinear interpolation.
+ * @brief Resize an interleaved (HWC) image buffer with antialias bicubic
+ *        interpolation matching PIL Image.BICUBIC and torchvision
+ *        F.resize(antialias=True, mode='bicubic').
+ *
+ * Uses the Keys cubic kernel (a = -0.5, Catmull-Rom) with the filter scaled
+ * by the downsample factor so the support radius is 2*scale.  Coordinate
+ * mapping: cx = (x + 0.5) * scale - 0.5 (half-pixel shift, align_corners=False).
  *
  * @param src      Source pixel buffer (H*W*channels bytes).
  * @param src_w    Source width in pixels.
@@ -42,29 +50,65 @@ inline std::vector<unsigned char> resizeImage(const unsigned char *src,
                                               int channels, int dst_w,
                                               int dst_h) {
   std::vector<unsigned char> dst(dst_w * dst_h * channels);
-  float x_ratio = static_cast<float>(src_w) / static_cast<float>(dst_w);
-  float y_ratio = static_cast<float>(src_h) / static_cast<float>(dst_h);
+  const float scale_x = static_cast<float>(src_w) / static_cast<float>(dst_w);
+  const float scale_y = static_cast<float>(src_h) / static_cast<float>(dst_h);
+
+  // Antialias bicubic resize matching PIL Image.BICUBIC / torchvision antialias=True.
+  //
+  // For each output pixel the source centre is:
+  //   cx = (x + 0.5) * scale_x - 0.5   (half-pixel-shift, align_corners=False)
+  // The Keys cubic kernel (a = -0.5) is scaled by the downsample factor so the
+  // effective support is  radius = 2 * scale:
+  //   weight(d) = bc(d / scale) / scale,  where bc(t) = Keys cubic a=-0.5
+  // For upscaling (scale <= 1) the support radius clamps to 2 and there is no
+  // 1/scale normalisation (scale factor = 1).
+  //
+  // Both the horizontal and vertical passes use the same logic; we fuse them
+  // into a single 2-D loop for simplicity at the cost of extra arithmetic.
+
+  // Keys cubic kernel a = -0.5 (Catmull-Rom).
+  auto bc_kernel = [](float t) -> float {
+    t = std::abs(t);
+    if (t < 1.0f)
+      return (1.5f * t - 2.5f) * t * t + 1.0f;
+    if (t < 2.0f)
+      return ((-0.5f * t + 2.5f) * t - 4.0f) * t + 2.0f;
+    return 0.0f;
+  };
+
+  const float fx = std::max(1.0f, scale_x); // effective filter scale (>=1)
+  const float fy = std::max(1.0f, scale_y);
+  const float rx = 2.0f * fx;               // support half-width
+  const float ry = 2.0f * fy;
 
   for (int y = 0; y < dst_h; ++y) {
+    const float cy = (y + 0.5f) * scale_y - 0.5f;
+    const int sy0 = static_cast<int>(std::ceil(cy - ry));
+    const int sy1 = static_cast<int>(std::floor(cy + ry));
+
     for (int x = 0; x < dst_w; ++x) {
-      float px = x * x_ratio;
-      float py = y * y_ratio;
-      int x0 = static_cast<int>(std::floor(px));
-      int y0 = static_cast<int>(std::floor(py));
-      int x1 = std::min(x0 + 1, src_w - 1);
-      int y1 = std::min(y0 + 1, src_h - 1);
-      float fx = px - x0;
-      float fy = py - y0;
+      const float cx = (x + 0.5f) * scale_x - 0.5f;
+      const int sx0 = static_cast<int>(std::ceil(cx - rx));
+      const int sx1 = static_cast<int>(std::floor(cx + rx));
 
       for (int c = 0; c < channels; ++c) {
-        float v00 = src[(y0 * src_w + x0) * channels + c];
-        float v10 = src[(y0 * src_w + x1) * channels + c];
-        float v01 = src[(y1 * src_w + x0) * channels + c];
-        float v11 = src[(y1 * src_w + x1) * channels + c];
-        float v0 = v00 * (1.0f - fx) + v10 * fx;
-        float v1 = v01 * (1.0f - fx) + v11 * fx;
+        float val = 0.0f;
+        float wsum = 0.0f;
+        for (int sy = sy0; sy <= sy1; ++sy) {
+          const int ky = std::max(0, std::min(src_h - 1, sy));
+          const float wy = bc_kernel((cy - sy) / fy) / fy;
+          for (int sx = sx0; sx <= sx1; ++sx) {
+            const int kx = std::max(0, std::min(src_w - 1, sx));
+            const float wx = bc_kernel((cx - sx) / fx) / fx;
+            const float w = wx * wy;
+            val += w * static_cast<float>(src[(ky * src_w + kx) * channels + c]);
+            wsum += w;
+          }
+        }
         dst[(y * dst_w + x) * channels + c] =
-          static_cast<unsigned char>(std::round(v0 * (1.0f - fy) + v1 * fy));
+          static_cast<unsigned char>(
+            std::round(std::max(0.0f, std::min(255.0f,
+              wsum > 0.0f ? val / wsum : val))));
       }
     }
   }
