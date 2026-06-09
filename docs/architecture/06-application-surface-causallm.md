@@ -226,16 +226,228 @@ what graph to execute.
 
 ---
 
-## 7. Change checklist
+## 7. Supported model families
+
+The application supports multiple model families through factory registration.
+The important thing is not only the model names, but also the implementation
+pattern each family uses.
+
+### 7.1 Decoder-only causal models
+
+- `LlamaForCausalLM` -> `CausalLM`
+- `Qwen2ForCausalLM` -> `Qwen2CausalLM`
+- `Qwen3ForCausalLM` -> `Qwen3CausalLM`
+- `Qwen3MoeForCausalLM` -> `Qwen3MoECausalLM`
+- `Qwen3SlimMoeForCausalLM` -> `Qwen3SlimMoECausalLM`
+- `Qwen3CachedSlimMoeForCausalLM` -> `Qwen3CachedSlimMoECausalLM`
+- `GptOssForCausalLM` -> `GptOssForCausalLM`
+- `GptOssCachedSlimForCausalLM` -> `GptOssCachedSlimCausalLM`
+- `Gemma3ForCausalLM` -> `Gemma3CausalLM`
+
+### 7.2 Embedding and encoder-style models
+
+- `Qwen2Embedding` -> `Qwen2Embedding`
+- `Qwen3Embedding` -> `Qwen3Embedding`
+- `EmbeddingGemma` -> `EmbeddingGemma`
+- `DebertaV2` -> `DebertaV2`
+- `MultilingualTinyBert` -> `MultilingualTinyBert`
+- `TimmViT` -> `TimmViTTransformer`
+- `SentenceTransformer`-style model paths are handled by `sentence_transformer.*`
+
+### 7.3 Platform differences
+
+- Windows builds intentionally exclude some model variants that are only wired
+  in on non-Windows platforms, such as certain cached-slim variants and BERT
+  family paths in `meson.build`.
+- The important documentation rule is to treat the supported list as a build
+  matrix, not just a code list. If a model is compiled out on one platform, the
+  docs should say so.
+
+---
+
+## 8. Weight file system
+
+The application uses a structured on-disk model directory. The runtime assumes
+the files exist and the names match the config.
+
+### 8.1 Core files
+
+- `config.json`
+- `generation_config.json`
+- `nntr_config.json`
+- `tokenizer.json`
+- `tokenizer_config.json`
+- `special_tokens_map.json`
+- model weight file(s) named by `nntr_config.json["model_file_name"]`
+
+### 8.2 Runtime weight formats
+
+`Transformer::formatFromExtension()` uses the file extension to choose how to
+load the model:
+
+- `.safetensors` -> `MODEL_FORMAT_SAFETENSORS`
+- everything else -> `MODEL_FORMAT_BIN`
+
+That means the runtime supports both safetensors input and nntrainer binary
+weights, but the shipped application layout is generally organized around
+pre-converted `.bin` files.
+
+### 8.3 Conversion path
+
+The `res/` tree contains the conversion scripts that produce the runtime
+artifacts:
+
+- `weight_converter.py`
+- `convert_vision_hf.py`
+- `convert_lm.py`
+- `convert_connector.py`
+- `convert_embedding.py`
+- `gguf_to_nntrainer.py`
+
+The conversion output is a directory containing the config files and one or
+more `.bin` files with the names expected by `nntr_config.json`.
+
+### 8.4 Directory layout pattern
+
+The common pattern is:
+
+```text
+Applications/CausalLM/res/<family>/<model-name>/
+  config.json
+  generation_config.json
+  nntr_config.json
+  tokenizer.json
+  tokenizer_config.json
+  special_tokens_map.json
+  <weight bin>
+```
+
+Some model families add their own helper scripts or extra resources beside this
+baseline.
+
+---
+
+## 9. Tensor types and dtype policy
+
+The application has to coordinate three different dtype layers:
+
+1. the model tensor type,
+2. the weight dtype,
+3. the per-layer runtime tensor dtype.
+
+### 9.1 Model tensor type
+
+The model-level tensor type comes from `nntr_config.json["model_tensor_type"]`.
+Examples seen in the codebase include:
+
+- `FP32-FP32`
+- `Q4_0-FP32`
+
+This string encodes the weight dtype and activation dtype together.
+
+### 9.2 Supported weight dtypes
+
+The application and core tensor system support these important weight formats:
+
+- `FP32`
+- `FP16`
+- `Q4_0`
+- `Q6_K`
+- `Q4_K`
+
+The CausalLM application also uses `UINT16` and `FP16` for certain cache paths
+and internal tensor storage.
+
+### 9.3 CausalLM-specific layer dtype rules
+
+- `embedding_layer.cpp` explicitly supports `FP32`, `Q4_0`, and `Q6_K`.
+- `tie_word_embedding.cpp` follows the same quantized/FP32 pattern.
+- `mha_core.cpp` and `deberta_attention_layer.cpp` select different cache and
+  scratch layouts depending on `FP32`, `FP16`, or packed cache types.
+- `kv_cache_manager.*` defaults to `FP16` cache storage unless the model path
+  overrides it.
+
+### 9.4 Runtime tensor types in the core library
+
+The underlying `nntrainer/tensor/` code supports a larger set of tensor data
+types, including:
+
+- `FP32`
+- `FP16`
+- `UINT8`
+- `UINT16`
+- `QINT4`
+- `QINT8`
+- `QINT16`
+- `Q4_0`
+- `Q4_K`
+- `Q6_K`
+
+Not every dtype is valid for every layer or backend. The important rule is that
+the document should separate "supported in the tensor system" from "used by the
+CausalLM application path."
+
+---
+
+## 10. Acceleration structure
+
+The application itself does not own the low-level kernels. It sits on top of the
+nntrainer dispatch structure.
+
+### 10.1 Default path
+
+- CPU is the default path.
+- The core runtime uses the `Engine -> Context -> ContextData -> ComputeOps`
+  dispatch chain.
+- On CPU, the implementation reaches NEON on ARM and AVX on x86 through the
+  tensor backend code.
+
+### 10.2 Optional accelerators
+
+- OpenCL is available through the core backend stack.
+- QNN is available through the plugin/backend plumbing.
+- CausalLM-specific layers still need to respect the same dispatch and tensor
+  compatibility rules as the core runtime.
+
+### 10.3 What the application adds
+
+- `mha_core` provides the attention path used by the large language models.
+- `deberta_attention_layer` handles the special DeBERTa relative-attention
+  behavior.
+- `qwen3_*_moe` and `gpt_oss_*` add model-specific expert-routing and MoE
+  behavior.
+- `timm_vit` and `embedding_*` provide non-decoder paths that still run through
+  the same model assembly and tensor dispatch system.
+
+---
+
+## 11. Where the model tree splits
+
+The main split is not file format. It is implementation shape:
+
+- `Transformer` for shared graph construction and prompt execution.
+- `CausalLM` for decoder-only generation.
+- `EmbeddingGemma`, `Qwen2Embedding`, `Qwen3Embedding`, `DebertaV2`,
+  `MultilingualTinyBert`, and `TimmViTTransformer` for non-decoder paths.
+- `Qwen3Moe` and `GptOss` families for MoE / expert-loading behavior.
+
+That split should be visible in the docs before anyone opens code.
+
+---
+
+## 12. Change checklist
 
 - If you add a new model family, document where it sits in the hierarchy.
 - If you change `Transformer` or `CausalLM`, update the runtime flow here.
 - If you add or rename application layers, update the layer map.
 - If you change the shipped resource layout, update the `res/` description.
+- If you add a new dtype or change a weight format, document the runtime path
+  and the on-disk format together.
+- If a model is compiled out on a platform, say so explicitly.
 
 ---
 
-## 8. Review focus
+## 13. Review focus
 
 - Prefer reading this page before opening family code.
 - This page should tell a reviewer where a change belongs.
