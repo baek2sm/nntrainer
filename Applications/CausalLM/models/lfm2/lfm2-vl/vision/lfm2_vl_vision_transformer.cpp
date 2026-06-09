@@ -387,6 +387,28 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,
       std::to_string(PATCH_W * PATCH_SIZE) + "). " +
       "Ensure the file is a decodable JPEG/PNG/BMP image.");
 
+  runInference(image, log_output);
+}
+
+void Lfm2VlVisionTransformer::runFromPixels(const float *chw, size_t n_elems,
+                                            bool log_output) {
+  if (!is_initialized)
+    throw std::runtime_error("Lfm2VlVisionTransformer is not initialized. "
+                             "Call initialize() first.");
+  const size_t expected =
+    static_cast<size_t>(BATCH_SIZE) * NUM_CHANNELS * PATCH_H * PATCH_SIZE *
+    PATCH_W * PATCH_SIZE;
+  if (chw == nullptr || n_elems != expected)
+    throw std::runtime_error(
+      "Lfm2VlVisionTransformer::runFromPixels: expected " +
+      std::to_string(expected) + " NCHW fp32 elements, got " +
+      std::to_string(n_elems));
+  std::vector<float> image(chw, chw + n_elems);
+  runInference(image, log_output);
+}
+
+void Lfm2VlVisionTransformer::runInference(const std::vector<float> &image,
+                                           bool log_output) {
   // Allocate and bind external KV cache buffers (no-op after first call).
   allocateAndBindVitKVCache();
   vit_kv_cache_.reset();
@@ -408,7 +430,7 @@ void Lfm2VlVisionTransformer::run(const WSTR image_tensor_path, bool,
 
   std::vector<float *> in_ptrs;
   in_ptrs.reserve(1 + cache_inputs.size());
-  in_ptrs.push_back(image.data());
+  in_ptrs.push_back(const_cast<float *>(image.data()));
   for (const auto &ci : cache_inputs)
     in_ptrs.push_back(ci.second);
   int vit_iters = 1;

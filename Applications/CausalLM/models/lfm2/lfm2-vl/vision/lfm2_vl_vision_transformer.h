@@ -99,6 +99,15 @@ public:
            bool log_output = true) override;
 
   /**
+   * @brief Run a forward pass directly from a caller-provided NCHW FP32 pixel
+   *        buffer (already decoded/resized/normalized), bypassing image-file
+   *        loading. @a chw must hold exactly
+   *        BATCH_SIZE*NUM_CHANNELS*(PATCH_H*PATCH_SIZE)*(PATCH_W*PATCH_SIZE)
+   *        elements; results are cached in getLastFeatures().
+   */
+  void runFromPixels(const float *chw, size_t n_elems, bool log_output = false);
+
+  /**
    * @brief Allocate and bind external UINT16 KV cache buffers to every
    *        mha_core placeholder created by createSelfAttention().  Must be
    *        called once after initialize() and before the first run().
@@ -106,7 +115,7 @@ public:
   void allocateAndBindVitKVCache();
 
   /**
-   * @brief Return raw feature buffer from the last run() call.
+   * @brief Return raw feature buffer from the last run()/runFromPixels() call.
    *        Layout: [BATCH_SIZE * NUM_PATCHES * DIM] floats (FP32).
    */
   const std::vector<float> &getLastFeatures() const { return last_features_; }
@@ -118,10 +127,19 @@ protected:
   unsigned int NUM_PATCHES;  /**< PATCH_H * PATCH_W */
   unsigned int PATCH_H;      /**< patch grid height (IMAGE_H / PATCH_SIZE) */
   unsigned int PATCH_W;      /**< patch grid width  (IMAGE_W / PATCH_SIZE) */
-  std::vector<float> last_features_; /**< Output feature cache from last run() */
+  std::vector<float> last_features_; /**< Output feature cache from last run()/runFromPixels() call */
 
   KVCacheManager vit_kv_cache_;       /**< External KV cache for ViT encoder. */
   bool vit_kv_cache_bound_ = false;   /**< True once KV buffers are bound. */
+
+  /**
+   * @brief Image-independent inference tail shared by run() and
+   *        runFromPixels(): bind KV cache, run incremental_inference()
+   *        (respecting NNTR_VIT_ITERS / NNTR_VIT_OUT), optionally log, and
+   *        cache the output features into last_features_. @a image must be a
+   *        prepared NCHW FP32 pixel vector.
+   */
+  void runInference(const std::vector<float> &image, bool log_output);
 };
 
 } // namespace causallm
