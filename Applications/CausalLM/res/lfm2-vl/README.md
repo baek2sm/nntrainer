@@ -50,4 +50,10 @@ nntr_config.json              (see Applications/CausalLM/res/lfm2-vl/nntr_config
 
 ## 5. Running inference
 Build nntr_causallm.exe (see Applications/CausalLM/README.md), then:
-  nntr_causallm.exe --config /path/to/out/nntr_config.json
+  nntr_causallm.exe /path/to/out "Describe the image."
+
+To pass a real image file (jpg/png/bmp), set `image_path` in nntr_config.json:
+  "image_path": "/path/to/photo.jpg"
+The binary decodes the file, resizes to 256x256, and normalizes internally
+(SigLIP2: mean=std=0.5). For a pre-made FP32 NCHW binary use `image_tensor_path`;
+if both are set, `image_path` takes precedence.
