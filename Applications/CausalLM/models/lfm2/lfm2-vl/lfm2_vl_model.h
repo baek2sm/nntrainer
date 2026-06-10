@@ -110,6 +110,18 @@ public:
            bool do_sample = false, bool log_output = true);
 
   /**
+   * @brief Like run() but takes already-preprocessed pixels (NCHW FP32,
+   * 3*IMAGE_SIZE*IMAGE_SIZE) directly, skipping image-file decode. Used by the
+   * Android composite path where the host already produced the pixel tensor.
+   */
+  void runFromPixels(const float *chw_pixels, size_t n_elems,
+                     const std::string &prompt, bool do_sample = false,
+                     bool log_output = true);
+
+  /** @brief Access the underlying LM (to set a streamer / decode output). */
+  Lfm2CausalLM *getLM() { return lm_.get(); }
+
+  /**
    * @brief Get the generated token IDs from the last run() call.
    */
   const std::vector<unsigned int> &getGeneratedIds() const;
@@ -137,6 +149,13 @@ private:
    * two json objects that the respective sub-model constructors expect.
    */
   static std::pair<json, json> splitConfig(const json &cfg);
+
+  /**
+   * @brief Shared tail: from cached ViT features (set by run()/runFromPixels())
+   * through pixel-unshuffle, connector, prompt splice, and LM generation.
+   */
+  void generateFromViTFeatures(const std::string &prompt, bool do_sample,
+                               bool log_output);
 };
 
 } // namespace causallm

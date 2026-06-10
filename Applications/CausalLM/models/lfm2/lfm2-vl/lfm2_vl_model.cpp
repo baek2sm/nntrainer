@@ -136,50 +136,52 @@ void Lfm2VlForConditionalGeneration::run(const std::string &image_tensor_path,
   if (!initialized_)
     throw std::runtime_error(
       "Lfm2VlForConditionalGeneration: call initialize() first");
+  // ViT reads an image file (stb decode + 256 resize + normalize); the patch
+  // features are cached in vit_->getLastFeatures() afterwards.
+  vit_->run(image_tensor_path, false, "", "", true);
+  generateFromViTFeatures(prompt, do_sample, log_output);
+}
 
-  // --- 1. Vision encoding ---
-  std::vector<float> image_embeds; // [n_img_tokens * lm_hidden]
-  unsigned int n_img_tokens = 0;
+void Lfm2VlForConditionalGeneration::runFromPixels(const float *chw_pixels,
+                                                   size_t n_elems,
+                                                   const std::string &prompt,
+                                                   bool do_sample,
+                                                   bool log_output) {
+  if (!initialized_)
+    throw std::runtime_error(
+      "Lfm2VlForConditionalGeneration: call initialize() first");
+  // Host already preprocessed the image to NCHW FP32 (3*IMAGE*IMAGE); feed it
+  // straight into the ViT (skips the stb decode path). Features cached.
+  vit_->runFromPixels(chw_pixels, n_elems, true);
+  generateFromViTFeatures(prompt, do_sample, log_output);
+}
 
-  if (!image_tensor_path.empty()) {
-    // Run the ViT encoder. Lfm2VlVisionTransformer::run() writes patch
-    // features to an output tensor; here we use the lower-level path that
-    // returns them in-memory via getOutputTensor().
-    // For the smoke-level base, we call run() which prints output, then
-    // rebuild the feature vector from the ViT's internal model output.
-    // TODO: wire a direct getFeatures() path for production use.
+void Lfm2VlForConditionalGeneration::generateFromViTFeatures(
+  const std::string &prompt, bool do_sample, bool log_output) {
+  // --- 1. Vision features (cached by the ViT run in the caller) ---
+  const std::vector<float> &vit_features = vit_->getLastFeatures();
+  if (vit_features.empty())
+    throw std::runtime_error(
+      "Lfm2VlForConditionalGeneration: ViT produced no features");
 
-    // Load image tensor and write to a temp file the ViT can open.
-    // (The ViT's run() reads a flat FP32 file.)
-    std::string tmp_path = image_tensor_path; // already preprocessed FP32
+  // Determine patch grid from ViT config.
+  auto [text_cfg, vision_cfg] = splitConfig(cfg_);
+  unsigned int img_size   = vision_cfg.value("image_size", 256u);
+  unsigned int patch_size = vision_cfg.value("patch_size", 16u);
+  unsigned int vit_embed  = vision_cfg.value("hidden_size", 768u);
+  unsigned int ph = img_size / patch_size;
+  unsigned int pw = img_size / patch_size;
+  unsigned int n_patches = ph * pw; // e.g. 256 for 256x256 / patch16
 
-    // Determine patch grid from ViT config
-    auto [text_cfg, vision_cfg] = splitConfig(cfg_);
-    unsigned int img_size   = vision_cfg.value("image_size", 256u);
-    unsigned int patch_size = vision_cfg.value("patch_size", 16u);
-    unsigned int vit_embed  = vision_cfg.value("hidden_size", 768u);
-    unsigned int ph = img_size / patch_size;
-    unsigned int pw = img_size / patch_size;
-    unsigned int n_patches = ph * pw; // e.g. 256 for 256x256 / patch16
+  // --- 2. Pixel-unshuffle ---
+  auto unshuffled =
+    pixelUnshuffle(vit_features, n_patches, vit_embed, ph, pw,
+                   downsample_factor_);
 
-    // Run ViT; features are cached in vit_->getLastFeatures() afterwards.
-    vit_->run(tmp_path, false, "", "", true);
-
-    // Retrieve raw ViT output from the cache populated during run().
-    const std::vector<float> &vit_features = vit_->getLastFeatures();
-    if (vit_features.empty())
-      throw std::runtime_error(
-        "Lfm2VlForConditionalGeneration: ViT produced no features");
-
-    // --- 2. Pixel-unshuffle ---
-    auto unshuffled = pixelUnshuffle(vit_features, n_patches, vit_embed,
-                                     ph, pw, downsample_factor_);
-
-    // --- 3. MLP connector ---
-    n_img_tokens = connector_->outTokens(n_patches);
-    image_embeds = connector_->forward(unshuffled, n_img_tokens);
-    // image_embeds: [n_img_tokens * lm_hidden]
-  }
+  // --- 3. MLP connector ---
+  unsigned int n_img_tokens = connector_->outTokens(n_patches);
+  std::vector<float> image_embeds = // [n_img_tokens * lm_hidden]
+    connector_->forward(unshuffled, n_img_tokens);
 
   // --- 4. Build full chat-template input_embeds ---
   // HF chat template (from hf_model/chat_template.jinja):
