@@ -338,15 +338,22 @@ void TieWordEmbedding::incremental_forwarding_lmhead(
                   std::invalid_argument)
       << "weight type is not supported for custom tie word embedding layer";
 
-    if (weight.getDataType() == nntrainer::TensorDim::DataType::Q4_0 ||
-        weight.getDataType() == nntrainer::TensorDim::DataType::Q6_K) {
-      ///@note The tied (embedding-shaped) weight is [vocab, hidden]. The Qn_K
-      /// tensor dot does NOT transpose the data for trans_in (only the
-      /// dimensions), so it gives wrong/zero logits here. Compute each vocab
-      /// row explicitly: logits[v] = dot(input, dequant(weight_row_v)). This
-      /// writes FP32 logits directly (generate() reads them as float*).
-      const bool is_q6k =
-        weight.getDataType() == nntrainer::TensorDim::DataType::Q6_K;
+    if (weight.getDataType() == nntrainer::TensorDim::DataType::Q6_K) {
+      ///@note The tied (embedding-shaped) weight is [vocab, hidden]. The fused
+      /// Q6_K GEMV computes logits[v] = input . weight[v] row-wise, which needs
+      /// no data transpose, and is ~2x faster per decode token than a per-row
+      /// dequantize+sdot loop. The lmhead output is forced FP32 (finalize); cast
+      /// a FP16 activation up to FP32 first so FloatTensor::dotQnK writes FP32
+      /// logits directly (generate() reads them as float*).
+      nntrainer::Tensor input_fp32 =
+        (input_step.getDataType() == nntrainer::TensorDim::DataType::FP32)
+          ? input_step
+          : input_step.clone(nntrainer::TensorDim::DataType::FP32);
+      input_fp32.dot(weight, hidden_step, false, true);
+    } else if (weight.getDataType() == nntrainer::TensorDim::DataType::Q4_0) {
+      ///@note Unlike Q6_K, the Q4_0 Qn_K dot does NOT transpose the block data
+      /// for the [vocab, hidden] tied layout, so compute each vocab row
+      /// explicitly: logits[v] = dot(input, dequant(weight_row_v)).
       const unsigned int hidden_size = input_step.width();
       const unsigned int vocab_size = weight.height();
       NNTR_THROW_IF(weight.width() != hidden_size ||
@@ -354,10 +361,8 @@ void TieWordEmbedding::incremental_forwarding_lmhead(
                     std::invalid_argument)
         << "tie word embedding lmhead has mismatched dimensions";
 
-      const unsigned int blk = is_q6k ? 256u : 32u;
-      const size_t row_size = is_q6k ? 210u : (sizeof(uint16_t) + 16);
-      const unsigned int num_blocks_per_row = (hidden_size + blk - 1) / blk;
-      const size_t row_stride = row_size * num_blocks_per_row;
+      const unsigned int num_blocks_per_row = (hidden_size + 32 - 1) / 32;
+      const size_t row_stride = (sizeof(uint16_t) + 16) * num_blocks_per_row;
       const uint8_t *weight_data = weight.getData<uint8_t>();
 
       // The activation may be FP16; sdot/dequant work in FP32, so cast the
@@ -381,12 +386,7 @@ void TieWordEmbedding::incremental_forwarding_lmhead(
         for (unsigned int row = start; row < end; ++row) {
           const void *wrow =
             static_cast<const void *>(weight_data + row_stride * row);
-          if (is_q6k)
-            nntrainer::dequantize_row_q6_K(wrow, dequant_row.data(),
-                                           hidden_size);
-          else
-            nntrainer::dequantize_row_q4_0(wrow, dequant_row.data(),
-                                           hidden_size);
+          nntrainer::dequantize_row_q4_0(wrow, dequant_row.data(), hidden_size);
           logits[row] =
             nntrainer::sdot(hidden_size, input_data, 1, dequant_row.data(), 1);
         }
