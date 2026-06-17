@@ -154,6 +154,11 @@ else
   extra_defines += '-DKERNEL_CACHE=0'
 endif
 
+if get_option('platform') != 'android' and host_machine.cpu_family() == 'aarch64'
+  extra_defines += '-D__ARM_FEATURE_DOTPROD=1'
+  extra_defines += '-D__ARM_FEATURE_MATMUL_INT8=1'
+endif
+
 if get_option('enable-fp16')
    if get_option('platform') == 'android'
      add_project_arguments('-mfp16-format=ieee', language: ['c', 'cpp'])
@@ -213,7 +218,11 @@ if get_option('enable-fp16')
      error ('RISCV64 RVV support and fp16 support is not yet implemented.')
    else
      error ('FP16 support for this arch is not yet implemented.')
-   endif  
+   endif
+else
+  if arch == 'aarch64'
+    add_project_arguments('-march=armv8.2-a+dotprod+i8mm', language: ['c', 'cpp'])
+  endif
 endif
 
 if get_option('enable-mmap')
