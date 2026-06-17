@@ -22,6 +22,8 @@
 
 #include <embedding_layer.h>
 #include <mha_core.h>
+#include <neuralnet.h>
+#include <qs4cx_tensor.h>
 #include <rms_norm.h>
 #include <swiglu.h>
 #include <tie_word_embedding.h>
@@ -314,6 +316,34 @@ void Transformer::save_weight(
 
   } catch (const std::exception &e) {
     throw std::runtime_error("Failed to save model weights with dtype: " +
+                             std::string(e.what()));
+  }
+};
+
+/**
+ * @brief Repack all QS4CX weights after loading.
+ */
+void Transformer::repack_weight() {
+  if (!is_initialized) {
+    throw std::runtime_error(
+      "Transformer model is not initialized. Please call "
+      "initialize() before repack_weight().");
+  }
+  std::function<void(ml::train::Layer &, nntrainer::RunLayerContext &, void *)>
+    fn = [](ml::train::Layer &l, nntrainer::RunLayerContext &context, void *) {
+      auto weights = context.getWeights();
+      for (auto &w : weights) {
+        if (w->getVariableRef().getDataType() ==
+            ml::train::TensorDim::DataType::QS4CX) {
+          w->getVariableRef().pack();
+        }
+      }
+    };
+  try {
+    model->forEachLayer(fn, nullptr);
+    ml_logd("QS4CX weights repacked successfully");
+  } catch (const std::exception &e) {
+    throw std::runtime_error("Failed to repack weights: " +
                              std::string(e.what()));
   }
 };

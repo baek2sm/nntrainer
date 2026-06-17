@@ -390,6 +390,7 @@ int main(int argc, char *argv[]) {
     }
     model->initialize();
     model->load_weight(weight_file);
+    model->repack_weight();
 
     bool do_sample = generation_cfg.value("do_sample", false);
 

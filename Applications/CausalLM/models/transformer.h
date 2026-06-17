@@ -102,6 +102,13 @@ public:
   virtual void load_weight(const std::string &weight_path);
 
   /**
+   * @brief Repack all QS4CX weights after loading
+   * @note Must be called after load_weight() for QS4CX quantized tensors
+   * @note Prepares weights for efficient computation by eagerly packing them
+   */
+  virtual void repack_weight();
+
+  /**
    * @brief Save the weight to a file
    */
   virtual void save_weight(const std::string &weight_path);
