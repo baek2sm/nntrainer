@@ -188,7 +188,7 @@ static void im2col(const Tensor &in, const TensorDim &kdim,
 
   //           for (unsigned int w = ws; w < patch_width_end; w += dilation[1])
   //           {
-  //             if (w < pw || in_width + pw <= w) {
+  //             if (w < 0 || in_width <= w) {
   //               im_h++;
   //               continue;
   //             }
@@ -297,9 +297,12 @@ Conv2DLayer::Conv2DLayer(
   padding(padding_),
   conv_props(props::FilterSize(), std::array<props::KernelSize, CONV2D_DIM>(),
              std::array<props::Stride, CONV2D_DIM>(), props::Padding2D(),
-             std::array<props::Dilation, CONV2D_DIM>(), props::ConvGroups()) {
+             std::array<props::Dilation, CONV2D_DIM>(), props::ConvGroups(),
+             Conv2DWeightQuant()) {
   wt_idx.fill(std::numeric_limits<unsigned>::max());
 }
+
+Conv2DLayer::~Conv2DLayer() = default;
 
 void Conv2DLayer::finalize(InitLayerContext &context) {
   NNTR_THROW_IF(context.getNumInputs() != 1, std::invalid_argument)
@@ -352,7 +355,7 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
   if (disable_bias.empty() || disable_bias.get() == false) {
     wt_idx[ConvParams::bias] =
       context.requestWeight(bias_dim, bias_initializer, WeightRegularizer::NONE,
-                            1.0f, bias_decay, "bias", true, 0);
+                            1.0f, bias_decay, "bias", true);
   }
 
   // this output_dim must be the same with dimension of hidden
@@ -383,6 +386,32 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
                   eff_in_width - padding[2] - kernel_size[1] > IM,
                 std::invalid_argument)
     << "Failed to initialize: Calculated patch end is over int max";
+
+  // Q4_0 quantization setup: only for groups==1 (non-depthwise) and K%32==0
+  auto &weight_quant_prop = std::get<Conv2DWeightQuant>(conv_props);
+  bool use_q4_0 = !weight_quant_prop.empty() &&
+                  weight_quant_prop.get() == "Q4_0";
+
+  // K = in_channels/groups * kernel_height * kernel_width
+  unsigned int K = (in_dim.channel() / groups) * kernel_size[0] * kernel_size[1];
+
+  // gemm_q4_0 rounds thread ranges up to multiples of 8 for filter rows (N),
+  // so N must be divisible by 8 to avoid out-of-bounds B/C access.
+  use_q4_0_gemm =
+    use_q4_0 && (groups == 1) && (K % 32 == 0) && (filter_size % 8 == 0);
+
+  if (use_q4_0_gemm) {
+    // Pre-quantize and repack filter weights during finalize
+    // Note: Actual quantization happens after weights are loaded/initialized,
+    // which is handled in initialize() or first forwarding if weights change
+    filter_q4_0_M = filter_size; // N in GEMM (output channels)
+    filter_q4_0_N = K;           // K in GEMM (input features per output)
+  }
+}
+
+void Conv2DLayer::initialize(RunLayerContext &context) {
+  // Q4_0 buffer is populated lazily in forwarding() on first call, after
+  // weights are loaded. Nothing to do here for the buffer.
 }
 
 void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
@@ -440,7 +469,75 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   auto &groups_prop = std::get<props::ConvGroups>(conv_props);
   unsigned int groups = groups_prop.empty() ? 1 : groups_prop.get();
 
-  if (groups == 1) {
+  if (use_q4_0_gemm && groups == 1) {
+    // Q4_0 GEMM path: im2col -> gemm_q4_0 -> output
+
+    unsigned int K = filter_dim.getFeatureLen();
+    unsigned int M = out_dim.width() * out_dim.height();
+    unsigned int N = filter_size;
+
+    // Lazy quantization: populate Q4_0 buffer on first forwarding call, after
+    // weights have been loaded by loadSafetensors/setWeights.
+    if (filter_q4_0_buffer.empty()) {
+      // Copy filter_dim BEFORE reshape — filter_dim is a reference and becomes
+      // stale after reshape, so we must save the original 4D shape here.
+      TensorDim orig_filter_dim = filter_dim;
+      TensorDim filter_2d_dim{N, K, 1, 1, filter_dim.getTensorType()};
+      filter_kernel.reshape(filter_2d_dim);
+      size_t q4_0_raw_size = (size_t)N * (K / 32) * 18;
+      std::vector<char> q4_0_raw(q4_0_raw_size);
+      quantize_q4_0(filter_kernel.getData<float>(), q4_0_raw.data(), N, K,
+                    nullptr);
+      filter_q4_0_buffer.resize(q4_0_raw_size);
+      repack_q4_0(filter_q4_0_buffer.data(), q4_0_raw.data(), q4_0_raw_size, N,
+                  K, ml::train::ISA::DEFAULT);
+      filter_kernel.reshape(orig_filter_dim);
+    }
+
+    auto forwarding_job = [&](unsigned int s, unsigned int e, unsigned int pid,
+                              void *user_data) {
+      Tensor columns = Tensor(calcCol2ImOutputDim(out_dim, filter_dim));
+      columns.setZero();
+
+      // temp buffer for GEMM output: C(M, N) = columns(M,K) × filter^T(N,K)
+      // Then transpose C into out(N, M).
+      std::vector<float> temp_C(M * N);
+
+      for (unsigned int b = s; b < e; ++b) {
+        Tensor out = hidden_.getBatchSlice(b, 1);
+        out.reshape({filter_size, out_dim.width() * out_dim.height()});
+        Tensor in_sub = input_.getBatchSlice(b, 1);
+
+        im2col(in_sub, filter_dim, padding, stride, dilation, columns);
+        // After im2col, columns has shape (M, K): M=OH*OW rows, K=in_ch*kh*kw cols.
+        // gemm_q4_0(M, N, K, A(M,K), lda=K, B(N,K), ldb=N, C(M,N), ldc=N)
+        // computes C = A × B^T = columns × filter^T → C(M, N).
+        // out is (N, M), so transpose: out[n*M+m] = C[m*N+n].
+        gemm_q4_0(M, N, K,
+                  columns.getData<float>(), K,
+                  filter_q4_0_buffer.data(), N,
+                  temp_C.data(), N);
+
+        float *out_data = out.getData<float>();
+        for (unsigned int m = 0; m < M; ++m) {
+          for (unsigned int n = 0; n < N; ++n) {
+            out_data[n * M + m] = temp_C[m * N + n];
+          }
+        }
+      }
+      columns.deallocate();
+    };
+
+    auto workers = ParallelBatch(forwarding_job, in_dim.batch(), nullptr);
+
+    if (workers.getNumWorkers() > 1) {
+      workers.run();
+    } else {
+      forwarding_job(0, in_dim.batch(), 0, nullptr);
+    }
+
+  } else if (groups == 1) {
+    // Standard FP32 GEMM path (existing behavior)
     TensorDim filter_dim_squeezed{filter_kernel.batch(),
                                   filter_kernel.getDim().getFeatureLen()};
 

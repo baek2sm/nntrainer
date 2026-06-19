@@ -70,6 +70,11 @@ using ModelHandle = std::unique_ptr<ml::train::Model>;
 
 namespace yolov11 {
 
+// When YOLO_Q4_0=1 env var is set, non-depthwise conv2d layers request Q4_0
+// weight quantization. Layers where K%32≠0 or groups>1 fall back to FP32
+// automatically inside Conv2DLayer.
+static std::string g_weight_dtype = "FP32";
+
 // ===== graph block builders (Conv/BN/SiLU, C3k2, SPPF) =====
 /**
  * @brief Build a Conv2d + BN + SiLU sub-graph block.
@@ -93,7 +98,8 @@ inline Tensor convBnSilu(const std::string &name, int in_ch, int out_ch, int k,
                            nntrainer::withKey("filters", out_ch),
                            nntrainer::withKey("stride", {stride, stride}),
                            nntrainer::withKey("padding", padding),
-                           nntrainer::withKey("disable_bias", "true")}));
+                           nntrainer::withKey("disable_bias", "true"),
+                           nntrainer::withKey("conv_weight_quant", g_weight_dtype)}));
   auto h = conv(input);
 
   LayerHandle bn(createLayer("batch_normalization",
@@ -233,7 +239,8 @@ inline Tensor convBnOnly(const std::string &name, int in_ch, int out_ch, int k,
                            nntrainer::withKey("filters", out_ch),
                            nntrainer::withKey("stride", {stride, stride}),
                            nntrainer::withKey("padding", padding),
-                           nntrainer::withKey("disable_bias", "true")}));
+                           nntrainer::withKey("disable_bias", "true"),
+                           nntrainer::withKey("conv_weight_quant", g_weight_dtype)}));
   auto h = conv(input);
 
   LayerHandle bn(createLayer("batch_normalization",
@@ -306,7 +313,8 @@ inline Tensor convBias1x1(const std::string &name, int out_ch, Tensor input) {
                            nntrainer::withKey("kernel_size", {1, 1}),
                            nntrainer::withKey("filters", out_ch),
                            nntrainer::withKey("stride", {1, 1}),
-                           nntrainer::withKey("padding", 0)}));
+                           nntrainer::withKey("padding", 0),
+                           nntrainer::withKey("conv_weight_quant", g_weight_dtype)}));
   return conv(input);
 }
 
@@ -960,6 +968,12 @@ int main(int argc, char *argv[]) {
     const std::string input_path =
       (argc > 2) ? argv[2] : (RES_DIR + "/input_832.bin");
     const bool verify = std::getenv("YOLO_VERIFY") != nullptr;
+    const bool use_q4_0 = std::getenv("YOLO_Q4_0") != nullptr;
+    if (use_q4_0) {
+      yolov11::g_weight_dtype = "Q4_0";
+      std::cout << "Weight mode: Q4_0 (non-depthwise conv, K%32==0 layers; "
+                   "others fall back to FP32)" << std::endl;
+    }
 
     registerCustomLayers();
 
