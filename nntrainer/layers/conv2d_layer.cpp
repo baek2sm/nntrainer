@@ -18,6 +18,7 @@
 
 #include <conv2d_layer.h>
 #include <cpu_backend.h>
+#include <nntr_ggml_impl.h>
 #include <layer_context.h>
 #include <lazy_tensor.h>
 #include <nntr_threads.h>
@@ -348,8 +349,37 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
               .compute(in_dim, kernel_dim, {stride[0], stride[1]},
                        {dilation[0], dilation[1]});
 
+  // Q4_0 quantization setup: only for groups==1 (non-depthwise) and K%32==0
+  auto &weight_quant_prop = std::get<Conv2DWeightQuant>(conv_props);
+  const std::string quant_val =
+    weight_quant_prop.empty() ? "" : weight_quant_prop.get();
+  bool use_q4_0 = (quant_val == "Q4_0" || quant_val == "Q4_0_PRELOAD");
+  use_q4_0_preload = (quant_val == "Q4_0_PRELOAD");
+
+  // K = in_channels/groups * kernel_height * kernel_width
+  unsigned int K = (in_dim.channel() / groups) * kernel_size[0] * kernel_size[1];
+
+  // gemm_q4_0 rounds thread ranges up to multiples of 8 for filter rows (N),
+  // so N must be divisible by 8 to avoid out-of-bounds B/C access.
+  bool eligible = (groups == 1) && (K % 32 == 0) && (filter_size % 8 == 0);
+  use_q4_0_gemm = use_q4_0 && eligible;
+
+  if (use_q4_0_gemm) {
+    // Pre-quantize and repack filter weights during finalize
+    // Note: Actual quantization happens after weights are loaded/initialized,
+    // which is handled in initialize() or first forwarding if weights change
+    filter_q4_0_M = filter_size; // N in GEMM (output channels)
+    filter_q4_0_N = K;           // K in GEMM (input features per output)
+    filter_q4_0_orig_dim = kernel_dim;  // Store original shape for Q4_0_PRELOAD
+  }
+
+  // Q4_0_PRELOAD: placeholder (1,1,1,1) to skip FP32 allocation
+  TensorDim weight_reg_dim =
+    (use_q4_0_preload && eligible)
+    ? TensorDim(1, 1, 1, 1, kernel_dim.getTensorType())
+    : kernel_dim;
   wt_idx[ConvParams::weight] = context.requestWeight(
-    kernel_dim, weight_initializer, weight_regularizer,
+    weight_reg_dim, weight_initializer, weight_regularizer,
     weight_regularizer_constant, weight_decay, "filter", true, 0);
 
   if (disable_bias.empty() || disable_bias.get() == false) {
@@ -386,32 +416,42 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
                   eff_in_width - padding[2] - kernel_size[1] > IM,
                 std::invalid_argument)
     << "Failed to initialize: Calculated patch end is over int max";
-
-  // Q4_0 quantization setup: only for groups==1 (non-depthwise) and K%32==0
-  auto &weight_quant_prop = std::get<Conv2DWeightQuant>(conv_props);
-  bool use_q4_0 = !weight_quant_prop.empty() &&
-                  weight_quant_prop.get() == "Q4_0";
-
-  // K = in_channels/groups * kernel_height * kernel_width
-  unsigned int K = (in_dim.channel() / groups) * kernel_size[0] * kernel_size[1];
-
-  // gemm_q4_0 rounds thread ranges up to multiples of 8 for filter rows (N),
-  // so N must be divisible by 8 to avoid out-of-bounds B/C access.
-  use_q4_0_gemm =
-    use_q4_0 && (groups == 1) && (K % 32 == 0) && (filter_size % 8 == 0);
-
-  if (use_q4_0_gemm) {
-    // Pre-quantize and repack filter weights during finalize
-    // Note: Actual quantization happens after weights are loaded/initialized,
-    // which is handled in initialize() or first forwarding if weights change
-    filter_q4_0_M = filter_size; // N in GEMM (output channels)
-    filter_q4_0_N = K;           // K in GEMM (input features per output)
-  }
 }
 
 void Conv2DLayer::initialize(RunLayerContext &context) {
   // Q4_0 buffer is populated lazily in forwarding() on first call, after
   // weights are loaded. Nothing to do here for the buffer.
+}
+
+void Conv2DLayer::extract_im2col_row_q8_0(const float *input, void *dst_row,
+                                          int m, int c_in, int h_in, int w_in,
+                                          int kH, int kW, int stride_h,
+                                          int stride_w, int pad_h, int pad_w,
+                                          int K) {
+  // Reconstruct which (oh, ow) position this row m corresponds to.
+  // out_width = (w_in + 2*pad_w - kW) / stride_w + 1
+  int out_w = (w_in + 2 * pad_w - kW) / stride_w + 1;
+  int oh = (m / out_w) * stride_h - pad_h;
+  int ow = (m % out_w) * stride_w - pad_w;
+
+  // Fill patch[K] with the im2col values for this row (zero for padding).
+  std::vector<float> patch(K, 0.0f);
+  int idx = 0;
+  for (int c = 0; c < c_in; ++c) {
+    for (int kh = 0; kh < kH; ++kh) {
+      int ih = oh + kh;
+      for (int kw = 0; kw < kW; ++kw) {
+        int iw = ow + kw;
+        if (ih >= 0 && ih < h_in && iw >= 0 && iw < w_in) {
+          patch[idx] = input[c * h_in * w_in + ih * w_in + iw];
+        }
+        ++idx;
+      }
+    }
+  }
+
+  // Quantize the patch to Q8_0 format (block_q8_0: 2B scale + 32×int8).
+  nntr_quantize_row_q8_0(patch.data(), dst_row, (int64_t)K);
 }
 
 void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
@@ -469,16 +509,27 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   auto &groups_prop = std::get<props::ConvGroups>(conv_props);
   unsigned int groups = groups_prop.empty() ? 1 : groups_prop.get();
 
+  // For Q4_0_PRELOAD mode, use stored original dimension for im2col
+  const TensorDim &im2col_filter_dim = use_q4_0_preload ? filter_q4_0_orig_dim : filter_dim;
+
   if (use_q4_0_gemm && groups == 1) {
     // Q4_0 GEMM path: im2col -> gemm_q4_0 -> output
 
-    unsigned int K = filter_dim.getFeatureLen();
+    // For Q4_0_PRELOAD mode, use stored original dimension; otherwise use filter_dim
+    unsigned int K = use_q4_0_preload ? filter_q4_0_orig_dim.getFeatureLen()
+                                       : filter_dim.getFeatureLen();
     unsigned int M = out_dim.width() * out_dim.height();
     unsigned int N = filter_size;
 
     // Lazy quantization: populate Q4_0 buffer on first forwarding call, after
     // weights have been loaded by loadSafetensors/setWeights.
     if (filter_q4_0_buffer.empty()) {
+      if (use_q4_0_preload) {
+        // Q4_0_PRELOAD mode: loadQ40Weights() must be called before forwarding
+        throw std::runtime_error(
+          "[Conv2D] Q4_0_PRELOAD mode: loadQ40Weights() must be called "
+          "before forwarding(). Use loadQ40Safetensors() to load weights.");
+      }
       // Copy filter_dim BEFORE reshape — filter_dim is a reference and becomes
       // stale after reshape, so we must save the original 4D shape here.
       TensorDim orig_filter_dim = filter_dim;
@@ -494,12 +545,29 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       filter_kernel.reshape(orig_filter_dim);
     }
 
+    // Q8_0 block size: { nntr_half d; int8_t qs[32]; } = 34 bytes per block.
+    static constexpr size_t Q8_0_BLOCK_BYTES = 34;
+    static constexpr unsigned int Q8_0_BLOCK_ELEMS = 32;
+    const size_t q8_row_stride = (K / Q8_0_BLOCK_ELEMS) * Q8_0_BLOCK_BYTES;
+
+    // im2col_filter_dim is used to derive c_in, kH, kW for the helper.
+    const unsigned int kH_val = im2col_filter_dim.height();
+    const unsigned int kW_val = im2col_filter_dim.width();
+    const unsigned int c_in_val = im2col_filter_dim.channel();
+    const unsigned int h_in_val = in_dim.height();
+    const unsigned int w_in_val = in_dim.width();
+    const int pad_h_val = static_cast<int>(padding[0]);
+    const int pad_w_val = static_cast<int>(padding[2]);
+    const int stride_h_val = static_cast<int>(stride[0]);
+    const int stride_w_val = static_cast<int>(stride[1]);
+
     auto forwarding_job = [&](unsigned int s, unsigned int e, unsigned int pid,
                               void *user_data) {
-      Tensor columns = Tensor(calcCol2ImOutputDim(out_dim, filter_dim));
-      columns.setZero();
+      // Q8_0 column buffer: M rows × q8_row_stride bytes each.
+      // Replaces the FP32 im2col buffer (~4× smaller).
+      std::vector<uint8_t> q8_col(M * q8_row_stride);
 
-      // temp buffer for GEMM output: C(M, N) = columns(M,K) × filter^T(N,K)
+      // temp buffer for GEMM output: C(M, N) = A_q8(M,K) × filter^T(N,K)
       // Then transpose C into out(N, M).
       std::vector<float> temp_C(M * N);
 
@@ -507,16 +575,30 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
         Tensor out = hidden_.getBatchSlice(b, 1);
         out.reshape({filter_size, out_dim.width() * out_dim.height()});
         Tensor in_sub = input_.getBatchSlice(b, 1);
+        const float *in_ptr = in_sub.getData<float>();
 
-        im2col(in_sub, filter_dim, padding, stride, dilation, columns);
-        // After im2col, columns has shape (M, K): M=OH*OW rows, K=in_ch*kh*kw cols.
-        // gemm_q4_0(M, N, K, A(M,K), lda=K, B(N,K), ldb=N, C(M,N), ldc=N)
-        // computes C = A × B^T = columns × filter^T → C(M, N).
-        // out is (N, M), so transpose: out[n*M+m] = C[m*N+n].
-        gemm_q4_0(M, N, K,
-                  columns.getData<float>(), K,
-                  filter_q4_0_buffer.data(), N,
-                  temp_C.data(), N);
+        // Quantize each im2col row directly to Q8_0 (avoids FP32 col buffer).
+        for (unsigned int mi = 0; mi < M; ++mi) {
+          extract_im2col_row_q8_0(
+            in_ptr,
+            q8_col.data() + mi * q8_row_stride,
+            static_cast<int>(mi),
+            static_cast<int>(c_in_val),
+            static_cast<int>(h_in_val),
+            static_cast<int>(w_in_val),
+            static_cast<int>(kH_val),
+            static_cast<int>(kW_val),
+            stride_h_val, stride_w_val,
+            pad_h_val, pad_w_val,
+            static_cast<int>(K));
+        }
+
+        // gemm_q4_0_from_q8: C(M,N) = A_q8(M,K) × B^T(N,K)
+        gemm_q4_0_from_q8(M, N, K,
+                          reinterpret_cast<const char *>(q8_col.data()),
+                          q8_row_stride,
+                          filter_q4_0_buffer.data(), N,
+                          temp_C.data(), N);
 
         float *out_data = out.getData<float>();
         for (unsigned int m = 0; m < M; ++m) {
@@ -525,7 +607,6 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
           }
         }
       }
-      columns.deallocate();
     };
 
     auto workers = ParallelBatch(forwarding_job, in_dim.batch(), nullptr);
@@ -779,6 +860,11 @@ void Conv2DLayer::exportTo(Exporter &exporter,
 void Conv2DLayer::setProperty(const std::vector<std::string> &values) {
   auto remain_props = loadProperties(values, conv_props);
   LayerImpl::setProperty(remain_props);
+}
+
+void Conv2DLayer::loadQ40Weights(const uint8_t *bytes, size_t size) {
+  filter_q4_0_buffer.assign(bytes, bytes + size);
+  use_q4_0_gemm = true;
 }
 
 } /* namespace nntrainer */

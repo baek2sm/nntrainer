@@ -103,6 +103,25 @@ public:
    */
   void setProperty(const std::vector<std::string> &values) override;
 
+  /**
+   * @brief Load Q4_0 quantized weights from external buffer
+   * @param bytes pointer to Q4_0 byte buffer
+   * @param size size of the buffer in bytes
+   */
+  void loadQ40Weights(const uint8_t *bytes, size_t size);
+
+  /**
+   * @brief Get reference to Q4_0 buffer (const)
+   * @return const reference to the Q4_0 buffer
+   */
+  const std::vector<uint8_t>& getQ40Buffer() const { return filter_q4_0_buffer; }
+
+  /**
+   * @brief Get original filter dimension (for Q4_0_PRELOAD mode)
+   * @return TensorDim of the original filter shape
+   */
+  TensorDim getFilterOrigDim() const { return filter_q4_0_orig_dim; }
+
   /* TO DO : support keras type of padding */
   /* enum class PaddingType { */
   /*   full = 0, */
@@ -114,6 +133,28 @@ public:
   static constexpr const char *type = "conv2d";
 
 private:
+  /**
+   * @brief Extract one im2col row and quantize to Q8_0 in-place.
+   *
+   * @param input  FP32 input tensor data (single batch, NCHW layout)
+   * @param dst_row  destination buffer: (K/32) block_q8_0 blocks (34 B each)
+   * @param m  output spatial position index (row in the im2col matrix)
+   * @param c_in  number of input channels
+   * @param h_in  input height
+   * @param w_in  input width
+   * @param kH  kernel height
+   * @param kW  kernel width
+   * @param stride_h  vertical stride
+   * @param stride_w  horizontal stride
+   * @param pad_h  top padding
+   * @param pad_w  left padding
+   * @param K  total patch length = c_in * kH * kW (must be divisible by 32)
+   */
+  static void extract_im2col_row_q8_0(const float *input, void *dst_row, int m,
+                                      int c_in, int h_in, int w_in, int kH,
+                                      int kW, int stride_h, int stride_w,
+                                      int pad_h, int pad_w, int K);
+
   /**
    * @brief Conv2D-private property for Q4_0 weight quantization.
    *
@@ -145,6 +186,17 @@ private:
   unsigned int filter_q4_0_M{0}; /**< M dim for repacked filter */
   unsigned int filter_q4_0_N{0}; /**< N dim for repacked filter */
   bool use_q4_0_gemm{false};     /**< flag to use Q4_0 GEMM path */
+
+  /**
+   * @brief Q4_0_PRELOAD mode flag — when true, FP32 weight allocation is
+   * skipped and weights are loaded via loadQ40Weights()
+   */
+  bool use_q4_0_preload{false};
+
+  /**
+   * @brief Original filter shape for Q4_0_PRELOAD mode (used for quantizer)
+   */
+  TensorDim filter_q4_0_orig_dim;
 };
 
 } // namespace nntrainer

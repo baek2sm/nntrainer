@@ -390,6 +390,15 @@ void gemm_q4_0(const unsigned int M, std::vector<unsigned int> Ns,
   return __ggml_q4_0_4x8_q8_0_GEMM<float>(M, Ns, K, A, lda, Bs, ldbs, Cs, ldcs);
 }
 
+void gemm_q4_0_from_q8(const unsigned int M, const unsigned int N,
+                       const unsigned int K, const char *A_q8_row,
+                       const size_t row_stride_bytes, const void *B,
+                       const unsigned int ldb, float *C,
+                       const unsigned int ldc) {
+  return __ggml_q4_0_4x8_q8_0_GEMM_from_q8(M, N, K, A_q8_row, row_stride_bytes,
+                                            B, ldb, C, ldc);
+}
+
 void gemm_q4_K(const unsigned int M, const unsigned int N, const unsigned int K,
                const float *A, const unsigned int lda, const void *B,
                const unsigned int ldb, float *C, const unsigned int ldc) {

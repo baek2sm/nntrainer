@@ -393,6 +393,182 @@ void __ggml_q4_0_8x8_q8_0_GEMM(const unsigned int M,
                            "multi-weights is not implemented yet");
 }
 
+// ---------------------------------------------------------------------------
+// from_q8 variants: pre-quantized row-wise block_q8_0 → repack → kernels
+// ---------------------------------------------------------------------------
+
+static inline void repack_q8_0_to_q8_0x4_omp(const block_q8_0 *row0,
+                                              const block_q8_0 *row1,
+                                              const block_q8_0 *row2,
+                                              const block_q8_0 *row3,
+                                              block_q8_0x4 *out, int nb) {
+  for (int b = 0; b < nb; b++) {
+    out[b].d[0] = row0[b].d;
+    out[b].d[1] = row1[b].d;
+    out[b].d[2] = row2[b].d;
+    out[b].d[3] = row3[b].d;
+    for (int j = 0; j < 4; j++) {
+      memcpy(&out[b].qs[32 * j + 0],  &row0[b].qs[j * 8], 8);
+      memcpy(&out[b].qs[32 * j + 8],  &row1[b].qs[j * 8], 8);
+      memcpy(&out[b].qs[32 * j + 16], &row2[b].qs[j * 8], 8);
+      memcpy(&out[b].qs[32 * j + 24], &row3[b].qs[j * 8], 8);
+    }
+  }
+}
+
+void __ggml_q4_0_4x8_q8_0_GEMM_from_q8(const unsigned int M, const unsigned int N,
+                                        const unsigned int K, const char *A_q8_row,
+                                        const size_t row_stride_bytes, const void *B,
+                                        const unsigned int ldb, float *C,
+                                        const unsigned int ldc) {
+  auto &tm = ThreadManager::Global();
+  unsigned int nb = K / QK8_0;
+  unsigned int qa_4_rows_size = sizeof(block_q8_0x4) * nb;
+  const size_t qa_row_size = sizeof(block_q8_0) * nb;
+  unsigned int M4 = M / 4;
+  unsigned int B_step = sizeof(block_q4_0) * (K / QK4_0);
+
+  if (M == 1) {
+    unsigned int chunk_size = 16;
+    unsigned int loop = (N + chunk_size - 1) / chunk_size;
+    tm.parallel_for(0, loop, [=](size_t idx) {
+      unsigned int M_step_start = chunk_size * idx;
+      unsigned int M_step_end = std::min(chunk_size * (idx + 1), (size_t)N);
+      nntr_gemv_q4_0_4x8_q8_0(K, (float *)(C + M_step_start), N,
+                              (void *)((char *)B + M_step_start * B_step),
+                              A_q8_row, M, M_step_end - M_step_start);
+    });
+    return;
+  }
+
+  unsigned int qa_size = qa_4_rows_size * M4 +
+    static_cast<unsigned int>(qa_row_size) * (M % 4);
+  std::vector<char> QA(qa_size);
+
+  for (unsigned int i = 0; i < M4; i++) {
+    const block_q8_0 *r0 =
+      (const block_q8_0 *)(A_q8_row + (4 * i + 0) * row_stride_bytes);
+    const block_q8_0 *r1 =
+      (const block_q8_0 *)(A_q8_row + (4 * i + 1) * row_stride_bytes);
+    const block_q8_0 *r2 =
+      (const block_q8_0 *)(A_q8_row + (4 * i + 2) * row_stride_bytes);
+    const block_q8_0 *r3 =
+      (const block_q8_0 *)(A_q8_row + (4 * i + 3) * row_stride_bytes);
+    repack_q8_0_to_q8_0x4_omp(r0, r1, r2, r3,
+                               (block_q8_0x4 *)(QA.data() + i * qa_4_rows_size),
+                               nb);
+  }
+  for (unsigned int i = M4 * 4; i < M; i++) {
+    memcpy(QA.data() + M4 * qa_4_rows_size + (i - M4 * 4) * qa_row_size,
+           A_q8_row + i * row_stride_bytes, qa_row_size);
+  }
+
+  unsigned int row_chunk_size = 16;
+  size_t row_loop = (M4 * 4 + row_chunk_size - 1) / row_chunk_size;
+  unsigned int A_step = sizeof(block_q8_0) * (K / QK8_0);
+  unsigned int col_chunk_size = 16;
+  size_t col_loop = (N + col_chunk_size - 1) / col_chunk_size;
+
+  tm.parallel_for(0, col_loop * row_loop, [=](size_t i) {
+    unsigned int r = i / col_loop;
+    unsigned int c = i % col_loop;
+    unsigned int r_start = r * row_chunk_size;
+    unsigned int r_end = std::min(row_chunk_size * (r + 1), M4 * 4);
+    unsigned int c_start = c * col_chunk_size;
+    unsigned int c_end = std::min(col_chunk_size * (c + 1), N);
+    nntr_gemm_q4_0_4x8_q8_0(K, (float *)(C + r_start * N + c_start), ldc,
+                            (void *)((char *)B + c_start * B_step),
+                            (void *)(QA.data() + r_start * A_step),
+                            r_end - r_start, c_end - c_start);
+  });
+
+  for (unsigned int pb = M4 * 4; pb < M; pb++) {
+    unsigned int chunk_size = 16;
+    unsigned int loop = (N + chunk_size - 1) / chunk_size;
+    tm.parallel_for(0, loop, [=](size_t idx) {
+      unsigned int M_step_start = chunk_size * idx;
+      unsigned int M_step_end = std::min(chunk_size * (idx + 1), (size_t)N);
+      nntr_gemv_q4_0_4x8_q8_0(
+        K, (float *)(C + (pb - M4 * 4) * N + M4 * 4 * N + M_step_start), N,
+        (void *)((char *)B + M_step_start * B_step),
+        QA.data() + M4 * qa_4_rows_size + (pb - M4 * 4) * qa_row_size, 1,
+        M_step_end - M_step_start);
+    });
+  }
+}
+
+void __ggml_q4_0_8x8_q8_0_GEMM_from_q8(const unsigned int M, const unsigned int N,
+                                        const unsigned int K, const char *A_q8_row,
+                                        const size_t row_stride_bytes, const void *B,
+                                        const unsigned int ldb, float *C,
+                                        const unsigned int ldc) {
+  auto &tm = ThreadManager::Global();
+  unsigned int thread_num = tm.getComputeThreadCount();
+  unsigned int nb = K / QK8_0;
+  unsigned int qa_4_rows_size = sizeof(block_q8_0x4) * nb;
+  const size_t qa_row_size = sizeof(block_q8_0) * nb;
+  unsigned int M4 = (M - M % 4) / 4;
+  int B_step = sizeof(block_q4_0) * (K / QK4_0);
+
+  if (M == 1) {
+    tm.parallel_for(0, thread_num, [=](size_t thread_idx) {
+      unsigned int M_step_start = (thread_idx * N) / thread_num;
+      unsigned int M_step_end = ((thread_idx + 1) * N) / thread_num;
+      M_step_start = (M_step_start % 8) ? M_step_start + 8 - (M_step_start % 8) : M_step_start;
+      M_step_end = (M_step_end % 8) ? M_step_end + 8 - (M_step_end % 8) : M_step_end;
+      nntr_gemv_q4_0_8x8_q8_0(K, (float *)(C + M_step_start), N,
+                              (void *)((char *)B + M_step_start * B_step),
+                              A_q8_row, M, M_step_end - M_step_start);
+    });
+    return;
+  }
+
+  unsigned int qa_size = qa_4_rows_size * (((M >> 2) << 2) / 4 + 1);
+  std::vector<char> QA(qa_size);
+
+  for (unsigned int i = 0; i < M4; i++) {
+    const block_q8_0 *r0 =
+      (const block_q8_0 *)(A_q8_row + (4 * i + 0) * row_stride_bytes);
+    const block_q8_0 *r1 =
+      (const block_q8_0 *)(A_q8_row + (4 * i + 1) * row_stride_bytes);
+    const block_q8_0 *r2 =
+      (const block_q8_0 *)(A_q8_row + (4 * i + 2) * row_stride_bytes);
+    const block_q8_0 *r3 =
+      (const block_q8_0 *)(A_q8_row + (4 * i + 3) * row_stride_bytes);
+    repack_q8_0_to_q8_0x4_omp(r0, r1, r2, r3,
+                               (block_q8_0x4 *)(QA.data() + i * qa_4_rows_size),
+                               nb);
+  }
+  for (unsigned int i = M4 * 4; i < M; i++) {
+    memcpy(QA.data() + M4 * qa_4_rows_size + (i - M4 * 4) * qa_row_size,
+           A_q8_row + i * row_stride_bytes, qa_row_size);
+  }
+
+  tm.parallel_for(0, thread_num, [=](size_t i) {
+    unsigned int src0_start = (i * N) / thread_num;
+    unsigned int src0_end = ((i + 1) * N) / thread_num;
+    src0_start = (src0_start % 8) ? src0_start + 8 - (src0_start % 8) : src0_start;
+    src0_end = (src0_end % 8) ? src0_end + 8 - (src0_end % 8) : src0_end;
+    nntr_gemm_q4_0_8x8_q8_0(K, (float *)(C + src0_start), ldc,
+                            (void *)((char *)B + src0_start * B_step),
+                            QA.data(), M4 * 4, src0_end - src0_start);
+  });
+
+  for (unsigned int pb = M4 * 4; pb < M; pb++) {
+    tm.parallel_for(0, thread_num, [=](size_t thread_idx) {
+      unsigned int M_step_start = (thread_idx * N) / thread_num;
+      unsigned int M_step_end = ((thread_idx + 1) * N) / thread_num;
+      M_step_start = (M_step_start % 8) ? M_step_start + 8 - (M_step_start % 8) : M_step_start;
+      M_step_end = (M_step_end % 8) ? M_step_end + 8 - (M_step_end % 8) : M_step_end;
+      nntr_gemv_q4_0_8x8_q8_0(
+        K, (float *)(C + (pb - M4 * 4) * N + M4 * 4 * N + M_step_start), N,
+        (void *)((char *)B + M_step_start * B_step),
+        QA.data() + M4 * qa_4_rows_size + (pb - M4 * 4) * qa_row_size, 1,
+        M_step_end - M_step_start);
+    });
+  }
+}
+
 void __ggml_q4_K_8x8_q8_K_GEMM(const unsigned int M, const unsigned int N,
                                const unsigned int K, const float *A,
                                const unsigned int lda, const void *B,

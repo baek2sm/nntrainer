@@ -1096,6 +1096,27 @@ extern void gemm_q4_0(const unsigned int M, const unsigned int N,
                       const unsigned int ldc);
 
 /**
+ * @brief q4_0 GEMM with pre-quantized q8_0 activation : A_q8 (M,K) * W.T
+ * (N,K) = O (M,N)
+ *
+ * @param M Original row size of output
+ * @param N Original col size of output
+ * @param K Hidden size
+ * @param A_q8_row Pre-quantized q8_0 activation rows
+ * @param row_stride_bytes byte stride between rows of A_q8_row
+ * @param B (void*) Offline-quantized transposed weight (q4_0x4 on ARM,
+ * q4_0x8 on x86)
+ * @param ldb Leading dimension of B
+ * @param C float* output
+ * @param ldc Leading dimension of C
+ */
+extern void gemm_q4_0_from_q8(const unsigned int M, const unsigned int N,
+                               const unsigned int K, const char *A_q8_row,
+                               const size_t row_stride_bytes, const void *B,
+                               const unsigned int ldb, float *C,
+                               const unsigned int ldc);
+
+/**
  * @brief q4_K GEMM : A (M,K) * W.T (N,K) = O (M,N)
  *
  * @param M Original row size of output
