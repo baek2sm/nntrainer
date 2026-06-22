@@ -228,4 +228,13 @@ INSTANTIATE_TEST_SUITE_P(
     return info.param.name;
   });
 
+#ifdef ENABLE_FP16
+INSTANTIATE_TEST_SUITE_P(
+  GptOssFp16, GptOssTinyModelTest,
+  ::testing::Values(makeGptOssCase(causallm_test::makeTinyQ40Fp16DataType())),
+  [](const ::testing::TestParamInfo<causallm_test::TinyCausalLMCase> &info) {
+    return info.param.name;
+  });
+#endif
+
 } // namespace
