@@ -2259,8 +2259,10 @@ void transform_int4_osv32_isv2_to_q4_0x8(size_t N, size_t K,
 //                       B is N rows x K cols, row-major, ldb columns
 //   TransB=false (AV): C[m, n] = alpha * sum_k A[m,k] * fp16(B[k,n])
 //                       B is K rows x N cols, row-major, ldb columns
-__attribute__((target("avx2,f16c,fma"))) void
-hsgemm_fp16bits_avx2(unsigned int M, unsigned int N, unsigned int K,
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2,f16c,fma")))
+#endif
+void hsgemm_fp16bits_avx2(unsigned int M, unsigned int N, unsigned int K,
                      float alpha, const float *A, unsigned int lda,
                      const uint16_t *B, unsigned int ldb, bool TransB, float *C,
                      unsigned int ldc) {
