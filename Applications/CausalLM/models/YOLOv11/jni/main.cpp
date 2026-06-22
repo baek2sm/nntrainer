@@ -40,10 +40,14 @@
 #include <engine.h>
 #include <layer.h>
 #include <model.h>
+#include <cpu_backend.h>
 #include <safetensors_util.h>
 #include <tensor.h>
 #include <tensor_api.h>
 #include <util_func.h>
+#include <layer_node.h>
+#include <filesystem>
+#include <iomanip>
 
 #include "c2psa_layer.h"
 
@@ -959,20 +963,312 @@ void verifyAgainst(const std::string &ref_name, const float *out, size_t n) {
             << std::endl;
 }
 
+/**
+ * @brief Save FP32 safetensors as Q4_0 quantized safetensors.
+ *
+ * Reads FP32 safetensors, converts eligible conv filters to Q4_0, and writes
+ * a new safetensors file. Eligible filters: C > 1, K % 32 == 0, N % 8 == 0.
+ */
+void saveQ40Safetensors(const std::string &src_path, const std::string &dst_path) {
+  std::ifstream f(src_path, std::ios::binary);
+  if (!f)
+    throw std::runtime_error("Cannot open source safetensors: " + src_path);
+  
+  uint64_t hlen = 0;
+  f.read(reinterpret_cast<char *>(&hlen), 8);
+  std::string hdr(hlen, '\0');
+  f.read(&hdr[0], static_cast<std::streamsize>(hlen));
+  
+  auto entries = nntrainer::safetensors::parseHeaderEntries(hdr);
+  const std::streamoff data_base = 8 + static_cast<std::streamoff>(hlen);
+  
+  std::vector<nntrainer::safetensors::TensorEntry> out_entries;
+  std::vector<uint8_t> all_raw_bytes;
+  size_t data_offset = 0;
+  int q4_count = 0;
+  int fp32_count = 0;
+  
+  for (const auto &entry : entries) {
+    bool is_filter = (entry.name.size() >= 7 && 
+                      entry.name.compare(entry.name.size() - 7, 7, ":filter") == 0);
+    
+    if (is_filter && entry.shape.size() == 4) {
+      // Extract (N, C, kH, kW) from shape
+      size_t N = entry.shape[0];
+      size_t C = entry.shape[1];
+      size_t kH = entry.shape[2];
+      size_t kW = entry.shape[3];
+      size_t K = C * kH * kW;
+      
+      // Check eligibility: C > 1, K % 32 == 0, N % 8 == 0
+      bool eligible = (C > 1) && (K % 32 == 0) && (N % 8 == 0);
+      
+      if (eligible) {
+        // Read FP32 data
+        size_t n_floats = N * K;
+        std::vector<float> fp32_data(n_floats);
+        f.seekg(data_base + static_cast<std::streamoff>(entry.offset_start));
+        f.read(reinterpret_cast<char *>(fp32_data.data()), 
+               static_cast<std::streamsize>(n_floats * sizeof(float)));
+        
+        // Quantize to Q4_0
+        size_t q4_raw_size = n_floats / 2;  // 4 bits per weight = 0.5 bytes per weight
+        // Actually Q4_0 block size is 32, each block = 2 bytes (scale) + 16 bytes (qs) = 18 bytes
+        // So: q4_raw_size = (N * K / 32) * 18
+        q4_raw_size = (N * K / 32) * 18;
+        
+        std::vector<char> q4_raw(q4_raw_size);
+        nntrainer::quantize_q4_0(fp32_data.data(), q4_raw.data(),
+                                 static_cast<int64_t>(N),
+                                 static_cast<int64_t>(K), nullptr);
+
+        std::vector<uint8_t> repacked(q4_raw_size);
+        nntrainer::repack_q4_0(repacked.data(), q4_raw.data(), q4_raw_size,
+                               static_cast<unsigned int>(N),
+                               static_cast<unsigned int>(K),
+                               ml::train::ISA::DEFAULT);
+        
+        // Create new TensorEntry for Q4_0
+        nntrainer::safetensors::TensorEntry new_entry;
+        new_entry.name = entry.name;
+        new_entry.dtype = "U8";
+        new_entry.shape = {q4_raw_size};
+        new_entry.nntr_dtype = "Q4_0";
+        new_entry.nntr_shape = {N, C, kH, kW};
+        new_entry.offset_start = data_offset;
+        new_entry.offset_end = data_offset + q4_raw_size;
+        
+        out_entries.push_back(std::move(new_entry));
+        all_raw_bytes.insert(all_raw_bytes.end(), repacked.begin(), repacked.end());
+        data_offset += q4_raw_size;
+        ++q4_count;
+      } else {
+        // Not eligible, keep as FP32
+        size_t n_bytes = entry.offset_end - entry.offset_start;
+        std::vector<uint8_t> buf(n_bytes);
+        f.seekg(data_base + static_cast<std::streamoff>(entry.offset_start));
+        f.read(reinterpret_cast<char *>(buf.data()), 
+               static_cast<std::streamsize>(n_bytes));
+        
+        nntrainer::safetensors::TensorEntry new_entry;
+        new_entry.name = entry.name;
+        new_entry.dtype = entry.dtype;
+        new_entry.shape = entry.shape;
+        new_entry.nntr_dtype = "";
+        new_entry.nntr_shape = {};
+        new_entry.offset_start = data_offset;
+        new_entry.offset_end = data_offset + n_bytes;
+        
+        out_entries.push_back(std::move(new_entry));
+        all_raw_bytes.insert(all_raw_bytes.end(), buf.begin(), buf.end());
+        data_offset += n_bytes;
+        ++fp32_count;
+      }
+    } else {
+      // Not a filter or not 4D, keep as FP32
+      size_t n_bytes = entry.offset_end - entry.offset_start;
+      std::vector<uint8_t> buf(n_bytes);
+      f.seekg(data_base + static_cast<std::streamoff>(entry.offset_start));
+      f.read(reinterpret_cast<char *>(buf.data()), 
+             static_cast<std::streamsize>(n_bytes));
+      
+      nntrainer::safetensors::TensorEntry new_entry;
+      new_entry.name = entry.name;
+      new_entry.dtype = entry.dtype;
+      new_entry.shape = entry.shape;
+      new_entry.nntr_dtype = "";
+      new_entry.nntr_shape = {};
+      new_entry.offset_start = data_offset;
+      new_entry.offset_end = data_offset + n_bytes;
+      
+      out_entries.push_back(std::move(new_entry));
+      all_raw_bytes.insert(all_raw_bytes.end(), buf.begin(), buf.end());
+      data_offset += n_bytes;
+      ++fp32_count;
+    }
+  }
+  
+  f.close();
+  
+  // Write output safetensors
+  std::map<std::string, std::string> metadata;
+  metadata["nntr_format"] = "nntr-safetensors-v1";
+  metadata["nntr_q4_0_isa"] = 
+#if defined(__aarch64__) || defined(__arm__)
+    "arm";
+#else
+    "x86";
+#endif
+  
+  std::string header_json = nntrainer::safetensors::buildHeader(out_entries, metadata);
+  uint64_t header_size = static_cast<uint64_t>(header_json.size());
+  
+  std::ofstream out_file(dst_path, std::ios::out | std::ios::binary | std::ios::trunc);
+  if (!out_file)
+    throw std::runtime_error("Cannot open destination safetensors: " + dst_path);
+  
+  // [8-byte header length]
+  out_file.write(reinterpret_cast<const char *>(&header_size), sizeof(header_size));
+  // [header JSON]
+  out_file.write(header_json.data(), static_cast<std::streamsize>(header_json.size()));
+  // [tensor raw data]
+  out_file.write(reinterpret_cast<const char *>(all_raw_bytes.data()), 
+                 static_cast<std::streamsize>(all_raw_bytes.size()));
+  out_file.close();
+  
+  std::cout << "Quantization complete: " << q4_count << " layers -> Q4_0, "
+            << fp32_count << " layers kept FP32" << std::endl;
+}
+
+/**
+ * @brief Load Q4_0 quantized safetensors and apply to model.
+ *
+ * Q4_0 tensors are loaded via Conv2DLayer::loadQ40Weights(),
+ * FP32 tensors are loaded via the existing setWeights() pattern.
+ *
+ * @note Validates nntr_q4_0_isa metadata against current platform.
+ */
+void loadQ40Safetensors(ml::train::Model *model, const std::string &path) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f)
+    throw std::runtime_error("Cannot open safetensors: " + path);
+  
+  uint64_t hlen = 0;
+  f.read(reinterpret_cast<char *>(&hlen), 8);
+  std::string hdr(hlen, '\0');
+  f.read(&hdr[0], static_cast<std::streamsize>(hlen));
+  
+  // Validate nntr_q4_0_isa metadata against current platform
+  auto metadata = nntrainer::safetensors::parseMetadata(hdr);
+  auto it = metadata.find("nntr_q4_0_isa");
+  if (it != metadata.end()) {
+    const std::string &file_isa = it->second;
+#if defined(__aarch64__) || defined(__arm__)
+    const std::string expected_isa = "arm";
+#else
+    const std::string expected_isa = "x86";
+#endif
+    if (file_isa != expected_isa) {
+      throw std::runtime_error("Q4_0 weights ISA mismatch: file=" + file_isa +
+                               ", expected=" + expected_isa);
+    }
+  } else {
+    std::cerr << "[warning] loadQ40Safetensors: nntr_q4_0_isa metadata not found "
+                 "(legacy file, proceeding anyway)"
+              << std::endl;
+  }
+  
+  auto entries = nntrainer::safetensors::parseHeaderEntries(hdr);
+  const std::streamoff data_base = 8 + static_cast<std::streamoff>(hlen);
+  auto layerOf = [](const std::string &n) { return n.substr(0, n.find(':')); };
+  
+  // Group consecutive entries by layer
+  size_t i = 0;
+  while (i < entries.size()) {
+    const std::string layer = layerOf(entries[i].name);
+    std::vector<std::vector<float>> fp32_bufs;
+    std::vector<float *> fp32_ptrs;
+    std::vector<std::vector<uint8_t>> q4_bufs;
+    size_t j = i;
+    
+    for (; j < entries.size() && layerOf(entries[j].name) == layer; ++j) {
+      const auto &e = entries[j];
+      
+      if (e.nntr_dtype == "Q4_0") {
+        // Q4_0 tensor: load as bytes
+        size_t n_bytes = e.offset_end - e.offset_start;
+        std::vector<uint8_t> buf(n_bytes);
+        f.seekg(data_base + static_cast<std::streamoff>(e.offset_start));
+        f.read(reinterpret_cast<char *>(buf.data()), 
+               static_cast<std::streamsize>(n_bytes));
+        q4_bufs.push_back(std::move(buf));
+      } else {
+        // FP32 tensor
+        size_t n = (e.offset_end - e.offset_start) / sizeof(float);
+        std::vector<float> buf(n);
+        f.seekg(data_base + static_cast<std::streamoff>(e.offset_start));
+        f.read(reinterpret_cast<char *>(buf.data()), 
+               static_cast<std::streamsize>(n * sizeof(float)));
+        fp32_bufs.push_back(std::move(buf));
+      }
+    }
+    
+    // Get layer handle
+    std::shared_ptr<ml::train::Layer> l;
+    if (model->getLayer(layer.c_str(), &l))
+      throw std::runtime_error("loadQ40Safetensors: no model layer named " + layer);
+    
+    // Apply Q4_0 weights first (if any)
+    for (const auto &buf : q4_bufs) {
+      auto *node = dynamic_cast<nntrainer::LayerNode *>(l.get());
+      if (!node)
+        throw std::runtime_error("loadQ40Safetensors: layer " + layer +
+                                 " is not a LayerNode");
+      node->loadQ40Weights(buf.data(), buf.size());
+    }
+    
+    // Apply FP32 weights via setWeights
+    for (auto &b : fp32_bufs)
+      fp32_ptrs.push_back(b.data());
+    if (!fp32_ptrs.empty()) {
+      if (!q4_bufs.empty()) {
+        // Q4_0 layer: prepend dummy for filter placeholder (1,1,1,1)
+        std::vector<float> dummy(1, 0.0f);
+        std::vector<float *> all_ptrs = {dummy.data()};
+        all_ptrs.insert(all_ptrs.end(), fp32_ptrs.begin(), fp32_ptrs.end());
+        l->setWeights(all_ptrs);
+      } else {
+        l->setWeights(fp32_ptrs);
+      }
+    }
+    
+    i = j;
+  }
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
   try {
     if (argc > 1)
       RES_DIR = argv[1];
+    
+    // Check for --save-q40 mode first (argc > 2 means argv[2] == "--save-q40")
+    bool save_q40_mode = (argc > 2 && std::string(argv[2]) == "--save-q40");
+    
+    if (save_q40_mode) {
+      const std::string src = RES_DIR + "/yolov11m.safetensors";
+      const std::string dst = RES_DIR + "/yolov11m_q40.safetensors";
+      std::cout << "Converting " << src << " -> " << dst << " ..." << std::endl;
+      saveQ40Safetensors(src, dst);
+      
+      // Print statistics: file size comparison
+      auto src_size = std::filesystem::file_size(src);
+      auto dst_size = std::filesystem::file_size(dst);
+      std::cout << "Saved: " << (dst_size / 1024 / 1024) << " MB"
+                << " (was " << (src_size / 1024 / 1024) << " MB, "
+                << std::fixed << std::setprecision(1)
+                << (100.0 * dst_size / src_size) << "%)" << std::endl;
+      return 0;
+    }
+    
     const std::string input_path =
       (argc > 2) ? argv[2] : (RES_DIR + "/input_832.bin");
     const bool verify = std::getenv("YOLO_VERIFY") != nullptr;
+    
+    // Check for Q4_0 mode and Q4_0_PRELOAD path
+    const std::string q40_path = RES_DIR + "/yolov11m_q40.safetensors";
+    const bool q40_file_exists = std::filesystem::exists(q40_path);
     const bool use_q4_0 = std::getenv("YOLO_Q4_0") != nullptr;
+    
     if (use_q4_0) {
-      yolov11::g_weight_dtype = "Q4_0";
-      std::cout << "Weight mode: Q4_0 (non-depthwise conv, K%32==0 layers; "
-                   "others fall back to FP32)" << std::endl;
+      if (q40_file_exists) {
+        yolov11::g_weight_dtype = "Q4_0_PRELOAD";
+        std::cout << "Weight mode: Q4_0_PRELOAD (loading from " << q40_path << ")" << std::endl;
+      } else {
+        yolov11::g_weight_dtype = "Q4_0";
+        std::cout << "Weight mode: Q4_0 lazy (no q40 file found, will quantize on first forward)" << std::endl;
+      }
     }
 
     registerCustomLayers();
@@ -991,10 +1287,15 @@ int main(int argc, char *argv[]) {
     if (int ret =
           model->compile(x, outputs, ml::train::ExecutionMode::INFERENCE))
       throw std::runtime_error("compile failed: " + std::to_string(ret));
-    // Load every weight from the single nntrainer safetensors produced by
-    // PyTorch/convert_weights.py (tensor names match the model weight names).
-    loadSafetensors(model.get(), RES_DIR + "/yolov11m.safetensors");
-    std::cout << "Model built and weights loaded." << std::endl;
+    
+    // Load weights: Q4_0_PRELOAD uses pre-quantized file, otherwise FP32
+    if (yolov11::g_weight_dtype == "Q4_0_PRELOAD") {
+      loadQ40Safetensors(model.get(), q40_path);
+      std::cout << "Model built and Q4_0 weights loaded from " << q40_path << "." << std::endl;
+    } else {
+      loadSafetensors(model.get(), RES_DIR + "/yolov11m.safetensors");
+      std::cout << "Model built and weights loaded." << std::endl;
+    }
 
     // Run one forward pass on the input.
     // argv[2] may be a raw [1,3,832,832] float32 .bin (e.g. from
