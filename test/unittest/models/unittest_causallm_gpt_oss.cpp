@@ -162,7 +162,9 @@ makeGptOssCase(const causallm_test::TinyCausalLMDataType &data_type) {
     "GptOss_" + data_type.name,
     data_type,
     {"hello tok4", makeExpectedGptOssLogits(),
-     data_type.name == "FP32" ? 1e-4f : 1e-3f},
+     data_type.name == "FP32"       ? 1e-4f
+     : data_type.name == "Q40_FP16" ? 2e-3f
+                                    : 1e-3f},
     makeTinyGptOssConfig,
     makeGptOssLayerDtypeMap,
     [](causallm::json &cfg, causallm::json &generation_cfg,
@@ -224,5 +226,14 @@ INSTANTIATE_TEST_SUITE_P(
   [](const ::testing::TestParamInfo<causallm_test::TinyCausalLMCase> &info) {
     return info.param.name;
   });
+
+#ifdef ENABLE_FP16
+INSTANTIATE_TEST_SUITE_P(
+  GptOssFp16, GptOssTinyModelTest,
+  ::testing::Values(makeGptOssCase(causallm_test::makeTinyQ40Fp16DataType())),
+  [](const ::testing::TestParamInfo<causallm_test::TinyCausalLMCase> &info) {
+    return info.param.name;
+  });
+#endif
 
 } // namespace
