@@ -524,6 +524,13 @@ public:
     }
   }
 
+  /**
+   * @brief Load Q4_0 quantized weights (no-op for non-Conv2D layers)
+   * @param bytes pointer to Q4_0 byte buffer
+   * @param size  size of the buffer in bytes
+   */
+  virtual void loadQ40Weights(const uint8_t *, size_t) {}
+
 protected:
   bool is_inplace = false; /**< whether this layer is in-place or not */
 };

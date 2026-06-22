@@ -261,6 +261,10 @@ void LayerNode::setWeights(const std::vector<float *> weights) {
   }
 }
 
+void LayerNode::loadQ40Weights(const uint8_t *bytes, size_t size) {
+  getLayer()->loadQ40Weights(bytes, size);
+}
+
 const unsigned LayerNode::getInputConnectionIndex(unsigned nth) const {
   auto &input_conns =
     std::get<std::vector<props::InputConnection>>(*layer_node_props);

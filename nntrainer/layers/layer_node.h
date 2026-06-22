@@ -703,6 +703,13 @@ public:
   void setWeights(const std::vector<float *> weights) override;
 
   /**
+   * @brief Load Q4_0 quantized weights into the underlying layer
+   * @param bytes pointer to Q4_0 byte buffer
+   * @param size  size of the buffer in bytes
+   */
+  void loadQ40Weights(const uint8_t *bytes, size_t size);
+
+  /**
    * @brief Get the Input tensor object
    *
    * @param idx Identifier of the input
