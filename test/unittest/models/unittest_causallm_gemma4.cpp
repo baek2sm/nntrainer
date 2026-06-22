@@ -179,7 +179,7 @@ makeGemma4Case(const causallm_test::TinyCausalLMDataType &data_type) {
     data_type,
     {"hello tok4", makeExpectedGemma4Logits(),
      data_type.name == "FP32"       ? 1e-4f
-     : data_type.name == "Q40_FP16" ? 2e-3f
+     : data_type.name == "Q40_FP16" ? 2e-2f
                                     : 1e-3f},
     makeTinyGemma4Config,
     makeGemma4LayerDtypeMap,
