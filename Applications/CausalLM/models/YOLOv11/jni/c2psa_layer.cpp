@@ -4,8 +4,10 @@
  *
  * @file   c2psa_layer.cpp
  * @date   18 June 2026
- * @brief  PSA spatial multi-head attention custom layer (weight-free).
+ * @see    https://github.com/nntrainer/nntrainer
  * @author Seungbaek Hong <sb92.hong@samsung.com>
+ * @bug    No known bugs except for NYI items
+ * @brief  PSA spatial multi-head attention custom layer (weight-free).
  */
 
 #include <algorithm>

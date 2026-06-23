@@ -812,8 +812,8 @@ static inline void repack_q8_0_to_q8_0x4(const block_q8_0 *row0,
 // ---- 4x8 from_q8 GEMV (M==1) ----
 static inline void __ggml_q4_0_4x8_q8_0_GEMM_GEMV_from_q8(
   const unsigned int M, const unsigned int N, const unsigned int K,
-  const char *A_q8_row, const size_t /* NOLINT(row_stride_bytes) */,
-  const void *B, const unsigned int /* NOLINT(ldb) */, float *C,
+  const char *A_q8_row, const size_t,
+  const void *B, const unsigned int, float *C,
   const unsigned int ldc) {
   int B_step = sizeof(block_q4_0) * (K / QK4_0);
   auto &tm = ThreadManager::Global();
@@ -835,7 +835,7 @@ static inline void __ggml_q4_0_4x8_q8_0_GEMM_GEMV_from_q8(
 static inline void __ggml_q4_0_4x8_q8_0_GEMM_GEMM_from_q8(
   const unsigned int M, const unsigned int N, const unsigned int K,
   const char *A_q8_row, const size_t row_stride_bytes, const void *B,
-  const unsigned int /* NOLINT(ldb) */, float *C, const unsigned int ldc) {
+  const unsigned int, float *C, const unsigned int ldc) {
   int NB_COLS = 4;
   auto &tm = ThreadManager::Global();
   unsigned int nb = K / QK8_0;
@@ -913,8 +913,8 @@ void __ggml_q4_0_4x8_q8_0_GEMM_from_q8(
 // ---- 8x8 from_q8 GEMV (M==1) ----
 static inline void __ggml_q4_0_8x8_q8_0_GEMM_GEMV_from_q8(
   const unsigned int M, const unsigned int N, const unsigned int K,
-  const char *A_q8_row, const size_t /* NOLINT(row_stride_bytes) */,
-  const void *B, const unsigned int /* NOLINT(ldb) */, float *C,
+  const char *A_q8_row, const size_t,
+  const void *B, const unsigned int, float *C,
   const unsigned int ldc) {
   int B_step = sizeof(block_q4_0) * (K / QK4_0);
   auto &tm = ThreadManager::Global();
@@ -936,7 +936,7 @@ static inline void __ggml_q4_0_8x8_q8_0_GEMM_GEMV_from_q8(
 static inline void __ggml_q4_0_8x8_q8_0_GEMM_GEMM_from_q8(
   const unsigned int M, const unsigned int N, const unsigned int K,
   const char *A_q8_row, const size_t row_stride_bytes, const void *B,
-  const unsigned int /* NOLINT(ldb) */, float *C, const unsigned int ldc) {
+  const unsigned int, float *C, const unsigned int ldc) {
   auto &tm = ThreadManager::Global();
   unsigned int nb = K / QK8_0;
   unsigned int qa_4_rows_size = sizeof(block_q8_0x4) * nb;
