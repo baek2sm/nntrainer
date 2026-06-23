@@ -28,6 +28,7 @@
 #include <tensor_dim.h>
 #include <thread>
 #include <util_func.h>
+#include <winograd_transform.h>
 
 namespace nntrainer {
 
@@ -297,7 +298,8 @@ Conv2DLayer::Conv2DLayer(
   padding(padding_),
   conv_props(props::FilterSize(), std::array<props::KernelSize, CONV2D_DIM>(),
              std::array<props::Stride, CONV2D_DIM>(), props::Padding2D(),
-             std::array<props::Dilation, CONV2D_DIM>(), props::ConvGroups()) {
+             std::array<props::Dilation, CONV2D_DIM>(), props::ConvGroups()),
+  winograd_U_filt_key(nullptr) {
   wt_idx.fill(std::numeric_limits<unsigned>::max());
 }
 
@@ -445,42 +447,83 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   unsigned int groups = groups_prop.empty() ? 1 : groups_prop.get();
 
   if (groups == 1) {
-    TensorDim filter_dim_squeezed{filter_kernel.batch(),
-                                  filter_kernel.getDim().getFeatureLen()};
-
-    filter_dim_squeezed.setTensorType(filter_kernel.getTensorType());
-
-    filter_kernel.reshape(filter_dim_squeezed);
-
-    /**
-     * Below sets the pad area values to zero
-     * it is faster to do this way than seting selective area to zero
-     */
-    auto forwarding_job = [&](unsigned int s, unsigned int e, unsigned int pid,
-                              void *user_data) {
-      Tensor result = Tensor(calcCol2ImOutputDim(out_dim, filter_dim));
-      result.setZero();
-      for (unsigned int b = s; b < e; ++b) {
-        Tensor out = hidden_.getBatchSlice(b, 1);
-        out.reshape({filter_size, out_dim.width() * out_dim.height()});
-        Tensor in_sub = input_.getBatchSlice(b, 1);
-
-        im2col(in_sub, filter_dim, padding, stride, dilation, result);
-        // filter kernel is (K, CRS), result is (CRS, OH*OW)
-        filter_kernel.dot(result, out, false, true);
-      }
-      result.deallocate();
-    };
-
-    auto workers = ParallelBatch(forwarding_job, in_dim.batch(), nullptr);
-
-    if (workers.getNumWorkers() > 1) {
-      workers.run();
-    } else {
-      forwarding_job(0, in_dim.batch(), 0, nullptr);
+    // Winograd F(2,2,3,3) fast path: env-gated (NNTR_WINOGRAD=1).
+    // Eligible: 3x3 kernel, stride 1, dilation 1, groups 1.
+    bool winograd_eligible = false;
+    const char *env = std::getenv("NNTR_WINOGRAD");
+    if (env && env[0] == '1') {
+      winograd_eligible =
+        (filter_dim.height() == 3 && filter_dim.width() == 3 &&
+         stride[0].get() == 1 && stride[1].get() == 1 &&
+         dilation[0].get() == 1 && dilation[1].get() == 1);
     }
 
-    filter_kernel.reshape(filter_dim);
+    if (winograd_eligible) {
+      const unsigned int Cin = in_dim.channel();
+      const unsigned int Cout = filter_size;
+      const unsigned int padH = padding[0], padW = padding[2];
+
+      // Lazy weight-transform cache. Inference weights are immutable.
+      const float *filt_data = filter_kernel.getData<float>();
+      if (winograd_U_filt_key != filt_data) {
+        winograd_U = winograd_transform_weight_f23x3(filter_kernel, Cout, Cin);
+        winograd_U_filt_key = filt_data;
+      }
+
+      auto wino_job = [&](unsigned int s, unsigned int e, unsigned int pid,
+                          void *user_data) {
+        for (unsigned int b = s; b < e; ++b) {
+          Tensor in_sub = input_.getBatchSlice(b, 1);
+          Tensor out_sub = hidden_.getBatchSlice(b, 1);
+          // bias is NOT applied here; the unified bias-add block below
+          // handles it (identical to the im2col path).
+          winograd_conv2d_f23x3_fp32(in_sub, winograd_U, out_sub, padH, padW);
+        }
+      };
+      auto workers = ParallelBatch(wino_job, in_dim.batch(), nullptr);
+      if (workers.getNumWorkers() > 1) {
+        workers.run();
+      } else {
+        wino_job(0, in_dim.batch(), 0, nullptr);
+      }
+    } else {
+      TensorDim filter_dim_squeezed{filter_kernel.batch(),
+                                    filter_kernel.getDim().getFeatureLen()};
+
+      filter_dim_squeezed.setTensorType(filter_kernel.getTensorType());
+
+      filter_kernel.reshape(filter_dim_squeezed);
+
+      /**
+       * Below sets the pad area values to zero
+       * it is faster to do this way than seting selective area to zero
+       */
+      auto forwarding_job = [&](unsigned int s, unsigned int e,
+                                unsigned int pid, void *user_data) {
+        Tensor result = Tensor(calcCol2ImOutputDim(out_dim, filter_dim));
+        result.setZero();
+        for (unsigned int b = s; b < e; ++b) {
+          Tensor out = hidden_.getBatchSlice(b, 1);
+          out.reshape({filter_size, out_dim.width() * out_dim.height()});
+          Tensor in_sub = input_.getBatchSlice(b, 1);
+
+          im2col(in_sub, filter_dim, padding, stride, dilation, result);
+          // filter kernel is (K, CRS), result is (CRS, OH*OW)
+          filter_kernel.dot(result, out, false, true);
+        }
+        result.deallocate();
+      };
+
+      auto workers = ParallelBatch(forwarding_job, in_dim.batch(), nullptr);
+
+      if (workers.getNumWorkers() > 1) {
+        workers.run();
+      } else {
+        forwarding_job(0, in_dim.batch(), 0, nullptr);
+      }
+
+      filter_kernel.reshape(filter_dim);
+    } // end non-winograd fallback
   } else {
     // Grouped convolution: split channels into `groups` independent groups.
     const unsigned int ocg = filter_size / groups;      // out ch per group

@@ -116,6 +116,11 @@ private:
     conv_props;
 
   std::array<unsigned int, 5> wt_idx; /**< indices of the weights and tensors */
+
+  /** Winograd transformed-weight cache (inference: weight immutable).
+   * Populated lazily on first eligible forwarding call. */
+  Tensor winograd_U;
+  const float *winograd_U_filt_key;
 };
 
 } // namespace nntrainer
