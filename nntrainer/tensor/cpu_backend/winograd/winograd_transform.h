@@ -49,6 +49,18 @@ Tensor winograd_transform_weight_f23x3(const Tensor &filter, unsigned int Cout,
 void winograd_conv2d_f23x3_fp32(const Tensor &in, const Tensor &U, Tensor &out,
                                 unsigned int padH, unsigned int padW);
 
+/**
+ * @brief Winograd F(2x2,3x3) Q8_0 forward convolution.
+ *
+ * Same as FP32 but STEP3 GEMM uses Q8_0 quantized U and V (per-point).
+ * Transform (U, V) is still FP32; quantize/dequant happens before each
+ * point-wise GEMM. MNN hybrid style: float transform, int8 GEMM domain.
+ *
+ * @param in, U, out, padH, padW  same as FP32 variant
+ */
+void winograd_conv2d_f23x3_q8_0(const Tensor &in, const Tensor &U, Tensor &out,
+                                unsigned int padH, unsigned int padW);
+
 } // namespace nntrainer
 
 #endif /* __cplusplus */

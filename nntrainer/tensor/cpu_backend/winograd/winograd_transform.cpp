@@ -18,6 +18,8 @@
 #include <cstring>
 #include <vector>
 
+#include <nntr_ggml_impl.h>
+
 namespace nntrainer {
 
 // F(2,2,3,3) constant matrices (Lavin & Winograd 2015).
@@ -134,6 +136,138 @@ void winograd_conv2d_f23x3_fp32(const Tensor &in, const Tensor &U, Tensor &out,
   }
 
   // Step 4: Y = A^T M A per (co, tile) -> 2x2. Write directly into out Tensor.
+  float *od = out.getData<float>();
+  const float *md = M.getData<float>();
+  for (unsigned int t = 0; t < T; ++t) {
+    for (unsigned int co = 0; co < Cout; ++co) {
+      float Mtile[4][4];
+      for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c)
+          Mtile[r][c] = md[(r * 4 + c) * (size_t)Cout * T + (size_t)co * T + t];
+      float AtM[2][4];
+      for (int i = 0; i < 2; ++i)
+        for (int j = 0; j < 4; ++j) {
+          float s = 0;
+          for (int k = 0; k < 4; ++k)
+            s += At[i][k] * Mtile[k][j];
+          AtM[i][j] = s;
+        }
+      const unsigned int oh0 = (t / nTW) * 2, ow0 = (t % nTW) * 2;
+      for (int i = 0; i < 2; ++i)
+        for (int j = 0; j < 2; ++j) {
+          float s = 0;
+          for (int k = 0; k < 4; ++k)
+            s += AtM[i][k] * At[j][k];
+          unsigned int oh = oh0 + i, ow = ow0 + j;
+          if (oh < OH && ow < OW)
+            od[co * OH * OW + oh * OW + ow] = s;
+        }
+    }
+  }
+}
+
+// Q8_0 per-point quantize/dequant round-trip on a flat float buffer.
+// k is number of float elements; must handle k%32!=0 by padding.
+static void q8_0_roundtrip(const float *src, float *dst, size_t k) {
+  // Q8_0 requires k divisible by 32. Pad if needed.
+  size_t k_padded = (k + 31) & ~(size_t)31;
+  std::vector<float> pad_buf;
+  const float *padded_src = src;
+  if (k_padded != k) {
+    pad_buf.resize(k_padded, 0.0f);
+    memcpy(pad_buf.data(), src, k * sizeof(float));
+    padded_src = pad_buf.data();
+  }
+  // Quantize: k_padded floats → (k_padded/32) block_q8_0 (34 bytes each)
+  size_t qbuf_size = (k_padded / 32) * 34;
+  std::vector<char> qbuf(qbuf_size);
+  nntr_quantize_row_q8_0(padded_src, qbuf.data(), (int64_t)k_padded);
+  // Dequantize back to float
+  nntr_dequantize_row_q8_0(qbuf.data(), dst, (int64_t)k_padded);
+}
+
+void winograd_conv2d_f23x3_q8_0(const Tensor &in, const Tensor &U, Tensor &out,
+                                unsigned int padH, unsigned int padW) {
+  const TensorDim &in_dim = in.getDim();
+  const unsigned int Cin = in_dim.channel();
+  const unsigned int H = in_dim.height(), W = in_dim.width();
+  const unsigned int Cout = out.getDim().channel();
+  const unsigned int OH = H + 2 * padH - 2;
+  const unsigned int OW = W + 2 * padW - 2;
+  const unsigned int nTH = (OH + 1) / 2;
+  const unsigned int nTW = (OW + 1) / 2;
+  const unsigned int T = nTH * nTW;
+
+  const float *id = in.getData<float>();
+  const float *ud = U.getData<float>();
+
+  // Step 1: U is pre-computed (cached, same as FP32).
+
+  // Step 2: V = B^T d B (identical to FP32).
+  TensorDim vdim(1, 16, Cin, T);
+  Tensor V(vdim);
+  V.setZero();
+  float *vd = V.getData<float>();
+  for (unsigned int t = 0; t < T; ++t) {
+    const unsigned int th = t / nTW, tw = t % nTW;
+    const unsigned int oh0 = th * 2, ow0 = tw * 2;
+    for (unsigned int ci = 0; ci < Cin; ++ci) {
+      float d[4][4];
+      for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c) {
+          int ih = (int)oh0 + r - (int)padH;
+          int iw = (int)ow0 + c - (int)padW;
+          d[r][c] = (ih >= 0 && ih < (int)H && iw >= 0 && iw < (int)W)
+                      ? id[ci * H * W + ih * W + iw]
+                      : 0.0f;
+        }
+      float Bd[4][4];
+      for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) {
+          float s = 0;
+          for (int k = 0; k < 4; ++k)
+            s += Bt[i][k] * d[k][j];
+          Bd[i][j] = s;
+        }
+      float Vch[4][4];
+      for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) {
+          float s = 0;
+          for (int k = 0; k < 4; ++k)
+            s += Bd[i][k] * Bt[j][k];
+          Vch[i][j] = s;
+        }
+      for (int p = 0; p < 16; ++p)
+        vd[p * (size_t)Cin * T + ci * T + t] = Vch[p / 4][p % 4];
+    }
+  }
+
+  // Step 3: M[p] = U[p] × V[p]. Quantize each point to Q8_0, dequant, then
+  // GEMM.
+  TensorDim mdim(1, 16, Cout, T);
+  Tensor M(mdim);
+  M.setZero();
+  std::vector<float> uq((size_t)Cout * Cin);
+  std::vector<float> vq((size_t)Cin * T);
+  for (int p = 0; p < 16; ++p) {
+    const float *up = &ud[p * (size_t)Cout * Cin];
+    const float *vp = &vd[p * (size_t)Cin * T];
+    // Q8_0 round-trip: quantize then dequant (simulates int8 GEMM precision
+    // loss)
+    q8_0_roundtrip(up, uq.data(), (size_t)Cout * Cin);
+    q8_0_roundtrip(vp, vq.data(), (size_t)Cin * T);
+
+    Tensor U_p =
+      U.getSharedDataTensor(TensorDim(1, 1, Cout, Cin), p * Cout * Cin);
+    Tensor V_p = V.getSharedDataTensor(TensorDim(1, 1, Cin, T), p * Cin * T);
+    Tensor M_p = M.getSharedDataTensor(TensorDim(1, 1, Cout, T), p * Cout * T);
+    // Overwrite U_p and V_p data with quantized-then-dequantized values
+    memcpy(U_p.getData<float>(), uq.data(), (size_t)Cout * Cin * sizeof(float));
+    memcpy(V_p.getData<float>(), vq.data(), (size_t)Cin * T * sizeof(float));
+    U_p.dot(V_p, M_p, false, false);
+  }
+
+  // Step 4: Y = A^T M A (identical to FP32).
   float *od = out.getData<float>();
   const float *md = M.getData<float>();
   for (unsigned int t = 0; t < T; ++t) {

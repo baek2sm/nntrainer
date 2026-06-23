@@ -454,15 +454,18 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   unsigned int groups = groups_prop.empty() ? 1 : groups_prop.get();
 
   if (groups == 1) {
-    // Winograd F(2,2,3,3) fast path: env-gated (NNTR_WINOGRAD=1).
+    // Winograd F(2,2,3,3) fast path: env-gated.
+    // NNTR_WINOGRAD=1 → FP32, NNTR_WINOGRAD=q8 → Q8_0 quantized GEMM.
     // Eligible: 3x3 kernel, stride 1, dilation 1, groups 1.
     bool winograd_eligible = false;
+    bool winograd_q8 = false;
     const char *env = std::getenv("NNTR_WINOGRAD");
-    if (env && env[0] == '1') {
+    if (env && (env[0] == '1' || env[0] == 'q')) {
       winograd_eligible =
         (filter_dim.height() == 3 && filter_dim.width() == 3 &&
          stride[0].get() == 1 && stride[1].get() == 1 &&
          dilation[0].get() == 1 && dilation[1].get() == 1);
+      winograd_q8 = (env[0] == 'q');
     }
 
     if (winograd_eligible) {
@@ -484,7 +487,11 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
           Tensor out_sub = hidden_.getBatchSlice(b, 1);
           // bias is NOT applied here; the unified bias-add block below
           // handles it (identical to the im2col path).
-          winograd_conv2d_f23x3_fp32(in_sub, winograd_U, out_sub, padH, padW);
+          if (winograd_q8) {
+            winograd_conv2d_f23x3_q8_0(in_sub, winograd_U, out_sub, padH, padW);
+          } else {
+            winograd_conv2d_f23x3_fp32(in_sub, winograd_U, out_sub, padH, padW);
+          }
         }
       };
       auto workers = ParallelBatch(wino_job, in_dim.batch(), nullptr);
