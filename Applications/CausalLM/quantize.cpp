@@ -366,7 +366,8 @@ void printUsage(const char *prog) {
     << "  --embd_dtype <type>   Target dtype for embedding (default: FP32)\n"
     << "  --lmhead_dtype <type> Target dtype for LM head (default: same as "
        "embd_dtype)\n"
-    << "  --conv_dtype <type>   Target dtype for conv2d layers (default: Q4_0)\n"
+    << "  --conv_dtype <type>   Target dtype for conv2d layers (default: "
+       "Q4_0)\n"
     << "  --isa <arch>          Target instruction set architecture for "
        "quantized weights\n"
     << "                        (default: DEFAULT). Options: DEFAULT, X86, "
@@ -416,16 +417,19 @@ void printUsage(const char *prog) {
  *   - layer{i}_attention_norm, layer{i}_ffn_norm : RMSNorm layers
  *   - output_norm          : final RMSNorm
  *   - output_of_causallm   : LM head (FC layer)
+ *   - patch_embed/conv    : conv2d layer for patch embedding (ViT models)
  *
  * The dtype map assigns:
  *   - embedding0             -> embd_dtype
  *   - All FC layers (wq, wk, wv, attention_out, ffn_*) -> fc_dtype
+ *   - Conv2d layers (patch_embed/conv, etc.) -> conv_dtype
  *   - output_of_causallm     -> lmhead_dtype
  *   - RMSNorm / other layers -> FP32 (not quantized)
  */
 std::map<std::string, DataType>
 buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
-                   DataType lmhead_dtype, bool include_lmhead) {
+                   DataType lmhead_dtype, DataType conv_dtype,
+                   bool include_lmhead) {
 
   std::map<std::string, DataType> dtype_map;
 
@@ -438,6 +442,11 @@ buildLayerDtypeMap(int num_layers, DataType fc_dtype, DataType embd_dtype,
   dtype_map["per_layer_input_embedding"] = fc_dtype;
   // Gemma4 PLE projection
   dtype_map["per_layer_input_projection"] = fc_dtype;
+
+  // Conv2d layers (e.g., patch_embed/conv for ViT models)
+  if (conv_dtype != DataType::FP32 && conv_dtype != DataType::NONE) {
+    dtype_map["patch_embed/conv"] = conv_dtype;
+  }
 
   // Transformer decoder layers
   for (int i = 0; i < num_layers; ++i) {
@@ -733,8 +742,9 @@ int main(int argc, char *argv[]) {
       include_lmhead = false;
     }
 
-    auto layer_dtype_map = buildLayerDtypeMap(num_layers, fc_dtype, embd_dtype,
-                                              lmhead_dtype, include_lmhead);
+    auto layer_dtype_map =
+      buildLayerDtypeMap(num_layers, fc_dtype, embd_dtype, lmhead_dtype,
+                         conv_dtype, include_lmhead);
     addSentenceTransformerLayerDtypes(layer_dtype_map, nntr_cfg, model_path,
                                       fc_dtype);
 
