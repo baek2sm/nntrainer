@@ -156,7 +156,6 @@ size_t OptimizedV1Planner::planLayout(
   /** iterate over the sorted requests and start allocation of the requests */
   memory_offset.resize(memory_size.size());
   size_t memory_req = 0;
-  int n_reuse = 0, n_new = 0;
 
   for (auto &req : requests) {
     /** remove expired memories and update offset */
@@ -168,8 +167,8 @@ size_t OptimizedV1Planner::planLayout(
     bool replace_and_fill = false;
     for (int idx = sorted_req.size() - 1; idx >= 0; idx--) {
       auto const &sr = sorted_req[idx];
-      if (sr->end <= req.start && sr->size >= req.size) {
-        // GE-REUSE
+      /** TODO: reuse if memory size not exactly match */
+      if (sr->end <= req.start && sr->size == req.size) {
         req.offset = sr->offset;
         memory_offset[req.loc] = req.offset;
         sorted_req[idx] = &req;
@@ -178,11 +177,9 @@ size_t OptimizedV1Planner::planLayout(
       }
     }
     if (replace_and_fill) {
-      n_reuse++;
       continue;
     }
 
-    n_new++;
     size_t offset = 0;
     if (!sorted_req.empty())
       offset = sorted_req.back()->offset + sorted_req.back()->size;
@@ -193,10 +190,6 @@ size_t OptimizedV1Planner::planLayout(
     memory_req = std::max(memory_req, req.offset + req.size);
     sorted_req.push_back(&req);
   }
-
-  if (requests.size() > 200)
-    fprintf(stderr, "[PLANNER] n_reuse=%d  n_new=%d  pool=%zu MB\n", n_reuse,
-            n_new, memory_req / (1024 * 1024));
 
   //   validateIntervalOverlap(memory_validity, memory_size, memory_offset,
   //   memory_req);
