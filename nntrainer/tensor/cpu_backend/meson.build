@@ -10,6 +10,10 @@ subdir('fallback')
 nntrainer_inc += include_directories('fallback')
 nntrainer_inc_abs += meson.current_source_dir() / 'fallback'
 
+subdir('winograd')
+nntrainer_inc += include_directories('winograd')
+nntrainer_inc_abs += meson.current_source_dir() / 'winograd'
+
 subdir('ggml_interface')
 nntrainer_inc += include_directories('ggml_interface')
 nntrainer_inc_abs += meson.current_source_dir() / 'ggml_interface'
