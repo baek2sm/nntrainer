@@ -35,6 +35,7 @@
  *     --fc_dtype <type>   Target dtype for FC layers (default: Q4_0)
  *     --embd_dtype <type> Target dtype for embedding layer (default: FP32)
  *     --lmhead_dtype <type> Target dtype for LM head layer (default: FP32)
+ *     --conv_dtype <type>   Target dtype for conv2d layers (default: Q4_0)
  *     --output_bin <name> Output weight filename (auto-generated if omitted)
  *     --output_format <fmt> Output container: 'bin' (default) or 'safetensors'
  *
@@ -365,6 +366,7 @@ void printUsage(const char *prog) {
     << "  --embd_dtype <type>   Target dtype for embedding (default: FP32)\n"
     << "  --lmhead_dtype <type> Target dtype for LM head (default: same as "
        "embd_dtype)\n"
+    << "  --conv_dtype <type>   Target dtype for conv2d layers (default: Q4_0)\n"
     << "  --isa <arch>          Target instruction set architecture for "
        "quantized weights\n"
     << "                        (default: DEFAULT). Options: DEFAULT, X86, "
@@ -554,6 +556,7 @@ int main(int argc, char *argv[]) {
   std::string fc_dtype_str = "Q4_0";
   std::string embd_dtype_str = "FP32";
   std::string lmhead_dtype_str = "";
+  std::string conv_dtype_str = "Q4_0";
   std::string isa_str = "DEFAULT";
   std::string output_bin_name = "";
   std::string target_config_path = "";
@@ -569,6 +572,8 @@ int main(int argc, char *argv[]) {
       embd_dtype_str = argv[++i];
     } else if (arg == "--lmhead_dtype" && i + 1 < argc) {
       lmhead_dtype_str = argv[++i];
+    } else if (arg == "--conv_dtype" && i + 1 < argc) {
+      conv_dtype_str = argv[++i];
     } else if (arg == "--isa" && i + 1 < argc) {
       isa_str = argv[++i];
     } else if (arg == "--output_bin" && i + 1 < argc) {
@@ -616,6 +621,8 @@ int main(int argc, char *argv[]) {
         embd_dtype_str = target_cfg["embedding_dtype"].get<std::string>();
       if (target_cfg.contains("lmhead_dtype"))
         lmhead_dtype_str = target_cfg["lmhead_dtype"].get<std::string>();
+      if (target_cfg.contains("conv_dtype"))
+        conv_dtype_str = target_cfg["conv_dtype"].get<std::string>();
       if (target_cfg.contains("model_file_name") && output_bin_name.empty())
         output_bin_name = target_cfg["model_file_name"].get<std::string>();
     }
@@ -631,6 +638,7 @@ int main(int argc, char *argv[]) {
     DataType fc_dtype = strToDataType(fc_dtype_str);
     DataType embd_dtype = strToDataType(embd_dtype_str);
     DataType lmhead_dtype = strToDataType(lmhead_dtype_str);
+    DataType conv_dtype = strToDataType(conv_dtype_str);
 
     // Validate source model is FP32
     std::string src_tensor_type =
@@ -680,6 +688,7 @@ int main(int argc, char *argv[]) {
     std::cout << "  FC dtype:     " << dataTypeToStr(fc_dtype) << "\n";
     std::cout << "  Embed dtype:  " << dataTypeToStr(embd_dtype) << "\n";
     std::cout << "  LMHead dtype: " << dataTypeToStr(lmhead_dtype) << "\n";
+    std::cout << "  Conv dtype:   " << dataTypeToStr(conv_dtype) << "\n";
     std::cout << "  Target ISA:   " << isaToStr(target_isa) << "\n";
     std::cout << "\n";
 
@@ -758,6 +767,7 @@ int main(int argc, char *argv[]) {
     new_nntr_cfg["fc_layer_dtype"] = dataTypeToStr(fc_dtype);
     new_nntr_cfg["embedding_dtype"] = dataTypeToStr(embd_dtype);
     new_nntr_cfg["lmhead_dtype"] = dataTypeToStr(lmhead_dtype);
+    new_nntr_cfg["conv_dtype"] = dataTypeToStr(conv_dtype);
     new_nntr_cfg["model_tensor_type"] =
       buildModelTensorType(dataTypeToStr(fc_dtype));
 
