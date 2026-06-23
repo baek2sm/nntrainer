@@ -791,18 +791,18 @@ void __ggml_gemm_q6_K(const unsigned int M, const unsigned int N,
 // ---------------------------------------------------------------------------
 
 static inline void repack_q8_0_to_q8_0x4(const block_q8_0 *row0,
-                                          const block_q8_0 *row1,
-                                          const block_q8_0 *row2,
-                                          const block_q8_0 *row3,
-                                          block_q8_0x4 *out, int nb) {
+                                         const block_q8_0 *row1,
+                                         const block_q8_0 *row2,
+                                         const block_q8_0 *row3,
+                                         block_q8_0x4 *out, int nb) {
   for (int b = 0; b < nb; b++) {
     out[b].d[0] = row0[b].d;
     out[b].d[1] = row1[b].d;
     out[b].d[2] = row2[b].d;
     out[b].d[3] = row3[b].d;
     for (int j = 0; j < 4; j++) {
-      memcpy(&out[b].qs[32 * j + 0],  &row0[b].qs[j * 8], 8);
-      memcpy(&out[b].qs[32 * j + 8],  &row1[b].qs[j * 8], 8);
+      memcpy(&out[b].qs[32 * j + 0], &row0[b].qs[j * 8], 8);
+      memcpy(&out[b].qs[32 * j + 8], &row1[b].qs[j * 8], 8);
       memcpy(&out[b].qs[32 * j + 16], &row2[b].qs[j * 8], 8);
       memcpy(&out[b].qs[32 * j + 24], &row3[b].qs[j * 8], 8);
     }
@@ -812,8 +812,8 @@ static inline void repack_q8_0_to_q8_0x4(const block_q8_0 *row0,
 // ---- 4x8 from_q8 GEMV (M==1) ----
 static inline void __ggml_q4_0_4x8_q8_0_GEMM_GEMV_from_q8(
   const unsigned int M, const unsigned int N, const unsigned int K,
-  const char *A_q8_row, const size_t /*row_stride_bytes*/,
-  const void *B, const unsigned int /*ldb*/, float *C,
+  const char *A_q8_row, const size_t /* NOLINT(row_stride_bytes) */,
+  const void *B, const unsigned int /* NOLINT(ldb) */, float *C,
   const unsigned int ldc) {
   int B_step = sizeof(block_q4_0) * (K / QK4_0);
   auto &tm = ThreadManager::Global();
@@ -834,9 +834,8 @@ static inline void __ggml_q4_0_4x8_q8_0_GEMM_GEMV_from_q8(
 // ---- 4x8 from_q8 GEMM (M>1) ----
 static inline void __ggml_q4_0_4x8_q8_0_GEMM_GEMM_from_q8(
   const unsigned int M, const unsigned int N, const unsigned int K,
-  const char *A_q8_row, const size_t row_stride_bytes,
-  const void *B, const unsigned int /*ldb*/, float *C,
-  const unsigned int ldc) {
+  const char *A_q8_row, const size_t row_stride_bytes, const void *B,
+  const unsigned int /* NOLINT(ldb) */, float *C, const unsigned int ldc) {
   int NB_COLS = 4;
   auto &tm = ThreadManager::Global();
   unsigned int nb = K / QK8_0;
@@ -858,7 +857,7 @@ static inline void __ggml_q4_0_4x8_q8_0_GEMM_GEMM_from_q8(
     const block_q8_0 *r3 =
       (const block_q8_0 *)(A_q8_row + (4 * i + 3) * row_stride_bytes);
     repack_q8_0_to_q8_0x4(r0, r1, r2, r3,
-                           (block_q8_0x4 *)(QA.data() + i * qa_4_rows_size), nb);
+                          (block_q8_0x4 *)(QA.data() + i * qa_4_rows_size), nb);
   }
   for (unsigned int i = M4 * 4; i < M; i++) {
     memcpy(QA.data() + M4 * qa_4_rows_size + (i - M4 * 4) * qa_row_size,
@@ -899,24 +898,23 @@ static inline void __ggml_q4_0_4x8_q8_0_GEMM_GEMM_from_q8(
   }
 }
 
-void __ggml_q4_0_4x8_q8_0_GEMM_from_q8(const unsigned int M, const unsigned int N,
-                                        const unsigned int K, const char *A_q8_row,
-                                        const size_t row_stride_bytes, const void *B,
-                                        const unsigned int ldb, float *C,
-                                        const unsigned int ldc) {
+void __ggml_q4_0_4x8_q8_0_GEMM_from_q8(
+  const unsigned int M, const unsigned int N, const unsigned int K,
+  const char *A_q8_row, const size_t row_stride_bytes, const void *B,
+  const unsigned int ldb, float *C, const unsigned int ldc) {
   if (M == 1)
-    __ggml_q4_0_4x8_q8_0_GEMM_GEMV_from_q8(M, N, K, A_q8_row, row_stride_bytes, B,
-                                            ldb, C, ldc);
+    __ggml_q4_0_4x8_q8_0_GEMM_GEMV_from_q8(M, N, K, A_q8_row, row_stride_bytes,
+                                           B, ldb, C, ldc);
   else
-    __ggml_q4_0_4x8_q8_0_GEMM_GEMM_from_q8(M, N, K, A_q8_row, row_stride_bytes, B,
-                                            ldb, C, ldc);
+    __ggml_q4_0_4x8_q8_0_GEMM_GEMM_from_q8(M, N, K, A_q8_row, row_stride_bytes,
+                                           B, ldb, C, ldc);
 }
 
 // ---- 8x8 from_q8 GEMV (M==1) ----
 static inline void __ggml_q4_0_8x8_q8_0_GEMM_GEMV_from_q8(
   const unsigned int M, const unsigned int N, const unsigned int K,
-  const char *A_q8_row, const size_t /*row_stride_bytes*/,
-  const void *B, const unsigned int /*ldb*/, float *C,
+  const char *A_q8_row, const size_t /* NOLINT(row_stride_bytes) */,
+  const void *B, const unsigned int /* NOLINT(ldb) */, float *C,
   const unsigned int ldc) {
   int B_step = sizeof(block_q4_0) * (K / QK4_0);
   auto &tm = ThreadManager::Global();
@@ -937,9 +935,8 @@ static inline void __ggml_q4_0_8x8_q8_0_GEMM_GEMV_from_q8(
 // ---- 8x8 from_q8 GEMM (M>1) ----
 static inline void __ggml_q4_0_8x8_q8_0_GEMM_GEMM_from_q8(
   const unsigned int M, const unsigned int N, const unsigned int K,
-  const char *A_q8_row, const size_t row_stride_bytes,
-  const void *B, const unsigned int /*ldb*/, float *C,
-  const unsigned int ldc) {
+  const char *A_q8_row, const size_t row_stride_bytes, const void *B,
+  const unsigned int /* NOLINT(ldb) */, float *C, const unsigned int ldc) {
   auto &tm = ThreadManager::Global();
   unsigned int nb = K / QK8_0;
   unsigned int qa_4_rows_size = sizeof(block_q8_0x4) * nb;
@@ -960,7 +957,7 @@ static inline void __ggml_q4_0_8x8_q8_0_GEMM_GEMM_from_q8(
     const block_q8_0 *r3 =
       (const block_q8_0 *)(A_q8_row + (4 * i + 3) * row_stride_bytes);
     repack_q8_0_to_q8_0x4(r0, r1, r2, r3,
-                           (block_q8_0x4 *)(QA.data() + i * qa_4_rows_size), nb);
+                          (block_q8_0x4 *)(QA.data() + i * qa_4_rows_size), nb);
   }
   for (unsigned int i = M4 * 4; i < M; i++) {
     memcpy(QA.data() + M4 * qa_4_rows_size + (i - M4 * 4) * qa_row_size,
@@ -984,8 +981,8 @@ static inline void __ggml_q4_0_8x8_q8_0_GEMM_GEMM_from_q8(
     tm.parallel_for(0, thread_num, [=](size_t i) {
       unsigned int M_step_start = (i * N) / thread_num;
       unsigned int M_step_end = ((i + 1) * N) / thread_num;
-      M_step_start =
-        (M_step_start % 8) ? M_step_start + 8 - (M_step_start % 8) : M_step_start;
+      M_step_start = (M_step_start % 8) ? M_step_start + 8 - (M_step_start % 8)
+                                        : M_step_start;
       M_step_end =
         (M_step_end % 8) ? M_step_end + 8 - (M_step_end % 8) : M_step_end;
       nntr_gemv_q4_0_8x8_q8_0(
@@ -997,17 +994,16 @@ static inline void __ggml_q4_0_8x8_q8_0_GEMM_GEMM_from_q8(
   }
 }
 
-void __ggml_q4_0_8x8_q8_0_GEMM_from_q8(const unsigned int M, const unsigned int N,
-                                        const unsigned int K, const char *A_q8_row,
-                                        const size_t row_stride_bytes, const void *B,
-                                        const unsigned int ldb, float *C,
-                                        const unsigned int ldc) {
+void __ggml_q4_0_8x8_q8_0_GEMM_from_q8(
+  const unsigned int M, const unsigned int N, const unsigned int K,
+  const char *A_q8_row, const size_t row_stride_bytes, const void *B,
+  const unsigned int ldb, float *C, const unsigned int ldc) {
   if (M == 1)
-    __ggml_q4_0_8x8_q8_0_GEMM_GEMV_from_q8(M, N, K, A_q8_row, row_stride_bytes, B,
-                                            ldb, C, ldc);
+    __ggml_q4_0_8x8_q8_0_GEMM_GEMV_from_q8(M, N, K, A_q8_row, row_stride_bytes,
+                                           B, ldb, C, ldc);
   else
-    __ggml_q4_0_8x8_q8_0_GEMM_GEMM_from_q8(M, N, K, A_q8_row, row_stride_bytes, B,
-                                            ldb, C, ldc);
+    __ggml_q4_0_8x8_q8_0_GEMM_GEMM_from_q8(M, N, K, A_q8_row, row_stride_bytes,
+                                           B, ldb, C, ldc);
 }
 
 } // namespace nntrainer

@@ -186,30 +186,30 @@ void __ggml_q4_0_4x8_q8_0_GEMM(const unsigned int M,
 /**
  * @brief A(M,K) * W.T(N,K) = (M,N) — A already quantized as row-wise block_q8_0
  *
- * @param A_q8_row  pre-quantized activation: M rows, each row = (K/32) block_q8_0 blocks
+ * @param A_q8_row  pre-quantized activation: M rows, each row = (K/32)
+ * block_q8_0 blocks
  * @param row_stride_bytes  bytes per row = (K/32)*sizeof(block_q8_0)
  * @param B  offline quantized and packed q4_0x4 Weight
  * @param K must be divisible by 32
  */
-void __ggml_q4_0_4x8_q8_0_GEMM_from_q8(const unsigned int M, const unsigned int N,
-                                        const unsigned int K, const char *A_q8_row,
-                                        const size_t row_stride_bytes, const void *B,
-                                        const unsigned int ldb, float *C,
-                                        const unsigned int ldc);
+void __ggml_q4_0_4x8_q8_0_GEMM_from_q8(
+  const unsigned int M, const unsigned int N, const unsigned int K,
+  const char *A_q8_row, const size_t row_stride_bytes, const void *B,
+  const unsigned int ldb, float *C, const unsigned int ldc);
 
 /**
  * @brief A(M,K) * W.T(N,K) = (M,N) — A already quantized as row-wise block_q8_0
  *
- * @param A_q8_row  pre-quantized activation: M rows, each row = (K/32) block_q8_0 blocks
+ * @param A_q8_row  pre-quantized activation: M rows, each row = (K/32)
+ * block_q8_0 blocks
  * @param row_stride_bytes  bytes per row = (K/32)*sizeof(block_q8_0)
  * @param B  offline quantized and packed q4_0x8 Weight
  * @param K must be divisible by 32
  */
-void __ggml_q4_0_8x8_q8_0_GEMM_from_q8(const unsigned int M, const unsigned int N,
-                                        const unsigned int K, const char *A_q8_row,
-                                        const size_t row_stride_bytes, const void *B,
-                                        const unsigned int ldb, float *C,
-                                        const unsigned int ldc);
+void __ggml_q4_0_8x8_q8_0_GEMM_from_q8(
+  const unsigned int M, const unsigned int N, const unsigned int K,
+  const char *A_q8_row, const size_t row_stride_bytes, const void *B,
+  const unsigned int ldb, float *C, const unsigned int ldc);
 
 /**
  * @brief A(M, K) * W.T(N, K) = (M, N)

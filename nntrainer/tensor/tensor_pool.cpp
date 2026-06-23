@@ -203,6 +203,40 @@ void TensorPool::finalize(const MemoryPlanner &planner,
   if (bytes_requested > 0) {
     double efficiency = mem_pool->planLayout(planner);
     ml_logd("Memory layout efficiency = %lf", efficiency);
+
+    // Dump top-40 tensors by size (only for pools with many tensors)
+    static int pool_idx = 0;
+    if (pool.size() > 200) {
+      struct TensorInfo {
+        std::string name;
+        size_t sz;
+        unsigned vs, ve;
+      };
+      std::vector<TensorInfo> infos;
+      for (auto &spec : pool) {
+        auto details = std::get_if<SourceDetails>(&spec.details);
+        if (!details || details->lifespan == TensorLifespan::UNMANAGED ||
+            details->exec_order.empty())
+          continue;
+        unsigned vs = *std::min_element(details->exec_order.begin(),
+                                        details->exec_order.end());
+        unsigned ve = *std::max_element(details->exec_order.begin(),
+                                        details->exec_order.end());
+        infos.push_back(
+          {spec.tensor->getName(), spec.tensor->getMemoryBytes(), vs, ve});
+      }
+      std::sort(infos.begin(), infos.end(),
+                [](auto &a, auto &b) { return a.sz > b.sz; });
+      fprintf(stderr, "=== tensor_pool top-40 (pool #%d, %zu tensors) ===\n",
+              pool_idx++, infos.size());
+      fprintf(stderr, "%-60s %8s  %6s-%6s  span\n", "name", "MB", "start",
+              "end");
+      for (int i = 0; i < std::min((int)infos.size(), 40); ++i) {
+        auto &t = infos[i];
+        fprintf(stderr, "%-60s %7.2f  %6u-%6u  %u\n", t.name.c_str(),
+                t.sz / 1048576.0f, t.vs, t.ve, t.ve - t.vs);
+      }
+    }
   }
 }
 

@@ -392,7 +392,8 @@ TEST(Convolution2DQ4_0, verify_q4_0_path_enabled) {
   // Input: 1:32:16:16 (NCHW), in_ch=32
   // Kernel: 1x1, filters=64
   // K = in_ch * k_h * k_w = 32 * 1 * 1 = 32, K % 32 == 0 -> Q4_0 GEMM enabled
-  // Using 1x1 conv keeps K=32 (1 Q4_0 block) giving small quantization noise (max_diff ≈ 0.1-0.3)
+  // Using 1x1 conv keeps K=32 (1 Q4_0 block) giving small quantization noise
+  // (max_diff ≈ 0.1-0.3)
   const std::string input_shape = "1:32:16:16";
   const std::array<std::string, 3> tensor_type = {"NCHW", "FP32", "FP32"};
   const auto mode = ml::train::ExecutionMode::TRAIN;
@@ -408,9 +409,9 @@ TEST(Convolution2DQ4_0, verify_q4_0_path_enabled) {
     nntrainer::from_string(input_shape, parsed);
     for (auto &par : parsed) {
       par.get().setFormat(
-        nntrainer::str_converter<nntrainer::enum_class_prop_tag,
-                                 nntrainer::TensorFormatInfo>::from_string(
-          tensor_type[0]));
+        nntrainer::str_converter<
+          nntrainer::enum_class_prop_tag,
+          nntrainer::TensorFormatInfo>::from_string(tensor_type[0]));
       [[maybe_unused]] auto _ = shape_parser_::prop_tag{};
     }
     return nntrainer::InitLayerContext({parsed.begin(), parsed.end()}, {true},
@@ -420,24 +421,18 @@ TEST(Convolution2DQ4_0, verify_q4_0_path_enabled) {
 
   // Create FP32 layer (reference path)
   auto fp32_layer = nntrainer::createLayer<nntrainer::Conv2DLayer>();
-  std::vector<std::string> fp32_props = {
-    "filters=64",
-    "kernel_size=1,1",
-    "bias_initializer=zeros",
-    "conv_weight_quant=FP32"
-  };
+  std::vector<std::string> fp32_props = {"filters=64", "kernel_size=1,1",
+                                         "bias_initializer=zeros",
+                                         "conv_weight_quant=FP32"};
   auto ctx_fp32 = create_ctx(input_shape, tensor_type, mode);
   fp32_layer->setProperty(fp32_props);
   EXPECT_NO_THROW(fp32_layer->finalize(ctx_fp32));
 
   // Create Q4_0 layer (quantized path)
   auto q4_0_layer = nntrainer::createLayer<nntrainer::Conv2DLayer>();
-  std::vector<std::string> q4_0_props = {
-    "filters=64",
-    "kernel_size=1,1",
-    "bias_initializer=zeros",
-    "conv_weight_quant=Q4_0"
-  };
+  std::vector<std::string> q4_0_props = {"filters=64", "kernel_size=1,1",
+                                         "bias_initializer=zeros",
+                                         "conv_weight_quant=Q4_0"};
   auto ctx_q4_0 = create_ctx(input_shape, tensor_type, mode);
   q4_0_layer->setProperty(q4_0_props);
   EXPECT_NO_THROW(q4_0_layer->finalize(ctx_q4_0));
@@ -466,7 +461,8 @@ TEST(Convolution2DQ4_0, verify_q4_0_path_enabled) {
   // Create run context for FP32 layer with fixed input seed
   std::vector<nntrainer::Var_Grad> ins_fp32, outs_fp32;
   for (auto &dim : ctx_fp32.getInputDimensions()) {
-    ins_fp32.emplace_back(dim, nntrainer::Initializer::NONE, true, true, "input");
+    ins_fp32.emplace_back(dim, nntrainer::Initializer::NONE, true, true,
+                          "input");
     ins_fp32.back().getVariableRef().setRandUniform(-1.0f, 1.0f);
   }
   for (auto &spec : ctx_fp32.getOutSpecs()) {
@@ -476,9 +472,11 @@ TEST(Convolution2DQ4_0, verify_q4_0_path_enabled) {
 
   // Create run context for Q4_0 layer — copy exact same input as FP32
   std::vector<nntrainer::Var_Grad> ins_q4_0, outs_q4_0;
-  for (unsigned int i = 0; i < (unsigned int)ctx_q4_0.getInputDimensions().size(); ++i) {
+  for (unsigned int i = 0;
+       i < (unsigned int)ctx_q4_0.getInputDimensions().size(); ++i) {
     auto &dim = ctx_q4_0.getInputDimensions()[i];
-    ins_q4_0.emplace_back(dim, nntrainer::Initializer::NONE, true, true, "input");
+    ins_q4_0.emplace_back(dim, nntrainer::Initializer::NONE, true, true,
+                          "input");
     // Copy exact same input values from FP32 layer
     auto &src = ins_fp32[i].getVariableRef();
     auto &dst = ins_q4_0.back().getVariableRef();
@@ -506,10 +504,14 @@ TEST(Convolution2DQ4_0, verify_q4_0_path_enabled) {
   // Prepare input/output pointers
   std::vector<nntrainer::Var_Grad *> in_ptrs_fp32, out_ptrs_fp32;
   std::vector<nntrainer::Var_Grad *> in_ptrs_q4_0, out_ptrs_q4_0;
-  for (auto &v : ins_fp32) in_ptrs_fp32.push_back(&v);
-  for (auto &v : outs_fp32) out_ptrs_fp32.push_back(&v);
-  for (auto &v : ins_q4_0) in_ptrs_q4_0.push_back(&v);
-  for (auto &v : outs_q4_0) out_ptrs_q4_0.push_back(&v);
+  for (auto &v : ins_fp32)
+    in_ptrs_fp32.push_back(&v);
+  for (auto &v : outs_fp32)
+    out_ptrs_fp32.push_back(&v);
+  for (auto &v : ins_q4_0)
+    in_ptrs_q4_0.push_back(&v);
+  for (auto &v : outs_q4_0)
+    out_ptrs_q4_0.push_back(&v);
 
   // Create run contexts
   auto rc_fp32 = nntrainer::RunLayerContext("test_fp32", true, 0.0f, false, 1.0,
@@ -548,8 +550,10 @@ TEST(Convolution2DQ4_0, verify_q4_0_path_enabled) {
   }
 
   // Q4_0 quantization error should be within tolerance (0.5 upper bound)
-  // Note: This tests that Q4_0 GEMM path is functional and produces similar results to FP32
-  EXPECT_LE(max_diff, 0.5f) << "Max diff between FP32 and Q4_0 outputs exceeds tolerance";
+  // Note: This tests that Q4_0 GEMM path is functional and produces similar
+  // results to FP32
+  EXPECT_LE(max_diff, 0.5f)
+    << "Max diff between FP32 and Q4_0 outputs exceeds tolerance";
 }
 
 /**
@@ -561,7 +565,7 @@ TEST(Convolution2DQ4_0, verify_q4_0_path_enabled) {
 TEST(Convolution2DQ4_0Preload, direct_buffer_injection) {
   // eligible conditions: groups=1, K=32*1*1=32 (32%32==0), N=8 (8%8==0)
   // filter shape: (8, 32, 1, 1), input: (1, 32, 4, 4)
-  
+
   const std::string input_shape = "1:32:4:4";
   const std::array<std::string, 3> tensor_type = {"NCHW", "FP32", "FP32"};
   const auto mode = ml::train::ExecutionMode::TRAIN;
@@ -577,9 +581,9 @@ TEST(Convolution2DQ4_0Preload, direct_buffer_injection) {
     nntrainer::from_string(input_shape, parsed);
     for (auto &par : parsed) {
       par.get().setFormat(
-        nntrainer::str_converter<nntrainer::enum_class_prop_tag,
-                                 nntrainer::TensorFormatInfo>::from_string(
-          tensor_type[0]));
+        nntrainer::str_converter<
+          nntrainer::enum_class_prop_tag,
+          nntrainer::TensorFormatInfo>::from_string(tensor_type[0]));
       [[maybe_unused]] auto _ = shape_parser_::prop_tag{};
     }
     return nntrainer::InitLayerContext({parsed.begin(), parsed.end()}, {true},
@@ -589,24 +593,18 @@ TEST(Convolution2DQ4_0Preload, direct_buffer_injection) {
 
   // Step 1: Create Q4_0 lazy mode layer (reference)
   auto lazy_layer = nntrainer::createLayer<nntrainer::Conv2DLayer>();
-  std::vector<std::string> lazy_props = {
-    "filters=8",
-    "kernel_size=1,1",
-    "bias_initializer=zeros",
-    "conv_weight_quant=Q4_0"
-  };
+  std::vector<std::string> lazy_props = {"filters=8", "kernel_size=1,1",
+                                         "bias_initializer=zeros",
+                                         "conv_weight_quant=Q4_0"};
   auto ctx_lazy = create_ctx(input_shape, tensor_type, mode);
   lazy_layer->setProperty(lazy_props);
   EXPECT_NO_THROW(lazy_layer->finalize(ctx_lazy));
 
   // Step 2: Create Q4_0_PRELOAD mode layer
   auto preload_layer = nntrainer::createLayer<nntrainer::Conv2DLayer>();
-  std::vector<std::string> preload_props = {
-    "filters=8",
-    "kernel_size=1,1",
-    "bias_initializer=zeros",
-    "conv_weight_quant=Q4_0_PRELOAD"
-  };
+  std::vector<std::string> preload_props = {"filters=8", "kernel_size=1,1",
+                                            "bias_initializer=zeros",
+                                            "conv_weight_quant=Q4_0_PRELOAD"};
   auto ctx_preload = create_ctx(input_shape, tensor_type, mode);
   preload_layer->setProperty(preload_props);
   EXPECT_NO_THROW(preload_layer->finalize(ctx_preload));
@@ -619,8 +617,9 @@ TEST(Convolution2DQ4_0Preload, direct_buffer_injection) {
     weights_lazy.back().getVariableRef().setRandUniform(-0.5f, 0.5f);
   }
 
-  // Allocate weights for preload layer — use placeholder (1,1,1,1) so no FP32 alloc
-  // We don't set weights for preload layer; loadQ40Weights will inject Q4_0 bytes
+  // Allocate weights for preload layer — use placeholder (1,1,1,1) so no FP32
+  // alloc We don't set weights for preload layer; loadQ40Weights will inject
+  // Q4_0 bytes
   std::vector<nntrainer::Weight> weights_preload;
   for (unsigned int i = 0; i < ctx_preload.getNumWeights(); ++i) {
     auto &spec = ctx_preload.getWeightsSpec()[i];
@@ -643,7 +642,8 @@ TEST(Convolution2DQ4_0Preload, direct_buffer_injection) {
   // Create run context for lazy layer with fixed input seed
   std::vector<nntrainer::Var_Grad> ins_lazy, outs_lazy;
   for (auto &dim : ctx_lazy.getInputDimensions()) {
-    ins_lazy.emplace_back(dim, nntrainer::Initializer::NONE, true, true, "input");
+    ins_lazy.emplace_back(dim, nntrainer::Initializer::NONE, true, true,
+                          "input");
     ins_lazy.back().getVariableRef().setRandUniform(-1.0f, 1.0f);
   }
   for (auto &spec : ctx_lazy.getOutSpecs()) {
@@ -653,9 +653,11 @@ TEST(Convolution2DQ4_0Preload, direct_buffer_injection) {
 
   // Create run context for preload layer — copy exact same input
   std::vector<nntrainer::Var_Grad> ins_preload, outs_preload;
-  for (unsigned int i = 0; i < (unsigned int)ctx_preload.getInputDimensions().size(); ++i) {
+  for (unsigned int i = 0;
+       i < (unsigned int)ctx_preload.getInputDimensions().size(); ++i) {
     auto &dim = ctx_preload.getInputDimensions()[i];
-    ins_preload.emplace_back(dim, nntrainer::Initializer::NONE, true, true, "input");
+    ins_preload.emplace_back(dim, nntrainer::Initializer::NONE, true, true,
+                             "input");
     auto &src = ins_lazy[i].getVariableRef();
     auto &dst = ins_preload.back().getVariableRef();
     const float *src_data = src.getData<float>();
@@ -663,8 +665,9 @@ TEST(Convolution2DQ4_0Preload, direct_buffer_injection) {
     std::copy(src_data, src_data + src.size(), dst_data);
   }
   for (auto &spec : ctx_preload.getOutSpecs()) {
-    outs_preload.emplace_back(spec.variable_spec.dim, nntrainer::Initializer::NONE,
-                              true, true, "output");
+    outs_preload.emplace_back(spec.variable_spec.dim,
+                              nntrainer::Initializer::NONE, true, true,
+                              "output");
   }
 
   // Prepare weight pointers for lazy layer
@@ -682,18 +685,22 @@ TEST(Convolution2DQ4_0Preload, direct_buffer_injection) {
   // Prepare input/output pointers
   std::vector<nntrainer::Var_Grad *> in_ptrs_lazy, out_ptrs_lazy;
   std::vector<nntrainer::Var_Grad *> in_ptrs_preload, out_ptrs_preload;
-  for (auto &v : ins_lazy) in_ptrs_lazy.push_back(&v);
-  for (auto &v : outs_lazy) out_ptrs_lazy.push_back(&v);
-  for (auto &v : ins_preload) in_ptrs_preload.push_back(&v);
-  for (auto &v : outs_preload) out_ptrs_preload.push_back(&v);
+  for (auto &v : ins_lazy)
+    in_ptrs_lazy.push_back(&v);
+  for (auto &v : outs_lazy)
+    out_ptrs_lazy.push_back(&v);
+  for (auto &v : ins_preload)
+    in_ptrs_preload.push_back(&v);
+  for (auto &v : outs_preload)
+    out_ptrs_preload.push_back(&v);
 
   // Create run contexts
   auto rc_lazy = nntrainer::RunLayerContext("test_lazy", true, 0.0f, false, 1.0,
                                             nullptr, false, weight_ptrs_lazy,
                                             in_ptrs_lazy, out_ptrs_lazy, {});
-  auto rc_preload = nntrainer::RunLayerContext("test_preload", true, 0.0f, false, 1.0,
-                                               nullptr, false, weight_ptrs_preload,
-                                               in_ptrs_preload, out_ptrs_preload, {});
+  auto rc_preload = nntrainer::RunLayerContext(
+    "test_preload", true, 0.0f, false, 1.0, nullptr, false, weight_ptrs_preload,
+    in_ptrs_preload, out_ptrs_preload, {});
 
   // Initialize both layers
   EXPECT_NO_THROW(lazy_layer->initialize(rc_lazy));
@@ -708,7 +715,8 @@ TEST(Convolution2DQ4_0Preload, direct_buffer_injection) {
   const auto &q4_0_buffer = lazy_conv->getQ40Buffer();
 
   // Inject Q4_0 buffer into preload layer
-  auto *preload_conv = dynamic_cast<nntrainer::Conv2DLayer *>(preload_layer.get());
+  auto *preload_conv =
+    dynamic_cast<nntrainer::Conv2DLayer *>(preload_layer.get());
   ASSERT_NE(preload_conv, nullptr);
   preload_conv->loadQ40Weights(q4_0_buffer.data(), q4_0_buffer.size());
 
@@ -736,7 +744,8 @@ TEST(Convolution2DQ4_0Preload, direct_buffer_injection) {
   }
 
   // Outputs should be identical (same Q4_0 buffer, same computation)
-  EXPECT_FLOAT_EQ(max_diff, 0.0f) << "Max diff between lazy Q4_0 and PRELOAD Q4_0 outputs should be 0";
+  EXPECT_FLOAT_EQ(max_diff, 0.0f)
+    << "Max diff between lazy Q4_0 and PRELOAD Q4_0 outputs should be 0";
 }
 
 /**
@@ -765,9 +774,9 @@ TEST(Convolution2DQ4_0, q8_0_col_path_k288) {
     nntrainer::from_string(input_shape, parsed);
     for (auto &par : parsed) {
       par.get().setFormat(
-        nntrainer::str_converter<nntrainer::enum_class_prop_tag,
-                                 nntrainer::TensorFormatInfo>::from_string(
-          tensor_type[0]));
+        nntrainer::str_converter<
+          nntrainer::enum_class_prop_tag,
+          nntrainer::TensorFormatInfo>::from_string(tensor_type[0]));
       [[maybe_unused]] auto _ = shape_parser_::prop_tag{};
     }
     return nntrainer::InitLayerContext({parsed.begin(), parsed.end()}, {true},
@@ -777,24 +786,18 @@ TEST(Convolution2DQ4_0, q8_0_col_path_k288) {
 
   // Create FP32 layer (reference path)
   auto fp32_layer = nntrainer::createLayer<nntrainer::Conv2DLayer>();
-  std::vector<std::string> fp32_props = {
-    "filters=16",
-    "kernel_size=3,3",
-    "bias_initializer=zeros",
-    "conv_weight_quant=FP32"
-  };
+  std::vector<std::string> fp32_props = {"filters=16", "kernel_size=3,3",
+                                         "bias_initializer=zeros",
+                                         "conv_weight_quant=FP32"};
   auto ctx_fp32 = create_ctx(input_shape, tensor_type, mode);
   fp32_layer->setProperty(fp32_props);
   EXPECT_NO_THROW(fp32_layer->finalize(ctx_fp32));
 
   // Create Q4_0 layer (Q8_0 col path activated automatically for K=288)
   auto q4_0_layer = nntrainer::createLayer<nntrainer::Conv2DLayer>();
-  std::vector<std::string> q4_0_props = {
-    "filters=16",
-    "kernel_size=3,3",
-    "bias_initializer=zeros",
-    "conv_weight_quant=Q4_0"
-  };
+  std::vector<std::string> q4_0_props = {"filters=16", "kernel_size=3,3",
+                                         "bias_initializer=zeros",
+                                         "conv_weight_quant=Q4_0"};
   auto ctx_q4_0 = create_ctx(input_shape, tensor_type, mode);
   q4_0_layer->setProperty(q4_0_props);
   EXPECT_NO_THROW(q4_0_layer->finalize(ctx_q4_0));
@@ -822,7 +825,8 @@ TEST(Convolution2DQ4_0, q8_0_col_path_k288) {
   // Create run context for FP32 layer with fixed input seed
   std::vector<nntrainer::Var_Grad> ins_fp32, outs_fp32;
   for (auto &dim : ctx_fp32.getInputDimensions()) {
-    ins_fp32.emplace_back(dim, nntrainer::Initializer::NONE, true, true, "input");
+    ins_fp32.emplace_back(dim, nntrainer::Initializer::NONE, true, true,
+                          "input");
     ins_fp32.back().getVariableRef().setRandUniform(-1.0f, 1.0f);
   }
   for (auto &spec : ctx_fp32.getOutSpecs()) {
@@ -832,9 +836,11 @@ TEST(Convolution2DQ4_0, q8_0_col_path_k288) {
 
   // Create run context for Q4_0 layer — copy exact same input as FP32
   std::vector<nntrainer::Var_Grad> ins_q4_0, outs_q4_0;
-  for (unsigned int i = 0; i < (unsigned int)ctx_q4_0.getInputDimensions().size(); ++i) {
+  for (unsigned int i = 0;
+       i < (unsigned int)ctx_q4_0.getInputDimensions().size(); ++i) {
     auto &dim = ctx_q4_0.getInputDimensions()[i];
-    ins_q4_0.emplace_back(dim, nntrainer::Initializer::NONE, true, true, "input");
+    ins_q4_0.emplace_back(dim, nntrainer::Initializer::NONE, true, true,
+                          "input");
     auto &src = ins_fp32[i].getVariableRef();
     auto &dst = ins_q4_0.back().getVariableRef();
     const float *src_data = src.getData<float>();
@@ -848,17 +854,23 @@ TEST(Convolution2DQ4_0, q8_0_col_path_k288) {
 
   // Prepare weight pointers
   std::vector<nntrainer::Weight *> weight_ptrs_fp32;
-  for (auto &w : weights_fp32) weight_ptrs_fp32.push_back(&w);
+  for (auto &w : weights_fp32)
+    weight_ptrs_fp32.push_back(&w);
   std::vector<nntrainer::Weight *> weight_ptrs_q4_0;
-  for (auto &w : weights_q4_0) weight_ptrs_q4_0.push_back(&w);
+  for (auto &w : weights_q4_0)
+    weight_ptrs_q4_0.push_back(&w);
 
   // Prepare input/output pointers
   std::vector<nntrainer::Var_Grad *> in_ptrs_fp32, out_ptrs_fp32;
   std::vector<nntrainer::Var_Grad *> in_ptrs_q4_0, out_ptrs_q4_0;
-  for (auto &v : ins_fp32) in_ptrs_fp32.push_back(&v);
-  for (auto &v : outs_fp32) out_ptrs_fp32.push_back(&v);
-  for (auto &v : ins_q4_0) in_ptrs_q4_0.push_back(&v);
-  for (auto &v : outs_q4_0) out_ptrs_q4_0.push_back(&v);
+  for (auto &v : ins_fp32)
+    in_ptrs_fp32.push_back(&v);
+  for (auto &v : outs_fp32)
+    out_ptrs_fp32.push_back(&v);
+  for (auto &v : ins_q4_0)
+    in_ptrs_q4_0.push_back(&v);
+  for (auto &v : outs_q4_0)
+    out_ptrs_q4_0.push_back(&v);
 
   // Create run contexts
   auto rc_fp32 = nntrainer::RunLayerContext("test_fp32", true, 0.0f, false, 1.0,
@@ -898,7 +910,8 @@ TEST(Convolution2DQ4_0, q8_0_col_path_k288) {
 
   // Q4_0 + Q8_0 col double-quantization error should be within tolerance
   // K=288 means 9 Q4_0 blocks per row; combined quantization noise is bounded
-  EXPECT_LE(max_diff, 1.0f) << "Max diff between FP32 and Q4_0+Q8_0col outputs exceeds tolerance";
+  EXPECT_LE(max_diff, 1.0f)
+    << "Max diff between FP32 and Q4_0+Q8_0col outputs exceeds tolerance";
 }
 
 /**
@@ -932,9 +945,9 @@ TEST(Convolution2DQ8_0Col, fused_im2col_q8_vs_fp32) {
     nntrainer::from_string(input_shape, parsed);
     for (auto &par : parsed) {
       par.get().setFormat(
-        nntrainer::str_converter<nntrainer::enum_class_prop_tag,
-                                 nntrainer::TensorFormatInfo>::from_string(
-          tensor_type[0]));
+        nntrainer::str_converter<
+          nntrainer::enum_class_prop_tag,
+          nntrainer::TensorFormatInfo>::from_string(tensor_type[0]));
       [[maybe_unused]] auto _ = shape_parser_::prop_tag{};
     }
     return nntrainer::InitLayerContext({parsed.begin(), parsed.end()}, {true},
@@ -945,9 +958,8 @@ TEST(Convolution2DQ8_0Col, fused_im2col_q8_vs_fp32) {
   // FP32 reference layer
   auto fp32_layer = nntrainer::createLayer<nntrainer::Conv2DLayer>();
   std::vector<std::string> fp32_props = {
-    "filters=64", "kernel_size=3,3", "padding=same",
-    "bias_initializer=zeros", "conv_weight_quant=FP32"
-  };
+    "filters=64", "kernel_size=3,3", "padding=same", "bias_initializer=zeros",
+    "conv_weight_quant=FP32"};
   auto ctx_fp32 = create_ctx(input_shape, tensor_type, mode);
   fp32_layer->setProperty(fp32_props);
   EXPECT_NO_THROW(fp32_layer->finalize(ctx_fp32));
@@ -955,9 +967,8 @@ TEST(Convolution2DQ8_0Col, fused_im2col_q8_vs_fp32) {
   // Q4_0 layer — K%32==0 triggers Q8_0 col path internally
   auto q4_0_layer = nntrainer::createLayer<nntrainer::Conv2DLayer>();
   std::vector<std::string> q4_0_props = {
-    "filters=64", "kernel_size=3,3", "padding=same",
-    "bias_initializer=zeros", "conv_weight_quant=Q4_0"
-  };
+    "filters=64", "kernel_size=3,3", "padding=same", "bias_initializer=zeros",
+    "conv_weight_quant=Q4_0"};
   auto ctx_q4_0 = create_ctx(input_shape, tensor_type, mode);
   q4_0_layer->setProperty(q4_0_props);
   EXPECT_NO_THROW(q4_0_layer->finalize(ctx_q4_0));
@@ -982,7 +993,8 @@ TEST(Convolution2DQ8_0Col, fused_im2col_q8_vs_fp32) {
   // Allocate inputs with fixed seed; copy to Q4_0 layer
   std::vector<nntrainer::Var_Grad> ins_fp32, outs_fp32;
   for (auto &dim : ctx_fp32.getInputDimensions()) {
-    ins_fp32.emplace_back(dim, nntrainer::Initializer::NONE, true, true, "input");
+    ins_fp32.emplace_back(dim, nntrainer::Initializer::NONE, true, true,
+                          "input");
     ins_fp32.back().getVariableRef().setRandUniform(-1.0f, 1.0f);
   }
   for (auto &spec : ctx_fp32.getOutSpecs())
@@ -990,9 +1002,11 @@ TEST(Convolution2DQ8_0Col, fused_im2col_q8_vs_fp32) {
                            true, true, "output");
 
   std::vector<nntrainer::Var_Grad> ins_q4_0, outs_q4_0;
-  for (unsigned int i = 0; i < (unsigned int)ctx_q4_0.getInputDimensions().size(); ++i) {
+  for (unsigned int i = 0;
+       i < (unsigned int)ctx_q4_0.getInputDimensions().size(); ++i) {
     auto &dim = ctx_q4_0.getInputDimensions()[i];
-    ins_q4_0.emplace_back(dim, nntrainer::Initializer::NONE, true, true, "input");
+    ins_q4_0.emplace_back(dim, nntrainer::Initializer::NONE, true, true,
+                          "input");
     auto &src = ins_fp32[i].getVariableRef();
     auto &dst = ins_q4_0.back().getVariableRef();
     std::copy(src.getData<float>(), src.getData<float>() + src.size(),
@@ -1003,21 +1017,27 @@ TEST(Convolution2DQ8_0Col, fused_im2col_q8_vs_fp32) {
                            true, true, "output");
 
   std::vector<nntrainer::Weight *> wptrs_fp32, wptrs_q4_0;
-  for (auto &w : weights_fp32) wptrs_fp32.push_back(&w);
-  for (auto &w : weights_q4_0) wptrs_q4_0.push_back(&w);
+  for (auto &w : weights_fp32)
+    wptrs_fp32.push_back(&w);
+  for (auto &w : weights_q4_0)
+    wptrs_q4_0.push_back(&w);
   std::vector<nntrainer::Var_Grad *> iptrs_fp32, optrs_fp32;
   std::vector<nntrainer::Var_Grad *> iptrs_q4_0, optrs_q4_0;
-  for (auto &v : ins_fp32) iptrs_fp32.push_back(&v);
-  for (auto &v : outs_fp32) optrs_fp32.push_back(&v);
-  for (auto &v : ins_q4_0) iptrs_q4_0.push_back(&v);
-  for (auto &v : outs_q4_0) optrs_q4_0.push_back(&v);
+  for (auto &v : ins_fp32)
+    iptrs_fp32.push_back(&v);
+  for (auto &v : outs_fp32)
+    optrs_fp32.push_back(&v);
+  for (auto &v : ins_q4_0)
+    iptrs_q4_0.push_back(&v);
+  for (auto &v : outs_q4_0)
+    optrs_q4_0.push_back(&v);
 
-  auto rc_fp32 = nntrainer::RunLayerContext("test_fp32", true, 0.0f, false, 1.0,
-                                            nullptr, false, wptrs_fp32,
-                                            iptrs_fp32, optrs_fp32, {});
-  auto rc_q4_0 = nntrainer::RunLayerContext("test_q4_0", true, 0.0f, false, 1.0,
-                                            nullptr, false, wptrs_q4_0,
-                                            iptrs_q4_0, optrs_q4_0, {});
+  auto rc_fp32 =
+    nntrainer::RunLayerContext("test_fp32", true, 0.0f, false, 1.0, nullptr,
+                               false, wptrs_fp32, iptrs_fp32, optrs_fp32, {});
+  auto rc_q4_0 =
+    nntrainer::RunLayerContext("test_q4_0", true, 0.0f, false, 1.0, nullptr,
+                               false, wptrs_q4_0, iptrs_q4_0, optrs_q4_0, {});
 
   EXPECT_NO_THROW(fp32_layer->initialize(rc_fp32));
   EXPECT_NO_THROW(q4_0_layer->initialize(rc_q4_0));
@@ -1033,7 +1053,8 @@ TEST(Convolution2DQ8_0Col, fused_im2col_q8_vs_fp32) {
   const float *q4_0_data = out_q4_0.getData<float>();
   for (size_t i = 0; i < out_fp32.size(); ++i) {
     float diff = std::abs(fp32_data[i] - q4_0_data[i]);
-    if (diff > max_diff) max_diff = diff;
+    if (diff > max_diff)
+      max_diff = diff;
   }
 
   EXPECT_LE(max_diff, 1.0f) << "Q8_0 col path max_diff vs FP32 exceeded 1.0";

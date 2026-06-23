@@ -1111,10 +1111,10 @@ extern void gemm_q4_0(const unsigned int M, const unsigned int N,
  * @param ldc Leading dimension of C
  */
 extern void gemm_q4_0_from_q8(const unsigned int M, const unsigned int N,
-                               const unsigned int K, const char *A_q8_row,
-                               const size_t row_stride_bytes, const void *B,
-                               const unsigned int ldb, float *C,
-                               const unsigned int ldc);
+                              const unsigned int K, const char *A_q8_row,
+                              const size_t row_stride_bytes, const void *B,
+                              const unsigned int ldb, float *C,
+                              const unsigned int ldc);
 
 /**
  * @brief q4_K GEMM : A (M,K) * W.T (N,K) = O (M,N)

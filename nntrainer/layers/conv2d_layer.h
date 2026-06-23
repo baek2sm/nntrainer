@@ -114,7 +114,9 @@ public:
    * @brief Get reference to Q4_0 buffer (const)
    * @return const reference to the Q4_0 buffer
    */
-  const std::vector<uint8_t>& getQ40Buffer() const { return filter_q4_0_buffer; }
+  const std::vector<uint8_t> &getQ40Buffer() const {
+    return filter_q4_0_buffer;
+  }
 
   /**
    * @brief Get original filter dimension (for Q4_0_PRELOAD mode)
@@ -163,8 +165,7 @@ private:
    * a 4D conv filter, which the framework does not support).
    * Accepted values: "FP32" (default) or "Q4_0".
    */
-  struct Conv2DWeightQuant final
-    : public nntrainer::Property<std::string> {
+  struct Conv2DWeightQuant final : public nntrainer::Property<std::string> {
     using prop_tag = str_prop_tag;
     static constexpr const char *key = "conv_weight_quant";
   };

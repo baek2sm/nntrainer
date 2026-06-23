@@ -95,6 +95,7 @@ double MemoryPool::planLayout(const MemoryPlanner &planner) {
 
   pool_size = planner.planLayout(memory_size, memory_validity, memory_offset,
                                  memory_is_wgrad, n_wgrad);
+
   if (pool_size < min_pool_size || !validateLayout())
     throw std::runtime_error("Planned layout is not feasible");
 
@@ -110,6 +111,9 @@ void MemoryPool::allocate() {
 
   ml_logi("MemoryPool::allocate size: %zu allocator: %s", pool_size,
           allocator_->getName().c_str());
+  fprintf(stderr, "[MEMPOOL] pool_size=%zu MB  min_req=%zu MB  n_tensors=%zu\n",
+          pool_size / (1024 * 1024), min_pool_size / (1024 * 1024),
+          memory_size.size());
 
   // Single contiguous buffer routed through the per-vendor allocator.
   // For ClSVMAllocator this returns SVM memory directly addressable

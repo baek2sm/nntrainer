@@ -18,9 +18,9 @@
 
 #include <conv2d_layer.h>
 #include <cpu_backend.h>
-#include <nntr_ggml_impl.h>
 #include <layer_context.h>
 #include <lazy_tensor.h>
+#include <nntr_ggml_impl.h>
 #include <nntr_threads.h>
 #include <nntrainer_error.h>
 #include <nntrainer_log.h>
@@ -357,7 +357,8 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
   use_q4_0_preload = (quant_val == "Q4_0_PRELOAD");
 
   // K = in_channels/groups * kernel_height * kernel_width
-  unsigned int K = (in_dim.channel() / groups) * kernel_size[0] * kernel_size[1];
+  unsigned int K =
+    (in_dim.channel() / groups) * kernel_size[0] * kernel_size[1];
 
   // gemm_q4_0 rounds thread ranges up to multiples of 8 for filter rows (N),
   // so N must be divisible by 8 to avoid out-of-bounds B/C access.
@@ -368,16 +369,16 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
     // Pre-quantize and repack filter weights during finalize
     // Note: Actual quantization happens after weights are loaded/initialized,
     // which is handled in initialize() or first forwarding if weights change
-    filter_q4_0_M = filter_size; // N in GEMM (output channels)
-    filter_q4_0_N = K;           // K in GEMM (input features per output)
-    filter_q4_0_orig_dim = kernel_dim;  // Store original shape for Q4_0_PRELOAD
+    filter_q4_0_M = filter_size;       // N in GEMM (output channels)
+    filter_q4_0_N = K;                 // K in GEMM (input features per output)
+    filter_q4_0_orig_dim = kernel_dim; // Store original shape for Q4_0_PRELOAD
   }
 
   // Q4_0_PRELOAD: placeholder (1,1,1,1) to skip FP32 allocation
   TensorDim weight_reg_dim =
     (use_q4_0_preload && eligible)
-    ? TensorDim(1, 1, 1, 1, kernel_dim.getTensorType())
-    : kernel_dim;
+      ? TensorDim(1, 1, 1, 1, kernel_dim.getTensorType())
+      : kernel_dim;
   wt_idx[ConvParams::weight] = context.requestWeight(
     weight_reg_dim, weight_initializer, weight_regularizer,
     weight_regularizer_constant, weight_decay, "filter", true, 0);
@@ -510,14 +511,16 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   unsigned int groups = groups_prop.empty() ? 1 : groups_prop.get();
 
   // For Q4_0_PRELOAD mode, use stored original dimension for im2col
-  const TensorDim &im2col_filter_dim = use_q4_0_preload ? filter_q4_0_orig_dim : filter_dim;
+  const TensorDim &im2col_filter_dim =
+    use_q4_0_preload ? filter_q4_0_orig_dim : filter_dim;
 
   if (use_q4_0_gemm && groups == 1) {
     // Q4_0 GEMM path: im2col -> gemm_q4_0 -> output
 
-    // For Q4_0_PRELOAD mode, use stored original dimension; otherwise use filter_dim
+    // For Q4_0_PRELOAD mode, use stored original dimension; otherwise use
+    // filter_dim
     unsigned int K = use_q4_0_preload ? filter_q4_0_orig_dim.getFeatureLen()
-                                       : filter_dim.getFeatureLen();
+                                      : filter_dim.getFeatureLen();
     unsigned int M = out_dim.width() * out_dim.height();
     unsigned int N = filter_size;
 
@@ -580,25 +583,17 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
         // Quantize each im2col row directly to Q8_0 (avoids FP32 col buffer).
         for (unsigned int mi = 0; mi < M; ++mi) {
           extract_im2col_row_q8_0(
-            in_ptr,
-            q8_col.data() + mi * q8_row_stride,
-            static_cast<int>(mi),
-            static_cast<int>(c_in_val),
-            static_cast<int>(h_in_val),
-            static_cast<int>(w_in_val),
-            static_cast<int>(kH_val),
-            static_cast<int>(kW_val),
-            stride_h_val, stride_w_val,
-            pad_h_val, pad_w_val,
-            static_cast<int>(K));
+            in_ptr, q8_col.data() + mi * q8_row_stride, static_cast<int>(mi),
+            static_cast<int>(c_in_val), static_cast<int>(h_in_val),
+            static_cast<int>(w_in_val), static_cast<int>(kH_val),
+            static_cast<int>(kW_val), stride_h_val, stride_w_val, pad_h_val,
+            pad_w_val, static_cast<int>(K));
         }
 
         // gemm_q4_0_from_q8: C(M,N) = A_q8(M,K) × B^T(N,K)
-        gemm_q4_0_from_q8(M, N, K,
-                          reinterpret_cast<const char *>(q8_col.data()),
-                          q8_row_stride,
-                          filter_q4_0_buffer.data(), N,
-                          temp_C.data(), N);
+        gemm_q4_0_from_q8(
+          M, N, K, reinterpret_cast<const char *>(q8_col.data()), q8_row_stride,
+          filter_q4_0_buffer.data(), N, temp_C.data(), N);
 
         float *out_data = out.getData<float>();
         for (unsigned int m = 0; m < M; ++m) {
