@@ -1,0 +1,11 @@
+# Local test outputs
+cat_*.png
+cat_*.jpg
+logs/
+_scrap_draft/
+
+# Local binary inputs (large test data)
+res/input_*.bin
+
+# Third-party headers (add to subprojects/ instead if needed)
+jni/stb_image.h
