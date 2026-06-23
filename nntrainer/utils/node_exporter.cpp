@@ -204,6 +204,13 @@ void Exporter::saveTflResult(
   const Conv2DLayer *self) {
   createIfNull(tf_node);
 
+  const auto groups = std::get<props::ConvGroups>(props).get();
+  if (groups > 1) {
+    throw std::runtime_error(
+      "[Conv2DLayer] TFLite export does not support grouped convolution "
+      "(groups > 1). TFLite CONV_2D has no groups field; use groups=1.");
+  }
+
   auto weight_transform = [](std::vector<const Tensor *> &old_weights) {
     std::vector<Tensor> new_weights;
 

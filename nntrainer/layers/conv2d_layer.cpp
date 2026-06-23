@@ -493,10 +493,11 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       Tensor result = Tensor(calcCol2ImOutputDim(out_dim, fdim_g));
       for (unsigned int g = 0; g < groups; ++g) {
         Tensor in_g = in_sub.getSharedDataTensor(
-          {1, icg, in_dim.height(), in_dim.width()}, g * icg * ihw);
+          {1, icg, in_dim.height(), in_dim.width()}, (size_t)g * icg * ihw);
         Tensor filt_g = filter_kernel.getSharedDataTensor(
-          {ocg, icg * fh * fw}, g * ocg * icg * fh * fw);
-        Tensor out_g = out.getSharedDataTensor({ocg, owoh}, g * ocg * owoh);
+          {ocg, icg * fh * fw}, (size_t)g * ocg * icg * fh * fw);
+        Tensor out_g =
+          out.getSharedDataTensor({ocg, owoh}, (size_t)g * ocg * owoh);
         result.setZero();
         im2col(in_g, fdim_g, padding, stride, dilation, result);
         filt_g.dot(result, out_g, false, true);
