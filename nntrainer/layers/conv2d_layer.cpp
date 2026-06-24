@@ -368,7 +368,11 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
   out_dim.height((eff_in_height - eff_k_height) / stride[0] + 1);
   out_dim.width((eff_in_width - eff_k_width) / stride[1] + 1);
 
-  out_dim.setTensorType(in_dim.getTensorType());
+  // Output activations follow the model's activation data type (as Fully
+  // Connected and the other compute layers do), not the input tensor's type.
+  // For ordinary FP32 models this is identical to the input type; it is what
+  // lets a conv2d emit FP16 activations when the model runs at FP16.
+  out_dim.setTensorType({context.getFormat(), context.getActivationDataType()});
 
   context.setOutputDimensions({out_dim});
 
