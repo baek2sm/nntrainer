@@ -580,7 +580,8 @@ Tensor Gemma4Transformer::createSharedAttention(const int layer_id,
             std::to_string(rope_partial_rotary_factor)),
     withKey("max_new_tokens", std::to_string(NUM_TO_GENERATE)),
     withKey("attn_logit_softcapping", std::to_string(ATTN_LOGIT_SOFTCAPPING)),
-    withKey("is_causal", IS_CAUSAL ? "true" : "false")};
+    withKey("is_causal", IS_CAUSAL ? "true" : "false"),
+    withKey("use_gemm_attention", USE_FLASH_ATTENTION ? "true" : "false")};
   appendSkipPrefillIfNeeded(a_params, is_kv_shared_layer);
   LayerHandle mha(createLayer("mha_core", a_params));
   Tensor a = mha({q_scaled, shared_k_norm, shared_v_norm, cache_k, cache_v});
@@ -717,7 +718,8 @@ Tensor Gemma4Transformer::createAttention(const int layer_id, int seq_len,
             std::to_string(rope_partial_rotary_factor)),
     withKey("max_new_tokens", std::to_string(NUM_TO_GENERATE)),
     withKey("attn_logit_softcapping", std::to_string(ATTN_LOGIT_SOFTCAPPING)),
-    withKey("is_causal", IS_CAUSAL ? "true" : "false")};
+    withKey("is_causal", IS_CAUSAL ? "true" : "false"),
+    withKey("use_gemm_attention", USE_FLASH_ATTENTION ? "true" : "false")};
   appendSkipPrefillIfNeeded(a_params, is_kv_shared_layer);
   LayerHandle mha(createLayer("mha_core", a_params));
   Tensor a = mha({q_scaled, k_normed, v_normed, cache_k, cache_v});
@@ -786,20 +788,19 @@ void Gemma4Transformer::registerCustomLayers() {
   auto app_context =
     static_cast<nntrainer::AppContext *>(ct_engine.getRegisteredContext("cpu"));
 
-  try {
-    app_context->registerFactory(
-      nntrainer::createLayer<causallm::ReshapedRMSNormLayer>);
-    app_context->registerFactory(
-      nntrainer::createLayer<causallm::PerLayerSliceLayer>);
-    app_context->registerFactory(
-      nntrainer::createLayer<causallm::ScalarMultiplyLayer>);
-    app_context->registerFactory(
-      nntrainer::createLayer<causallm::LogitSoftCappingLayer>);
+  auto tryRegister = [&](auto factory_fn) {
+    try {
+      app_context->registerFactory(factory_fn);
+    } catch (std::invalid_argument &e) {
+      std::cerr << "failed to register factory, reason: " << e.what()
+                << std::endl;
+    }
+  };
 
-  } catch (std::invalid_argument &e) {
-    std::cerr << "failed to register factory, reason: " << e.what()
-              << std::endl;
-  }
+  tryRegister(nntrainer::createLayer<causallm::ReshapedRMSNormLayer>);
+  tryRegister(nntrainer::createLayer<causallm::PerLayerSliceLayer>);
+  tryRegister(nntrainer::createLayer<causallm::ScalarMultiplyLayer>);
+  tryRegister(nntrainer::createLayer<causallm::LogitSoftCappingLayer>);
 }
 
 void Gemma4CausalLM::registerCustomLayers() {
