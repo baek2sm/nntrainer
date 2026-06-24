@@ -95,8 +95,8 @@ inline Tensor convBnSilu(const std::string &name, int in_ch, int out_ch, int k,
     nntrainer::withKey("filters", out_ch),
     nntrainer::withKey("stride", {stride, stride}),
     nntrainer::withKey("padding", padding)};
-  // Opt-in (env YOLO_CONV_Q40): run 1x1 (pointwise) convs as Q4_0 matmul.
-  if (k == 1 && out_ch > 1 && std::getenv("YOLO_CONV_Q40"))
+  // Opt-in (env YOLO_CONV_Q40): run groups=1 convs as Q4_0 matmul (im2col+gemm).
+  if (out_ch > 1 && out_ch % 32 == 0 && std::getenv("YOLO_CONV_Q40"))
     conv_props.push_back(nntrainer::withKey("weight_dtype", "Q4_0"));
   LayerHandle conv(createLayer("conv2d", conv_props));
   auto h = conv(input);
@@ -239,7 +239,7 @@ inline Tensor convBnOnly(const std::string &name, int in_ch, int out_ch, int k,
     nntrainer::withKey("filters", out_ch),
     nntrainer::withKey("stride", {stride, stride}),
     nntrainer::withKey("padding", padding)};
-  if (k == 1 && out_ch > 1 && std::getenv("YOLO_CONV_Q40"))
+  if (out_ch > 1 && out_ch % 32 == 0 && std::getenv("YOLO_CONV_Q40"))
     conv_props.push_back(nntrainer::withKey("weight_dtype", "Q4_0"));
   LayerHandle conv(createLayer("conv2d", conv_props));
   return conv(input);
@@ -310,7 +310,7 @@ inline Tensor convBias1x1(const std::string &name, int out_ch, Tensor input) {
     nntrainer::withKey("filters", out_ch),
     nntrainer::withKey("stride", {1, 1}),
     nntrainer::withKey("padding", 0)};
-  if (out_ch > 1 && std::getenv("YOLO_CONV_Q40"))
+  if (out_ch > 1 && out_ch % 32 == 0 && std::getenv("YOLO_CONV_Q40"))
     conv_props.push_back(nntrainer::withKey("weight_dtype", "Q4_0"));
   LayerHandle conv(createLayer("conv2d", conv_props));
   return conv(input);
