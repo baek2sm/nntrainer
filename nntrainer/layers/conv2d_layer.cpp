@@ -497,7 +497,6 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       }
       for (unsigned int b = s; b < e; ++b) {
         Tensor out = hidden_.getBatchSlice(b, 1);
-        out.reshape({filter_size, owoh});
         Tensor in_sub = input_.getBatchSlice(b, 1);
 
         if (weight_is_quant) {
@@ -527,8 +526,10 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
           // Use a fresh transpose + copy: writing a transpose straight into the
           // shared `out` view can corrupt aliased buffers.
           Tensor out_t = tmp.transpose("0:2:1");
+          out_t.reshape(out.getDim());
           out.copyData(out_t);
         } else {
+          out.reshape({filter_size, owoh});
           im2col(in_sub, filter_dim, padding, stride, dilation, result);
           // filter kernel is (K, CRS), result is (CRS, OH*OW)
           filter_kernel.dot(result, out, false, true);
