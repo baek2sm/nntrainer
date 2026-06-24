@@ -42,6 +42,7 @@
 #include <engine.h>
 #include <layer.h>
 #include <model.h>
+#include <profiler.h>
 #include <tensor.h>
 #include <tensor_api.h>
 
@@ -995,6 +996,14 @@ int main(int argc, char *argv[]) {
       std::getenv("YOLO_BENCH_ITERS")
         ? std::max(1, std::atoi(std::getenv("YOLO_BENCH_ITERS")))
         : 1;
+    std::shared_ptr<nntrainer::profile::GenericProfileListener>
+      profile_listener;
+#ifdef PROFILE
+    profile_listener =
+      std::make_shared<nntrainer::profile::GenericProfileListener>(
+        1); // warmup 1
+#endif
+    PROFILE_BEGIN(profile_listener);
     std::vector<float *> outs;
     double total_ms = 0.0;
     for (int it = 0; it < bench_iters; ++it) {
@@ -1007,6 +1016,7 @@ int main(int argc, char *argv[]) {
               << std::endl;
     std::cout << "Inference time: " << (total_ms / bench_iters)
               << " ms (avg over " << bench_iters << " iters)" << std::endl;
+    PROFILE_END(profile_listener);
     printPeakRSS();
 
     // Post-process: DFL decode + dist2bbox + sigmoid -> [5, N] then NMS.

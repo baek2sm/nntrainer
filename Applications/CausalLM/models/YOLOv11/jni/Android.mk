@@ -54,9 +54,9 @@ LOCAL_LDLIBS := -llog -landroid
 # Match the library's ISA features so int8 (dotprod/i8mm) and fp16 paths
 # compile consistently with libnntrainer.
 LOCAL_CFLAGS += -std=c++17 -O3 -march=armv8.2-a+fp16+dotprod+i8mm -pthread \
-	-fexceptions -frtti
+	-fexceptions -frtti -DPROFILE=1
 LOCAL_CXXFLAGS += -std=c++17 -O3 -march=armv8.2-a+fp16+dotprod+i8mm -pthread \
-	-fexceptions -frtti
+	-fexceptions -frtti -DPROFILE=1
 LOCAL_LDFLAGS += -fexceptions
 
 LOCAL_SRC_FILES := main.cpp c2psa_layer.cpp

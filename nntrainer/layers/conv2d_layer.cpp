@@ -329,6 +329,13 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
 
   auto &groups_prop = std::get<props::ConvGroups>(conv_props);
   unsigned int groups = groups_prop.empty() ? 1 : groups_prop.get();
+  if (std::getenv("CONV_DUMP")) {
+    std::cerr << "CONVDUMP " << context.getName() << " k=" << kernel_size[0]
+              << "x" << kernel_size[1] << " s=" << stride[0] << "x" << stride[1]
+              << " cin=" << in_dim.channel() << " cout=" << filter_size
+              << " in=" << in_dim.height() << "x" << in_dim.width()
+              << " g=" << groups << "\n";
+  }
   NNTR_THROW_IF(in_dim.channel() % groups != 0 || filter_size % groups != 0,
                 std::invalid_argument)
     << "[Conv2D] input channels (" << in_dim.channel() << ") and filters ("
