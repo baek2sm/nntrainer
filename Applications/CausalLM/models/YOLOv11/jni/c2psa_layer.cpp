@@ -90,9 +90,18 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
   const nntrainer::Tensor &in_t = context.getInput(0);
   nntrainer::Tensor &out_t = context.getOutput(0);
 
-  NNTR_THROW_IF(in_t.getDataType() != nntrainer::Tdatatype::FP32,
-                std::invalid_argument)
-    << "PSAAttentionLayer only implements the FP32 path";
+  // The attention math runs in FP32. When the model runs at FP16 the in/out
+  // activations are FP16, so convert at the boundary via Tensor::clone/copyData
+  // (kept out of an explicit _FP16 path so this file builds without FP16 too).
+  const bool is_fp16 = in_t.getDataType() != nntrainer::Tdatatype::FP32;
+  nntrainer::Tensor in_f =
+    is_fp16 ? in_t.clone(nntrainer::Tdatatype::FP32) : in_t;
+  nntrainer::Tensor out_f;
+  if (is_fp16) {
+    nntrainer::TensorDim odim = out_t.getDim();
+    odim.setDataType(nntrainer::Tdatatype::FP32);
+    out_f = nntrainer::Tensor(odim);
+  }
 
   const unsigned int B = in_t.batch();
   const unsigned int H = in_t.height();
@@ -101,8 +110,8 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
   const unsigned int q_ch = NUM_HEADS * KD; // 128
   const unsigned int v_ch = NUM_HEADS * VD; // 256
 
-  const float *in = in_t.getData<float>();
-  float *out = out_t.getData<float>();
+  const float *in = in_f.getData<float>();
+  float *out = is_fp16 ? out_f.getData<float>() : out_t.getData<float>();
 
   // qkv uses the ultralytics per-head interleaved layout: for head h the
   // 128 channels [h*128 : h*128+128] hold [Q(kd=32), K(kd=32), V(vd=64)].
@@ -129,6 +138,10 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
     multiHeadAttention(Qb.data(), Kb.data(), Vb.data(), out_b, NUM_HEADS, KD,
                        VD, N);
   }
+
+  // Cast the FP32 attention result back into the FP16 output activation.
+  if (is_fp16)
+    out_t.copyData(out_f);
 }
 
 } // namespace yolov11

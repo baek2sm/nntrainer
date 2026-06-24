@@ -841,6 +841,16 @@ Tensor concatCh(const std::string &name, const std::vector<Tensor> &ins) {
   return l(ins);
 }
 
+/** @brief Cast a tensor to FP32. The host-side post-processing reads the model
+ *  outputs as float*, so when the model runs at FP16 the three detect outputs
+ *  are cast back to FP32 here (a no-op when the model is already FP32). */
+Tensor castFP32(const std::string &name, Tensor in) {
+  LayerHandle l(
+    createLayer("cast", {nntrainer::withKey("name", name),
+                         nntrainer::withKey("tensor_dtype", "FP32")}));
+  return l(in);
+}
+
 /**
  * @brief Build the FPN head (model.11~22) and 3-scale Detect head (model.23).
  * @return raw detection logits for P3, P4, P5 (each [1, 4*reg_max+nc, H, W]).
@@ -864,9 +874,9 @@ std::vector<Tensor> buildHead(Tensor m4, Tensor m6, Tensor m10) {
 
   // Detect head (model.23): built from standard layers (conv2d/depthwiseconv2d/
   // batch_normalization/concat) — see detect_block.h.
-  return {yolov11::detectScale("det0", 256, m16),
-          yolov11::detectScale("det1", 512, m19),
-          yolov11::detectScale("det2", 512, m22)};
+  return {castFP32("det0/cast", yolov11::detectScale("det0", 256, m16)),
+          castFP32("det1/cast", yolov11::detectScale("det1", 512, m19)),
+          castFP32("det2/cast", yolov11::detectScale("det2", 512, m22))};
 }
 
 /**
