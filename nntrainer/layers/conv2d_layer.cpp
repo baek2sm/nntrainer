@@ -12,6 +12,7 @@
  *
  */
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -566,23 +567,77 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     const unsigned int ihw = in_dim.height() * in_dim.width();
     TensorDim fdim_g(ocg, icg, fh, fw, filter_dim.getTensorType());
 
-    for (unsigned int b = 0; b < in_dim.batch(); ++b) {
-      Tensor out = hidden_.getBatchSlice(b, 1);
-      out.reshape({filter_size, owoh});
-      Tensor in_sub = input_.getBatchSlice(b, 1);
-      Tensor result = Tensor(calcCol2ImOutputDim(out_dim, fdim_g));
-      for (unsigned int g = 0; g < groups; ++g) {
-        Tensor in_g = in_sub.getSharedDataTensor(
-          {1, icg, in_dim.height(), in_dim.width()}, (size_t)g * icg * ihw);
-        Tensor filt_g = filter_kernel.getSharedDataTensor(
-          {ocg, icg * fh * fw}, (size_t)g * ocg * icg * fh * fw);
-        Tensor out_g =
-          out.getSharedDataTensor({ocg, owoh}, (size_t)g * ocg * owoh);
-        result.setZero();
-        im2col(in_g, fdim_g, padding, stride, dilation, result);
-        filt_g.dot(result, out_g, false, true);
+    if (ocg == 1 && icg == 1 &&
+        in_dim.getDataType() == nntrainer::Tdatatype::FP32 &&
+        std::getenv("NNTR_NO_DW_FASTPATH") == nullptr) {
+      // True depthwise (groups == channels): each output channel is one input
+      // channel convolved with its own kernel. The generic per-group loop below
+      // would dispatch one tiny im2col + GEMM per channel (hundreds of calls);
+      // a direct per-channel convolution parallelized over channels avoids that
+      // dispatch overhead entirely. FP32 fast path; other dtypes fall through.
+      const int H = in_dim.height(), W = in_dim.width();
+      const int OH = out_dim.height(), OW = out_dim.width();
+      const int sh = stride[0].get(), sw = stride[1].get();
+      const int dh = dilation[0].get(), dw = dilation[1].get();
+      const int pt = (int)padding[0], pl = (int)padding[2];
+      const float *in_data = input_.getData<float>();
+      const float *filt = filter_kernel.getData<float>();
+      float *out_data = hidden_.getData<float>();
+
+      auto dw_job = [&](unsigned int cs, unsigned int ce, unsigned int pid,
+                        void *user_data) {
+        for (unsigned int b = 0; b < in_dim.batch(); ++b) {
+          for (unsigned int c = cs; c < ce; ++c) {
+            const float *inc = in_data + ((size_t)b * filter_size + c) * ihw;
+            const float *fc = filt + (size_t)c * fh * fw;
+            float *outc = out_data + ((size_t)b * filter_size + c) * owoh;
+            for (int oh = 0; oh < OH; ++oh) {
+              const int ih0 = oh * sh - pt;
+              for (int ow = 0; ow < OW; ++ow) {
+                const int iw0 = ow * sw - pl;
+                float acc = 0.0f;
+                for (unsigned int kh = 0; kh < fh; ++kh) {
+                  const int ih = ih0 + (int)kh * dh;
+                  if (ih < 0 || ih >= H)
+                    continue;
+                  for (unsigned int kw = 0; kw < fw; ++kw) {
+                    const int iw = iw0 + (int)kw * dw;
+                    if (iw < 0 || iw >= W)
+                      continue;
+                    acc += inc[(size_t)ih * W + iw] * fc[kh * fw + kw];
+                  }
+                }
+                outc[(size_t)oh * OW + ow] = acc;
+              }
+            }
+          }
+        }
+      };
+
+      auto workers = ParallelBatch(dw_job, filter_size, nullptr);
+      if (workers.getNumWorkers() > 1)
+        workers.run();
+      else
+        dw_job(0, filter_size, 0, nullptr);
+    } else {
+      for (unsigned int b = 0; b < in_dim.batch(); ++b) {
+        Tensor out = hidden_.getBatchSlice(b, 1);
+        out.reshape({filter_size, owoh});
+        Tensor in_sub = input_.getBatchSlice(b, 1);
+        Tensor result = Tensor(calcCol2ImOutputDim(out_dim, fdim_g));
+        for (unsigned int g = 0; g < groups; ++g) {
+          Tensor in_g = in_sub.getSharedDataTensor(
+            {1, icg, in_dim.height(), in_dim.width()}, (size_t)g * icg * ihw);
+          Tensor filt_g = filter_kernel.getSharedDataTensor(
+            {ocg, icg * fh * fw}, (size_t)g * ocg * icg * fh * fw);
+          Tensor out_g =
+            out.getSharedDataTensor({ocg, owoh}, (size_t)g * ocg * owoh);
+          result.setZero();
+          im2col(in_g, fdim_g, padding, stride, dilation, result);
+          filt_g.dot(result, out_g, false, true);
+        }
+        result.deallocate();
       }
-      result.deallocate();
     }
   }
 
