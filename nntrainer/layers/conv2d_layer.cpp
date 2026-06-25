@@ -30,6 +30,7 @@
 #include <profiler.h>
 #include <tensor_dim.h>
 #include <thread>
+#include <thread_manager.h>
 #include <util_func.h>
 
 namespace nntrainer {
@@ -234,19 +235,23 @@ static void im2col(const Tensor &in, const TensorDim &kdim,
   // float *out_data = out.getData();
 
   auto apply_data = [&]<typename T>(T *out_data) {
-    int h_stride_end = height - eff_k_height - pt;
     int w_stride_end = width - eff_k_width - pl;
 
     /// get a patch, size of kernel
     /// hs is height_strided, ws is width_strided
     unsigned int owidth = out.width();
-    unsigned int base_im_w = 0;
-    for (int hs = -(int)pt; hs <= h_stride_end; hs += mstride[0]) {
+    const int hstride = mstride[0];
+
+    /// Each output row (oh) writes a disjoint band of `out_width` columns
+    /// (rows [oh*out_width, (oh+1)*out_width) of the [OH*OW, CRS] matrix), so
+    /// the per-row work is independent and bit-identical when parallelized.
+    /// hs and base_im_w are derived from oh directly (no sequential carry).
+    auto fill_row = [&](size_t oh) {
+      int hs = -(int)pt + (int)oh * hstride;
+      unsigned int base_im_w = (unsigned int)oh * out_width;
       unsigned int base_im_h = 0;
       int patch_height_end = eff_k_height + hs;
       /// map the patch to a single line looping through channel
-      // We need to optimize this padding & copy. May be use multi threads, or
-      // SIMD
       for (unsigned int c = 0; c < channel; ++c) {
         for (int h = hs; h < patch_height_end; h += dilation[0]) {
           if (h < 0 || in_height <= h) {
@@ -272,8 +277,9 @@ static void im2col(const Tensor &in, const TensorDim &kdim,
           base_im_h += k_width;
         }
       }
-      base_im_w += out_width;
-    }
+    };
+
+    ThreadManager::Global().parallel_for(0, out_height, fill_row);
   };
 
   if (out.getDataType() == nntrainer::Tdatatype::FP32) {
