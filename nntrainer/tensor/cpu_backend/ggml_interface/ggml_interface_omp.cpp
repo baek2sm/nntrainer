@@ -188,9 +188,11 @@ void __ggml_q4_0_4x8_q8_0_indirect_GEMM(const unsigned int M,
   char *QA_ptr = QA.data();
 
   /// Fused gather + Q8_0 quantize of the 4-row-divisible portion, parallel over
-  /// chunks of QCHUNK rows (one staging alloc per chunk, reused across its
-  /// sub-tiles). Each chunk writes a disjoint span of QA, so it is race-free
-  /// and order-independent (bit-identical to a serial pack).
+  /// chunks of QCHUNK rows. Within each chunk the gather feeds the quantizer
+  /// one 4-row tile at a time through a small L1/L2-resident buffer (instead of
+  /// gathering the whole chunk into a large FP32 staging buffer that spills
+  /// cache before the quantizer reads it back). Same rows, same QA addressing
+  /// -> bit-identical; each chunk writes a disjoint QA span (race-free).
   const unsigned int QCHUNK = 64; // multiple of 4
   if (M4 > 0) {
     const unsigned int rows4 = M4 * 4;
@@ -198,11 +200,10 @@ void __ggml_q4_0_4x8_q8_0_indirect_GEMM(const unsigned int M,
     tm.parallel_for(0, qloops, [=](size_t q) {
       const unsigned int r0 = static_cast<unsigned int>(q) * QCHUNK;
       const unsigned int r1 = std::min(r0 + QCHUNK, rows4);
-      std::vector<float> staging((size_t)(r1 - r0) * K);
-      gather_conv_act_rows_fp32(staging.data(), in, geom, (int)r0,
-                                (int)(r1 - r0));
+      std::vector<float> tile((size_t)4 * K); // one quantize tile, reused
       for (unsigned int r = r0; r < r1; r += 4) {
-        nntr_quantize_mat_q8_0_4x8(staging.data() + (size_t)(r - r0) * K,
+        gather_conv_act_rows_fp32(tile.data(), in, geom, (int)r, 4);
+        nntr_quantize_mat_q8_0_4x8(tile.data(),
                                    QA_ptr + (r / 4) * qa_4_rows_size, K);
       }
     });
