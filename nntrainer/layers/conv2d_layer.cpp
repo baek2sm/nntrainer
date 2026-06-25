@@ -298,7 +298,7 @@ static void im2col(const Tensor &in, const TensorDim &kdim,
 }
 } // namespace
 
-enum ConvParams { weight, bias };
+enum ConvParams { weight, bias, im2col_scratch, qgemm_scratch };
 
 Conv2DLayer::Conv2DLayer(
   const std::array<unsigned int, CONV2D_DIM * 2> &padding_) :
@@ -414,6 +414,39 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
                   eff_in_width - padding[2] - kernel_size[1] > IM,
                 std::invalid_argument)
     << "Failed to initialize: Calculated patch end is over int max";
+
+  // Forward scratch (groups==1 path only): the im2col column buffer and the
+  // quantized-GEMM output are otherwise heap-allocated on every forwarding()
+  // call. Request them once here (planned into the shared activation arena,
+  // FORWARD_FUNC_LIFESPAN) and reuse — no per-forward malloc/free churn. The
+  // grouped path keeps its local buffer. NOTE: the im2col buffer must still be
+  // re-zeroed each forward (im2col skips padding positions and the arena is
+  // reused across layers), so this saves the allocation, not the zeroing.
+  wt_idx[ConvParams::im2col_scratch] = std::numeric_limits<unsigned int>::max();
+  wt_idx[ConvParams::qgemm_scratch] = std::numeric_limits<unsigned int>::max();
+  if (groups == 1) {
+    auto scratch_type = in_dim.getTensorType();
+    const unsigned int owoh = out_dim.width() * out_dim.height();
+    const bool is_1x1_s1 =
+      kernel_size[0].get() == 1 && kernel_size[1].get() == 1 &&
+      stride[0].get() == 1 && stride[1].get() == 1;
+    // im2col column buffer [batch, 1, CRS, OH*OW]; unused only by the quant 1x1
+    // path (its im2col is an identity handled by an input transpose).
+    if (!(quant_matmul_filter && is_1x1_s1)) {
+      TensorDim col_dim(in_dim.batch(), 1, real_kernel_dim.getFeatureLen(),
+                        owoh, scratch_type);
+      wt_idx[ConvParams::im2col_scratch] =
+        context.requestTensor(col_dim, "im2col", Initializer::NONE, false,
+                              TensorLifespan::FORWARD_FUNC_LIFESPAN);
+    }
+    // quantized GEMM output [batch, 1, OH*OW, out_ch] (quant path only).
+    if (quant_matmul_filter) {
+      TensorDim tmp_dim(in_dim.batch(), 1, owoh, filter_size, scratch_type);
+      wt_idx[ConvParams::qgemm_scratch] =
+        context.requestTensor(tmp_dim, "qgemm_out", Initializer::NONE, false,
+                              TensorLifespan::FORWARD_FUNC_LIFESPAN);
+    }
+  }
 }
 
 void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
@@ -495,15 +528,29 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
      * Below sets the pad area values to zero
      * it is faster to do this way than seting selective area to zero
      */
+    const bool is_1x1_s1 =
+      kernel_size[0].get() == 1 && kernel_size[1].get() == 1 &&
+      stride[0].get() == 1 && stride[1].get() == 1;
+    // Pre-allocated forward scratch (requested once in finalize). The im2col
+    // column buffer is used by the FP32 path and the quant non-1x1 path; the
+    // quant 1x1 path needs neither (im2col is an identity input transpose).
+    // Zero the column buffer once up front (im2col skips padding; the GEMM
+    // output is fully overwritten so it needs no zeroing). Each batch element
+    // writes a disjoint batch-slice, so this stays correct under ParallelBatch.
+    const bool use_im2col_scratch = !(weight_is_quant && is_1x1_s1);
+    Tensor *col_scratch =
+      use_im2col_scratch
+        ? &context.getTensor(wt_idx[ConvParams::im2col_scratch])
+        : nullptr;
+    Tensor *qgemm_scratch =
+      weight_is_quant ? &context.getTensor(wt_idx[ConvParams::qgemm_scratch])
+                      : nullptr;
+    if (col_scratch != nullptr) {
+      col_scratch->setZero();
+    }
+
     auto forwarding_job = [&](unsigned int s, unsigned int e, unsigned int pid,
                               void *user_data) {
-      // im2col buffer is only needed for the FP32 path; the quantized 1x1 path
-      // is a matmul on the input directly (1x1 stride-1 im2col is an identity).
-      Tensor result;
-      if (!weight_is_quant) {
-        result = Tensor(calcCol2ImOutputDim(out_dim, filter_dim));
-        result.setZero();
-      }
       for (unsigned int b = s; b < e; ++b) {
         Tensor out = hidden_.getBatchSlice(b, 1);
         Tensor in_sub = input_.getBatchSlice(b, 1);
@@ -511,12 +558,12 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
         if (weight_is_quant) {
           // Quantized conv as matmul: act [OH*OW, CRS] . weight [CRS, out_ch]
           // -> [OH*OW, out_ch] -> out [out_ch, OH*OW]. CRS = in_ch*kh*kw.
-          // NOTE: col must outlive `act` (act aliases col's storage), so col is
-          // declared in this scope (not inside the else branch).
+          // NOTE: col must outlive `act` (act aliases col's storage); here col
+          // is a view into the context-owned scratch, so its storage outlives
+          // the loop iteration regardless.
           Tensor col;
           Tensor act;
-          if (kernel_size[0].get() == 1 && kernel_size[1].get() == 1 &&
-              stride[0].get() == 1 && stride[1].get() == 1) {
+          if (is_1x1_s1) {
             // 1x1 stride-1: im2col is an identity. The raw input is laid out as
             // [in_ch, OH*OW] (NCHW), so transpose to the act layout [OH*OW, CRS]
             // (CRS == in_ch here).
@@ -526,8 +573,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             // build the real kernel geometry (filter is stored as [CRS,out_ch])
             TensorDim kdim(filter_size, in_dim.channel(), kernel_size[0].get(),
                            kernel_size[1].get(), in_sub.getTensorType());
-            col = Tensor(calcCol2ImOutputDim(out_dim, kdim));
-            col.setZero();
+            col = col_scratch->getBatchSlice(b, 1);
             // im2col reshapes col in place to [OH*OW, CRS] (spatial-major), which
             // is ALREADY the act layout — no transpose (unlike the raw-input 1x1
             // branch above). Transposing here gives [CRS, OH*OW] and makes the
@@ -536,22 +582,21 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             im2col(in_sub, kdim, padding, stride, dilation, col);
             act = col;
           }
-          Tensor tmp(TensorDim(1, 1, owoh, filter_size, act.getTensorType()));
+          Tensor tmp = qgemm_scratch->getBatchSlice(b, 1);
+          tmp.reshape(TensorDim(1, 1, owoh, filter_size, act.getTensorType()));
           act.dot(filter_kernel, tmp, false, false);
           // [OH*OW, out_ch] -> [out_ch, OH*OW] written straight into the
-          // (memory-planned) output. `tmp` is a fresh buffer and `out` is a
-          // separate output view, so there is no aliasing — no temp+copy needed.
+          // (memory-planned) output. `tmp` is a separate scratch buffer and
+          // `out` is a separate output view, so there is no aliasing.
           out.reshape({filter_size, owoh});
           tmp.transpose("0:2:1", out);
         } else {
+          Tensor result = col_scratch->getBatchSlice(b, 1);
           out.reshape({filter_size, owoh});
           im2col(in_sub, filter_dim, padding, stride, dilation, result);
           // filter kernel is (K, CRS), result is (CRS, OH*OW)
           filter_kernel.dot(result, out, false, true);
         }
-      }
-      if (!weight_is_quant) {
-        result.deallocate();
       }
     };
 
