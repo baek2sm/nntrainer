@@ -242,6 +242,22 @@ static void im2col(const Tensor &in, const TensorDim &kdim,
     unsigned int owidth = out.width();
     const int hstride = mstride[0];
 
+    /// Raw contiguous-NCHW input base + inner strides. `in` is a (batch-sliced)
+    /// contiguous NCHW tensor, so element (0,c,h,w) lives at
+    /// in_base + c*inHW + h*inW + w. Hoisting these out of the inner loop turns
+    /// the old per-element in.getValue() -- which re-fetched the data pointer
+    /// (getData<T>()) and recomputed a 4-D linear offset (getIndex(): a format
+    /// branch + 4 muls + 3 adds) plus a per-element padding branch -- into one
+    /// contiguous run copy. im2col is pure data movement; the previous form ran
+    /// far below memory bandwidth because that overhead dominated the 4-byte
+    /// move. Padding columns are left untouched (the caller zeroes the buffer
+    /// once before im2col), so the fast path only writes the valid span.
+    const T *in_base = in.getData<T>();
+    const size_t inW = (size_t)in_width;
+    const size_t inHW = (size_t)in_height * (size_t)in_width;
+    const bool unit_dil =
+      ((unsigned int)dilation[0] == 1 && (unsigned int)dilation[1] == 1);
+
     /// Each output row (oh) writes a disjoint band of `out_width` columns
     /// (rows [oh*out_width, (oh+1)*out_width) of the [OH*OW, CRS] matrix), so
     /// the per-row work is independent and bit-identical when parallelized.
@@ -259,20 +275,44 @@ static void im2col(const Tensor &in, const TensorDim &kdim,
             continue;
           }
 
-          unsigned int im_w = base_im_w;
-          for (int ws = -(int)pl; ws <= w_stride_end; ws += mstride[1]) {
-            unsigned int im_h = base_im_h;
-            int patch_width_end = eff_k_width + ws;
-
-            for (int w = ws; w < patch_width_end; w += dilation[1]) {
-              if (w < 0 || in_width <= w) {
-                im_h++;
-                continue;
+          if (unit_dil) {
+            /// Fast path (dilation == 1): for each output column position the
+            /// kernel-width window maps a contiguous source run in_row[w_lo,w_hi)
+            /// to a contiguous dest run; copy it in one memcpy.
+            const T *in_row = in_base + (size_t)c * inHW + (size_t)h * inW;
+            unsigned int im_w = base_im_w;
+            for (int ws = -(int)pl; ws <= w_stride_end; ws += mstride[1]) {
+              int w_lo = ws < 0 ? 0 : ws;
+              int w_hi = ws + (int)k_width;
+              if (w_hi > in_width)
+                w_hi = in_width;
+              if (w_hi > w_lo) {
+                T *dst =
+                  out_data + (size_t)im_w * owidth + base_im_h + (w_lo - ws);
+                std::memcpy(dst, in_row + w_lo,
+                            (size_t)(w_hi - w_lo) * sizeof(T));
               }
-              out_data[im_w * owidth + im_h] = in.getValue<T>(0, c, h, w);
-              im_h++;
+              im_w++;
             }
-            im_w++;
+          } else {
+            /// General (dilated) path: original scalar gather, but via the
+            /// hoisted base pointer (no per-element getData()/getIndex()).
+            unsigned int im_w = base_im_w;
+            for (int ws = -(int)pl; ws <= w_stride_end; ws += mstride[1]) {
+              unsigned int im_h = base_im_h;
+              int patch_width_end = eff_k_width + ws;
+
+              for (int w = ws; w < patch_width_end; w += dilation[1]) {
+                if (w < 0 || in_width <= w) {
+                  im_h++;
+                  continue;
+                }
+                out_data[(size_t)im_w * owidth + im_h] =
+                  in_base[(size_t)c * inHW + (size_t)h * inW + w];
+                im_h++;
+              }
+              im_w++;
+            }
           }
           base_im_h += k_width;
         }
