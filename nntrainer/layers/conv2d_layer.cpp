@@ -502,13 +502,15 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
         if (weight_is_quant) {
           // Quantized conv as matmul: act [OH*OW, CRS] . weight [CRS, out_ch]
           // -> [OH*OW, out_ch] -> out [out_ch, OH*OW]. CRS = in_ch*kh*kw.
-          // NOTE: col/in_sub must outlive `act` (transpose may alias storage),
-          // so col is declared here (not inside the else scope).
+          // NOTE: col must outlive `act` (act aliases col's storage), so col is
+          // declared in this scope (not inside the else branch).
           Tensor col;
           Tensor act;
           if (kernel_size[0].get() == 1 && kernel_size[1].get() == 1 &&
               stride[0].get() == 1 && stride[1].get() == 1) {
-            // 1x1 stride-1: im2col is an identity, use the input directly.
+            // 1x1 stride-1: im2col is an identity. The raw input is laid out as
+            // [in_ch, OH*OW] (NCHW), so transpose to the act layout [OH*OW, CRS]
+            // (CRS == in_ch here).
             in_sub.reshape({in_dim.channel(), owoh});
             act = in_sub.transpose("0:2:1");
           } else {
@@ -517,8 +519,13 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                            kernel_size[1].get(), in_sub.getTensorType());
             col = Tensor(calcCol2ImOutputDim(out_dim, kdim));
             col.setZero();
+            // im2col reshapes col in place to [OH*OW, CRS] (spatial-major), which
+            // is ALREADY the act layout — no transpose (unlike the raw-input 1x1
+            // branch above). Transposing here gives [CRS, OH*OW] and makes the
+            // GEMM emit CRS rows into the owoh-row `tmp`, overflowing it whenever
+            // CRS > owoh (deep convs) -> heap corruption.
             im2col(in_sub, kdim, padding, stride, dilation, col);
-            act = col.transpose("0:2:1");
+            act = col;
           }
           Tensor tmp(TensorDim(1, 1, owoh, filter_size, act.getTensorType()));
           act.dot(filter_kernel, tmp, false, false);
