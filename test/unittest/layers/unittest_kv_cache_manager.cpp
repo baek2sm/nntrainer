@@ -15,6 +15,7 @@
 #include <string>
 
 #include <kv_cache_manager.h>
+#include <q4_0_utils.h>
 #include <tensor.h>
 #include <tensor_dim.h>
 
@@ -313,6 +314,58 @@ TEST_F(KVCacheManagerTest, typical_inference_flow) {
   float *kd = k_full.getData<float>();
   EXPECT_FLOAT_EQ(kd[0], 0.0f); // l=0, b=0, i=0
   EXPECT_FLOAT_EQ(kd[1], 1.0f); // l=0, b=0, i=1
+}
+
+// ---- Q4_0 packed V cache (separate K/V dtype) ----
+// K stays high-precision; V may be packed Q4_0 (only batch==1, kv_width%32==0).
+TEST_F(KVCacheManagerTest, allocate_q4_0_value_cache) {
+  // Existing SetUp uses BATCH_SIZE==2 which is unsupported for Q4_0 V; use a
+  // fresh manager with batch==1 and a kv_width divisible by QK4_0.
+  constexpr unsigned int Q4_BATCH = 1;
+  constexpr unsigned int Q4_HEADS_KV = 8;
+  constexpr unsigned int Q4_HEAD_DIM =
+    128; // kv_width = 1024, divisible by QK4_0
+  constexpr unsigned int Q4_KV_WIDTH = Q4_HEADS_KV * Q4_HEAD_DIM;
+
+  causallm::KVCacheManager m;
+  m.allocate(NUM_LAYERS, Q4_BATCH, MAX_SEQ_LEN, Q4_HEADS_KV, Q4_HEAD_DIM,
+             ml::train::TensorDim::DataType::UINT16,
+             ml::train::TensorDim::DataType::Q4_0);
+
+  auto &k = m.getKeyCache(0);
+  auto &v = m.getValueCache(0);
+  EXPECT_EQ(k.getDataType(), ml::train::TensorDim::DataType::UINT16);
+  EXPECT_EQ(v.getDataType(), ml::train::TensorDim::DataType::Q4_0);
+  EXPECT_EQ(v.batch(), Q4_BATCH);
+  EXPECT_EQ(v.height(), MAX_SEQ_LEN);
+  EXPECT_EQ(v.width(), Q4_KV_WIDTH);
+  // Packed byte size == num_rows * (kv_width / QK4_0) * sizeof(block_q4_0).
+  const size_t expected_bytes = static_cast<size_t>(MAX_SEQ_LEN) *
+                                (Q4_KV_WIDTH / QK4_0) * sizeof(::block_q4_0);
+  EXPECT_EQ(v.getMemoryBytes(), expected_bytes);
+}
+
+TEST_F(KVCacheManagerTest, allocate_q4_0_value_cache_rejects_batch_gt_1) {
+  constexpr unsigned int Q4_HEADS_KV = 8;
+  constexpr unsigned int Q4_HEAD_DIM = 128;
+  constexpr unsigned int Q4_BATCH_GT_1 = 2;
+  causallm::KVCacheManager m;
+  EXPECT_THROW(m.allocate(NUM_LAYERS, Q4_BATCH_GT_1, MAX_SEQ_LEN, Q4_HEADS_KV,
+                          Q4_HEAD_DIM, ml::train::TensorDim::DataType::UINT16,
+                          ml::train::TensorDim::DataType::Q4_0),
+               std::invalid_argument);
+}
+
+TEST_F(KVCacheManagerTest, allocate_q4_0_value_cache_rejects_bad_kv_width) {
+  constexpr unsigned int Q4_HEADS_KV = 8;
+  // kv_width = 8*7 = 56, not divisible by QK4_0 (32).
+  constexpr unsigned int Q4_HEAD_DIM_BAD = 7;
+  causallm::KVCacheManager m;
+  EXPECT_THROW(m.allocate(NUM_LAYERS, 1, MAX_SEQ_LEN, Q4_HEADS_KV,
+                          Q4_HEAD_DIM_BAD,
+                          ml::train::TensorDim::DataType::UINT16,
+                          ml::train::TensorDim::DataType::Q4_0),
+               std::invalid_argument);
 }
 
 int main(int argc, char **argv) {

@@ -111,20 +111,25 @@ void CausalLM::setupParameters(json &cfg, json &generation_cfg,
 
 void CausalLM::allocateAndBindKVCache() {
   if (!kv_cache.isAllocated()) {
-    // dtype matches mha_core's cache placeholders so external cache storage
-    // is interpreted consistently across platforms.
+    // K cache is always high precision (4-bit K deranges Q*K scores). The V
+    // cache is packed Q4_0 when nntr_config cache_value_dtype="Q4_0": V enters
+    // attention only through a softmax (<=1) weighted sum, so 4-bit error is
+    // averaged out and quality is preserved while V memory is halved.
 #ifdef ENABLE_FP16
-    const auto cache_dtype = ml::train::TensorDim::DataType::FP16;
+    const auto key_dtype = ml::train::TensorDim::DataType::FP16;
 #else
-    const auto cache_dtype = ml::train::TensorDim::DataType::UINT16;
+    const auto key_dtype = ml::train::TensorDim::DataType::UINT16;
 #endif
+    const auto value_dtype = CACHE_VALUE_DTYPE == "Q4_0"
+                               ? ml::train::TensorDim::DataType::Q4_0
+                               : key_dtype;
 
     const unsigned int max_timestep = static_cast<unsigned int>(MAX_SEQ_LEN);
 
-    kv_cache.allocate(static_cast<unsigned int>(NUM_LAYERS), BATCH_SIZE,
-                      max_timestep,
-                      static_cast<unsigned int>(NUM_KEY_VALUE_HEADS),
-                      static_cast<unsigned int>(HEAD_DIM), cache_dtype);
+    kv_cache.allocate(
+      static_cast<unsigned int>(NUM_LAYERS), BATCH_SIZE, max_timestep,
+      static_cast<unsigned int>(NUM_KEY_VALUE_HEADS),
+      static_cast<unsigned int>(HEAD_DIM), key_dtype, value_dtype);
     kv_cache_bound = false;
   }
 

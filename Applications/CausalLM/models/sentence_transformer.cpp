@@ -216,14 +216,18 @@ Tensor SentenceTransformer::addModule(const std::string &type, int idx,
 void SentenceTransformer::allocateAndBindKVCache() {
   if (!kv_cache.isAllocated()) {
 #ifdef ENABLE_FP16
-    const auto cache_dtype = ml::train::TensorDim::DataType::FP16;
+    const auto key_dtype = ml::train::TensorDim::DataType::FP16;
 #else
-    const auto cache_dtype = ml::train::TensorDim::DataType::UINT16;
+    const auto key_dtype = ml::train::TensorDim::DataType::UINT16;
 #endif
+    const auto value_dtype = CACHE_VALUE_DTYPE == "Q4_0"
+                               ? ml::train::TensorDim::DataType::Q4_0
+                               : key_dtype;
     kv_cache.allocate(static_cast<unsigned int>(NUM_LAYERS), BATCH_SIZE,
                       static_cast<unsigned int>(MAX_SEQ_LEN),
                       static_cast<unsigned int>(NUM_KEY_VALUE_HEADS),
-                      static_cast<unsigned int>(HEAD_DIM), cache_dtype);
+                      static_cast<unsigned int>(HEAD_DIM), key_dtype,
+                      value_dtype);
   }
 
   for (int i = 0; i < NUM_LAYERS; ++i) {

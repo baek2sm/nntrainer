@@ -13,6 +13,9 @@
 #include "kv_cache_manager.h"
 
 #include <stdexcept>
+#include <string>
+
+#include <q4_0_utils.h>
 
 namespace causallm {
 
@@ -68,6 +71,62 @@ void KVCacheManager::allocate(unsigned int num_layers, unsigned int batch_size,
                                    {format, dtype});
     layer_caches_[i].key_cache = nntrainer::Tensor(cache_dim, true);
     layer_caches_[i].value_cache = nntrainer::Tensor(cache_dim, true);
+  }
+}
+
+void KVCacheManager::allocate(unsigned int num_layers, unsigned int batch_size,
+                              unsigned int max_seq_len,
+                              unsigned int num_heads_kv, unsigned int head_dim,
+                              ml::train::TensorDim::DataType key_dtype,
+                              ml::train::TensorDim::DataType value_dtype,
+                              ml::train::TensorDim::Format format) {
+  std::vector<unsigned int> kv_widths(num_layers, num_heads_kv * head_dim);
+  if (num_layers == 0 || batch_size == 0 || max_seq_len == 0 ||
+      num_heads_kv == 0 || head_dim == 0) {
+    throw std::invalid_argument(
+      "KVCacheManager::allocate: all parameters must be > 0");
+  }
+  // Q4_0 packs QK4_0 (32) elements per block, so kv_width must be a multiple
+  // of QK4_0 for clean per-row block boundaries. Q4_0_Tensor also cannot
+  // represent batched storage (batch()>1 throws at allocation), so a packed
+  // Q4_0 V cache is only supported for batch_size == 1 for now.
+  if (value_dtype == ml::train::TensorDim::DataType::Q4_0) {
+    const unsigned int kv_width = num_heads_kv * head_dim;
+    if (kv_width % QK4_0 != 0) {
+      throw std::invalid_argument(
+        "KVCacheManager::allocate: Q4_0 V cache requires kv_width "
+        "(num_heads_kv * head_dim) divisible by " +
+        std::to_string(QK4_0) + ", got " + std::to_string(kv_width));
+    }
+    if (batch_size != 1) {
+      throw std::invalid_argument(
+        "KVCacheManager::allocate: Q4_0 V cache currently supports only "
+        "batch_size == 1 (Q4_0 packed storage is not batched), got "
+        "batch_size " +
+        std::to_string(batch_size));
+    }
+  }
+
+  batch_size_ = batch_size;
+  max_seq_len_ = max_seq_len;
+  num_heads_kv_ = num_heads_kv;
+  head_dim_ = head_dim;
+  kv_width_ = num_heads_kv * head_dim;
+  kv_widths_ = kv_widths;
+  dtype_ = key_dtype;
+  key_dtype_ = key_dtype;
+  value_dtype_ = value_dtype;
+  format_ = format;
+  cache_pos_ = 0;
+
+  layer_caches_.resize(num_layers);
+  for (unsigned int i = 0; i < num_layers; ++i) {
+    ml::train::TensorDim key_dim({batch_size, 1, max_seq_len, kv_widths_[i]},
+                                 {format, key_dtype});
+    ml::train::TensorDim value_dim({batch_size, 1, max_seq_len, kv_widths_[i]},
+                                   {format, value_dtype});
+    layer_caches_[i].key_cache = nntrainer::Tensor(key_dim, true);
+    layer_caches_[i].value_cache = nntrainer::Tensor(value_dim, true);
   }
 }
 

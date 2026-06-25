@@ -136,6 +136,9 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
                     : 1;
   EMBEDDING_DTYPE = nntr_cfg["embedding_dtype"];
   FC_LAYER_DTYPE = nntr_cfg["fc_layer_dtype"];
+  CACHE_VALUE_DTYPE = nntr_cfg.contains("cache_value_dtype")
+                        ? nntr_cfg["cache_value_dtype"].get<std::string>()
+                        : "";
 
   if (cfg.contains("is_causal")) {
     IS_CAUSAL = cfg["is_causal"].get<bool>();
@@ -377,15 +380,20 @@ Transformer::createKVCachePlaceholders(const int layer_id, int n_heads) {
   const unsigned int max_timestep = static_cast<unsigned int>(MAX_SEQ_LEN);
   const unsigned int kv_width =
     static_cast<unsigned int>(HEAD_DIM * n_heads / GQA_SIZE);
+  // K cache is always high precision (FP16 on ENABLE_FP16, else UINT16);
+  // quantizing K to 4-bit deranges Q*K attention scores. The V cache may be
+  // packed Q4_0 (cache_value_dtype="Q4_0") to halve V memory while keeping
+  // quality.
 #ifdef ENABLE_FP16
-  ml::train::TensorDim cache_dim(
-    {BATCH_SIZE, 1, max_timestep, kv_width},
-    {ml::train::TensorDim::Format::NCHW, ml::train::TensorDim::DataType::FP16});
-
-  Tensor cache_k(cache_dim, "cache_k_l" + std::to_string(layer_id));
-  Tensor cache_v(cache_dim, "cache_v_l" + std::to_string(layer_id));
-  return {cache_k, cache_v};
+  const std::string key_dtype = "FP16";
 #else
+  const std::string key_dtype = "UINT16";
+#endif
+  const std::string value_dtype =
+    !CACHE_VALUE_DTYPE.empty() ? CACHE_VALUE_DTYPE : key_dtype;
+  // Build the KV cache placeholders as input layers with an explicit
+  // input_dtype string. This uniformly supports FP16 / UINT16 / Q4_0 (all
+  // registered in TensorDataTypeInfo) and the dtype matches the bound buffer.
   const std::string cache_shape = std::to_string(BATCH_SIZE) +
                                   ":1:" + std::to_string(max_timestep) + ":" +
                                   std::to_string(kv_width);
@@ -393,14 +401,13 @@ Transformer::createKVCachePlaceholders(const int layer_id, int n_heads) {
   LayerHandle cache_k_input(createLayer(
     "input",
     {withKey("name", "cache_k_l" + std::to_string(layer_id)),
-     withKey("input_shape", cache_shape), withKey("input_dtype", "UINT16")}));
+     withKey("input_shape", cache_shape), withKey("input_dtype", key_dtype)}));
   LayerHandle cache_v_input(createLayer(
-    "input",
-    {withKey("name", "cache_v_l" + std::to_string(layer_id)),
-     withKey("input_shape", cache_shape), withKey("input_dtype", "UINT16")}));
+    "input", {withKey("name", "cache_v_l" + std::to_string(layer_id)),
+              withKey("input_shape", cache_shape),
+              withKey("input_dtype", value_dtype)}));
 
   return {cache_k_input(Tensor()), cache_v_input(Tensor())};
-#endif
 }
 
 /**

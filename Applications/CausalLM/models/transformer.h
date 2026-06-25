@@ -228,6 +228,16 @@ protected:
   std::string MODEL_TENSOR_TYPE;
   std::string EMBEDDING_DTYPE; /** embedding dtype */
   std::string FC_LAYER_DTYPE;  /** custom_fc_lora */
+  /** Value cache dtype. Defaults to "" -> same as the high-precision K cache
+   *  (FP16 on ENABLE_FP16, else UINT16). Set to "Q4_0" via nntr_config
+   *  cache_value_dtype to store the V cache packed Q4_0: V enters attention
+   *  only through a softmax (<=1) weighted sum, so 4-bit error is averaged out
+   *  and keeps quality, while halving the V cache memory. K is always kept
+   *  high precision (4-bit K deranges Q*K scores).
+   *  @note Q4_0 V cache currently requires batch_size == 1 and kv_width
+   *  (num_heads_kv * head_dim) divisible by 32 (QK4_0 block size), enforced
+   *  in KVCacheManager::allocate. */
+  std::string CACHE_VALUE_DTYPE;
 
   unsigned int SLIDING_WINDOW = UINT_MAX;
   unsigned int SLIDING_WINDOW_PATTERN = 5;

@@ -26,6 +26,7 @@ static std::mutex rope_init_mtx;
 #include <mha_core.h>
 #include <nntrainer_error.h>
 #include <node_exporter.h>
+#include <q4_0_utils.h>
 #include <thread_manager.h>
 #include <util_func.h>
 
@@ -38,6 +39,67 @@ inline float convert_scalar(uint16_t h) {
 namespace causallm {
 
 #define tile_size 4
+
+/**
+ * @brief Bytes occupied by one packed Q4_0 cache row of kv_width elements.
+ *
+ * Q4_0 packs QK4_0 (32) elements into a Q4_0_SIZE (18) byte block
+ * (1 fp16 scale + 16 int4 nibbles), so bytes_per_row = ceil(kv_width/QK4_0)
+ * * Q4_0_SIZE. kv_width must be a multiple of QK4_0 so every head sits on a
+ * clean block boundary.
+ */
+static inline size_t q4_0_kv_row_bytes(unsigned int kv_width) {
+  NNTR_THROW_IF(kv_width % QK4_0 != 0, std::invalid_argument)
+    << "Q4_0 KV cache requires kv_width divisible by " << QK4_0 << ", got "
+    << kv_width;
+  return static_cast<size_t>(kv_width / QK4_0) * sizeof(::block_q4_0);
+}
+
+/**
+ * @brief Write a step of FP32 K/V into a Q4_0 packed cache at a given row.
+ *
+ * The destination byte offset is computed explicitly (batch * max_seq *
+ * bytes_per_row + seq_pos * bytes_per_row) because the framework's
+ * element-based tensor offset does not map to the Q4_0 packed byte layout.
+ *
+ * @param cache_base  base uint8 pointer of the whole Q4_0 cache buffer
+ * @param byte_offset byte offset within cache_base to write at
+ * @param src_fp32    contiguous FP32 source [step_size * kv_width]
+ * @param step_size   number of sequence positions to write
+ * @param kv_width    elements per row (num_heads_KV * head_dim)
+ */
+static inline void pack_kv_cache_q4_0(uint8_t *cache_base, size_t byte_offset,
+                                      const float *src_fp32,
+                                      unsigned int step_size,
+                                      unsigned int kv_width) {
+  void *dst = static_cast<void *>(cache_base + byte_offset);
+  // quantize_q4_0(src, dst, nrow, n_per_row, quant_weights)
+  nntrainer::quantize_q4_0(src_fp32, dst, static_cast<int64_t>(step_size),
+                           static_cast<int64_t>(kv_width), nullptr);
+}
+
+/**
+ * @brief Dequantize Q4_0 packed cache rows [0, num_rows) at base offset.
+ *
+ * @param cache_base  base uint8 pointer of the whole Q4_0 cache buffer
+ * @param byte_offset byte offset of the first row to read
+ * @param dst_fp32    contiguous FP32 destination [num_rows * kv_width]
+ * @param num_rows    number of sequence positions to read
+ * @param kv_width    elements per row (per position)
+ */
+static inline void unpack_kv_cache_q4_0(const uint8_t *cache_base,
+                                        size_t byte_offset, float *dst_fp32,
+                                        unsigned int num_rows,
+                                        unsigned int kv_width) {
+  const size_t row_size = q4_0_kv_row_bytes(kv_width);
+  const uint8_t *row = cache_base + byte_offset;
+  for (unsigned int r = 0; r < num_rows; ++r) {
+    nntrainer::dequantize_row_q4_0(static_cast<const void *>(row),
+                                   dst_fp32 + r * kv_width,
+                                   static_cast<int64_t>(kv_width));
+    row += row_size;
+  }
+}
 
 static void compute_kcaches_fp32_reference(
   const float *in, const float *kcache, float *output, int num_rows,
@@ -722,12 +784,51 @@ void MHACoreLayer::one_batch_incremental_forwarding(
                                       cache_index * cache_value_dim.width(),
                                     true);
 
-  // append kcache with or without rotary embedding
+  // The value cache may be stored packed Q4_0 (cache_value_dtype="Q4_0") to
+  // cut KV memory: V enters attention only through a softmax(<=1) weighted
+  // sum, so 4-bit error is averaged out and survives quality-wise. K is NOT
+  // packed: K enters Q*K^T as a raw dot product, so 4-bit quantization of K
+  // deranges the attention scores (verified to collapse Qwen3-0.6b output),
+  // hence K stays in the high-precision cache (FP16/UINT16).
+  const bool pack_v =
+    cache_value.getDataType() == ml::train::TensorDim::DataType::Q4_0;
+  // Q4_0 V cache packs/dequantizes via FP32 transients and feeds the FP32
+  // attention kernel, so it requires FP32 features (query/value). FP16-feature
+  // builds would type-pun half storage as float through getData<float>().
+  NNTR_THROW_IF(pack_v && query_step.getDataType() !=
+                            ml::train::TensorDim::DataType::FP32,
+                std::invalid_argument)
+    << "Q4_0 V cache requires FP32 features (query/value)";
+  // FP32 transient used only when V is packed Q4_0. Rotary is computed into
+  // FP32 (rotary needs float ops), then the result is packed Q4_0 into the
+  // cache by explicit byte offset; on read the live region is unpacked by
+  // byte offset so the existing FP32 attention kernel is reused as-is. The
+  // framework's element-based tensor offset does not map to the Q4_0 packed
+  // byte layout, so byte offsets are computed directly.
+  nntrainer::Tensor v_step_fp32;
+  if (pack_v) {
+    ml::train::TensorDim v_step_dim = value_step.getDim();
+    v_step_dim.setDataType(ml::train::TensorDim::DataType::FP32);
+    v_step_fp32 = nntrainer::Tensor(v_step_dim, true);
+  }
+
+  // append kcache (high precision) with or without rotary embedding
   apply_rotary_emb_tensor_v2(key_step, b_cache_key_step, head_dim, cache_index,
                              !use_rope);
 
   // append vcache without rotary embedding
-  if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
+  if (pack_v) {
+    apply_rotary_emb_tensor_v2(value_step, v_step_fp32, head_dim, cache_index,
+                               true);
+    const unsigned int v_width = cache_value_dim.width();
+    const size_t v_row_bytes = q4_0_kv_row_bytes(v_width);
+    const size_t v_max_rows = static_cast<size_t>(cache_value_dim.height());
+    const size_t off =
+      (static_cast<size_t>(batch) * v_max_rows + cache_index) * v_row_bytes;
+    pack_kv_cache_q4_0(cache_value.getData<uint8_t>(), off,
+                       v_step_fp32.getData<float>(), value_step.height(),
+                       v_width);
+  } else if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
     apply_rotary_emb_tensor_v2(value_step, b_cache_value_step, head_dim,
                                cache_index, true);
   } else if (query_step.getDataType() == ml::train::TensorDim::DataType::FP16) {
@@ -758,10 +859,27 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   cached_key_dim.height(cache_to);
   cached_value_dim.height(cache_to);
 
+  // K cache is high-precision; use it directly. For a Q4_0 packed V cache,
+  // dequantize the live region [0, cache_to) into an FP32 transient (same
+  // layout as a plain FP32 cache) and feed that to the attention kernel.
   nntrainer::Tensor b_cached_key = cache_key.getSharedDataTensor(
     cached_key_dim, batch * cache_key_dim.getFeatureLen(), true);
-  nntrainer::Tensor b_cached_value = cache_value.getSharedDataTensor(
-    cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
+  nntrainer::Tensor b_cached_value;
+  if (!pack_v) {
+    b_cached_value = cache_value.getSharedDataTensor(
+      cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
+  } else {
+    ml::train::TensorDim fp32_value_dim = cached_value_dim;
+    fp32_value_dim.batch(1);
+    fp32_value_dim.setDataType(ml::train::TensorDim::DataType::FP32);
+    b_cached_value = nntrainer::Tensor(fp32_value_dim, true);
+    const unsigned int v_width = cache_value_dim.width();
+    const size_t v_row_bytes = q4_0_kv_row_bytes(v_width);
+    const size_t v_max_rows = static_cast<size_t>(cache_value_dim.height());
+    const size_t off = static_cast<size_t>(batch) * v_max_rows * v_row_bytes;
+    unpack_kv_cache_q4_0(cache_value.getData<uint8_t>(), off,
+                         b_cached_value.getData<float>(), cache_to, v_width);
+  }
 
   // out_ stores the output of Q * K
   nntrainer::Tensor out_(
@@ -816,6 +934,21 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     batch * cache_value_dim.getFeatureLen() + from * cache_value_dim.width(),
     true);
 
+  const bool pack_v =
+    cache_value.getDataType() == ml::train::TensorDim::DataType::Q4_0;
+  // V may be packed Q4_0 (see first overload comment); K stays high precision.
+  // Q4_0 V cache requires FP32 features (see first overload guard).
+  NNTR_THROW_IF(pack_v && query_step.getDataType() !=
+                            ml::train::TensorDim::DataType::FP32,
+                std::invalid_argument)
+    << "Q4_0 V cache requires FP32 features (query/value)";
+  nntrainer::Tensor v_step_fp32;
+  if (pack_v) {
+    ml::train::TensorDim v_step_dim = value_step.getDim();
+    v_step_dim.setDataType(ml::train::TensorDim::DataType::FP32);
+    v_step_fp32 = nntrainer::Tensor(v_step_dim, true);
+  }
+
   if (use_rope) {
     apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, false);
   }
@@ -823,7 +956,17 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   apply_rotary_emb_tensor_v2(key_step, b_cache_key_step, head_dim, _from,
                              !use_rope);
 
-  if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
+  if (pack_v) {
+    apply_rotary_emb_tensor_v2(value_step, v_step_fp32, head_dim, _from, true);
+    const unsigned int v_width = cache_value_dim.width();
+    const size_t v_row_bytes = q4_0_kv_row_bytes(v_width);
+    const size_t v_max_rows = static_cast<size_t>(cache_value_dim.height());
+    const size_t off =
+      (static_cast<size_t>(batch) * v_max_rows + from) * v_row_bytes;
+    pack_kv_cache_q4_0(cache_value.getData<uint8_t>(), off,
+                       v_step_fp32.getData<float>(), value_step.height(),
+                       v_width);
+  } else if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
     apply_rotary_emb_tensor_v2(value_step, b_cache_value_step, head_dim, _from,
                                true);
   } else if (query_step.getDataType() == ml::train::TensorDim::DataType::FP16) {
@@ -841,8 +984,22 @@ void MHACoreLayer::one_batch_incremental_forwarding(
 
   nntrainer::Tensor b_cached_key = cache_key.getSharedDataTensor(
     cached_key_dim, batch * cache_key_dim.getFeatureLen(), true);
-  nntrainer::Tensor b_cached_value = cache_value.getSharedDataTensor(
-    cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
+  nntrainer::Tensor b_cached_value;
+  if (!pack_v) {
+    b_cached_value = cache_value.getSharedDataTensor(
+      cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
+  } else {
+    ml::train::TensorDim fp32_value_dim = cached_value_dim;
+    fp32_value_dim.batch(1);
+    fp32_value_dim.setDataType(ml::train::TensorDim::DataType::FP32);
+    b_cached_value = nntrainer::Tensor(fp32_value_dim, true);
+    const unsigned int v_width = cache_value_dim.width();
+    const size_t v_row_bytes = q4_0_kv_row_bytes(v_width);
+    const size_t v_max_rows = static_cast<size_t>(cache_value_dim.height());
+    const size_t off = static_cast<size_t>(batch) * v_max_rows * v_row_bytes;
+    unpack_kv_cache_q4_0(cache_value.getData<uint8_t>(), off,
+                         b_cached_value.getData<float>(), to, v_width);
+  }
 
   nntrainer::Tensor out_(
     1, 1,

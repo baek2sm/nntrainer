@@ -86,6 +86,20 @@ public:
     ml::train::TensorDim::Format format = ml::train::TensorDim::Format::NCHW);
 
   /**
+   * @brief Allocate KV cache with separate K/V data types.
+   *
+   * Useful when K must stay high precision (e.g. FP16/UINT16) while V is
+   * packed (e.g. Q4_0). K precision dominates attention score quality; V is
+   * robust to coarser quantization because it enters a weighted sum.
+   */
+  void allocate(
+    unsigned int num_layers, unsigned int batch_size, unsigned int max_seq_len,
+    unsigned int num_heads_kv, unsigned int head_dim,
+    ml::train::TensorDim::DataType key_dtype,
+    ml::train::TensorDim::DataType value_dtype,
+    ml::train::TensorDim::Format format = ml::train::TensorDim::Format::NCHW);
+
+  /**
    * @brief Check if the manager has been allocated
    */
   bool isAllocated() const { return !layer_caches_.empty(); }
@@ -235,6 +249,10 @@ private:
   std::vector<unsigned int> kv_widths_;
 
   ml::train::TensorDim::DataType dtype_ = ml::train::TensorDim::DataType::FP16;
+  ml::train::TensorDim::DataType key_dtype_ =
+    ml::train::TensorDim::DataType::FP16;
+  ml::train::TensorDim::DataType value_dtype_ =
+    ml::train::TensorDim::DataType::FP16;
   ml::train::TensorDim::Format format_ = ml::train::TensorDim::Format::NCHW;
 };
 
