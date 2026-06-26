@@ -426,6 +426,14 @@ void ComputeOps::compute_rotary_embedding_value(unsigned int, unsigned int,
                                                 float *, float *) {
   NI(compute_rotary_embedding_value);
 }
+
+void ComputeOps::depthwise_conv2d_fp16(
+  const _FP16 *, const float *, _FP16 *, unsigned int, unsigned int,
+  unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
+  unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
+  unsigned int, unsigned int) {
+  NI(depthwise_conv2d_fp16);
+}
 #endif // ENABLE_FP16
 
 #undef NI
