@@ -13,6 +13,9 @@
 
 #include <util_simd.h>
 
+#include <cpu_backend.h>
+#include <q8_0_tensor.h>
+
 #include "swiglu.h"
 
 namespace causallm {
@@ -61,6 +64,45 @@ void SwiGLULayer::incremental_forwarding(nntrainer::RunLayerContext &context,
                             out.getData<float>() + out.getIndex(b, c, h, 0),
                             in1.getData<float>() + in1.getIndex(b, c, h, 0),
                             in2.getData<float>() + in2.getIndex(b, c, h, 0));
+        }
+      }
+    }
+  } else if (in1.getDataType() == ml::train::TensorDim::DataType::Q8_0) {
+    // Q8_0 activation: dequant each input row -> FP32, run swiglu in FP32, then
+    // requant the result row -> Q8_0 out.
+    unsigned int W = in1.width();
+    NNTR_THROW_IF(W % QK8_0 != 0, std::invalid_argument)
+      << "SwiGLU Q8_0 path requires width divisible by 32";
+    size_t row_q8_bytes = Q8_0_SIZE * (W / QK8_0);
+    nntrainer::ComputeOps *o = nntrainer::getComputeOps();
+
+    std::vector<float> in1_fp32(W);
+    std::vector<float> in2_fp32(W);
+    std::vector<float> out_fp32(W);
+    const uint8_t *in1_q8 = (const uint8_t *)in1.getData();
+    const uint8_t *in2_q8 = (const uint8_t *)in2.getData();
+    uint8_t *out_q8 = (uint8_t *)out.getData();
+
+    for (unsigned int b = 0; b < in1.batch(); b++) {
+      for (unsigned int c = 0; c < in1.channel(); c++) {
+        for (unsigned int h = 0; h < iter; h++) {
+          // Q8_0 rows are packed block-wise (34 bytes per 32 elements). The
+          // per-row byte offset equals the element-index of the row start
+          // divided by W (elements per row) times row_q8_bytes.
+          size_t in1_row_bytes =
+            (in1.getIndex(b, c, h, 0) / W) * row_q8_bytes;
+          size_t in2_row_bytes =
+            (in2.getIndex(b, c, h, 0) / W) * row_q8_bytes;
+          size_t out_row_bytes =
+            (out.getIndex(b, c, h, 0) / W) * row_q8_bytes;
+          o->dequantize_row_q8_0(in1_q8 + in1_row_bytes, in1_fp32.data(),
+                                 (int64_t)W);
+          o->dequantize_row_q8_0(in2_q8 + in2_row_bytes, in2_fp32.data(),
+                                 (int64_t)W);
+          nntrainer::swiglu(W, out_fp32.data(), in1_fp32.data(),
+                            in2_fp32.data());
+          o->quantize_row_q8_0(out_fp32.data(), out_q8 + out_row_bytes,
+                               (int64_t)W);
         }
       }
     }

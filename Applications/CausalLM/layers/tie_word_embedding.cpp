@@ -16,6 +16,7 @@
 #include <nntrainer_error.h>
 #include <nntrainer_log.h>
 #include <node_exporter.h>
+#include <q8_0_tensor.h>
 #include <tensor.h>
 #include <tensor_dim.h>
 #include <thread_manager.h>
@@ -278,6 +279,25 @@ void TieWordEmbedding::incremental_forwarding_embedding(
             nntrainer::dequantize_row_q6_K(src, tmp.getData(), out_dim);
           else
             nntrainer::dequantize_row_q4_0(src, tmp.getData(), out_dim);
+          if (out_tensor.getDataType() ==
+              nntrainer::TensorDim::DataType::Q8_0) {
+            // Q8_0 residual stream: apply scale in FP32, then requant the row.
+            // Q8_0_Tensor has no copyData/multiply_i, so this is the only way
+            // to populate it from a dequantized weight row.
+            if (scale != 1.0f)
+              tmp.multiply_i(scale);
+            NNTR_THROW_IF(out_dim % QK8_0 != 0, std::invalid_argument)
+              << "TieWordEmbedding Q8_0 output requires width divisible by 32";
+            nntrainer::ComputeOps *o = nntrainer::getComputeOps();
+            size_t row_q8_bytes =
+              Q8_0_SIZE * (out_dim / QK8_0);
+            o->quantize_row_q8_0(tmp.getData<float>(),
+                                 (uint8_t *)out_tensor.getData() +
+                                   0 * row_q8_bytes,
+                                 (int64_t)out_dim);
+            // scale already applied above; skip the trailing multiply_i.
+            return;
+          }
           out_tensor.copyData(tmp);
         }
       } else {
@@ -329,6 +349,29 @@ void TieWordEmbedding::incremental_forwarding_lmhead(
     nntrainer::Tensor hidden_step = hidden_.getSharedDataTensor(
       hidden_step_dim, b * hidden_dim.getFeatureLen(), true);
 
+    // Q8_0 activation: lm_head logits are forced FP32 (finalize). Dequant the
+    // single Q8_0 input row to FP32 once here so the existing FP32 dot/dequant
+    // paths below operate on FP32 directly (clone(FP32) cannot dequant a Q8_0
+    // tensor, so do it row-wise via ComputeOps).
+    nntrainer::Tensor input_fp32 = input_step;
+    if (input_step.getDataType() == nntrainer::TensorDim::DataType::Q8_0) {
+      const unsigned int hidden_size = input_step.width();
+      NNTR_THROW_IF(hidden_size % QK8_0 != 0, std::invalid_argument)
+        << "lm_head Q8_0 input requires width divisible by 32";
+      input_fp32 =
+        nntrainer::Tensor(nntrainer::TensorDim({1, 1, 1, hidden_size},
+                                              {input_step.getFormat(),
+                                               nntrainer::TensorDim::DataType::FP32}),
+                          true);
+      nntrainer::ComputeOps *o = nntrainer::getComputeOps();
+      size_t row_q8_bytes =
+        Q8_0_SIZE * (hidden_size / QK8_0);
+      o->dequantize_row_q8_0(
+        (const uint8_t *)input_step.getData(),
+        input_fp32.getData<float>(), (int64_t)hidden_size);
+      (void)row_q8_bytes;
+    }
+
     ///@note Since tieword embedding shares the weight with embedding,
     /// the weight is transposed. Thus, the dot product should be consider
     /// this.
@@ -343,11 +386,11 @@ void TieWordEmbedding::incremental_forwarding_lmhead(
       /// dequantize+sdot loop. The lmhead output is forced FP32 (finalize);
       /// cast a FP16 activation up to FP32 first so FloatTensor::dotQnK writes
       /// FP32 logits directly (generate() reads them as float*).
-      nntrainer::Tensor input_fp32 =
-        (input_step.getDataType() == nntrainer::TensorDim::DataType::FP32)
-          ? input_step
-          : input_step.clone(nntrainer::TensorDim::DataType::FP32);
-      input_fp32.dot(weight, hidden_step, false, true);
+      nntrainer::Tensor input_fp32_q6k =
+        (input_fp32.getDataType() == nntrainer::TensorDim::DataType::FP32)
+          ? input_fp32
+          : input_fp32.clone(nntrainer::TensorDim::DataType::FP32);
+      input_fp32_q6k.dot(weight, hidden_step, false, true);
     } else if (weight.getDataType() == nntrainer::TensorDim::DataType::Q4_0) {
       ///@note Unlike Q6_K, the Q4_0 Qn_K dot does NOT transpose the block data
       /// for the [vocab, hidden] tied layout, so compute each vocab row
@@ -363,13 +406,13 @@ void TieWordEmbedding::incremental_forwarding_lmhead(
       const size_t row_stride = (sizeof(uint16_t) + 16) * num_blocks_per_row;
       const uint8_t *weight_data = weight.getData<uint8_t>();
 
-      // The activation may be FP16; sdot/dequant work in FP32, so cast the
-      // single input row up to FP32 once (no-op when already FP32).
-      nntrainer::Tensor input_fp32 =
-        (input_step.getDataType() == nntrainer::TensorDim::DataType::FP32)
-          ? input_step
-          : input_step.clone(nntrainer::TensorDim::DataType::FP32);
-      const float *input_data = input_fp32.getData<float>();
+      // The activation may be FP16/Q8_0; sdot/dequant work in FP32, so ensure
+      // the single input row is FP32 once (no-op when already FP32).
+      nntrainer::Tensor input_fp32_q4 =
+        (input_fp32.getDataType() == nntrainer::TensorDim::DataType::FP32)
+          ? input_fp32
+          : input_fp32.clone(nntrainer::TensorDim::DataType::FP32);
+      const float *input_data = input_fp32_q4.getData<float>();
       float *logits = hidden_step.getData<float>();
 
       auto &tm = nntrainer::ThreadManager::Global();
@@ -390,7 +433,7 @@ void TieWordEmbedding::incremental_forwarding_lmhead(
         }
       });
     } else {
-      input_step.dot(weight, hidden_step, false, true);
+      input_fp32.dot(weight, hidden_step, false, true);
     }
 
     if (auto &disable_bias =

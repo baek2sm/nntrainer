@@ -15,6 +15,8 @@
 #include <cpu_backend.h>
 #include <reshaped_rms_norm.h>
 
+#include <q8_0_tensor.h>
+
 namespace causallm {
 
 static constexpr size_t SINGLE_INOUT_IDX = 0;
@@ -119,11 +121,77 @@ void ReshapedRMSNormLayer::incremental_forwarding(
         in_step.getData<_FP16>(), out_step.getData<_FP16>(),
         in_step.getDim().height(), in_step.getDim().width(), epsilon);
 #endif
+    } else if (in_step.getDataType() ==
+               ml::train::TensorDim::DataType::Q8_0) {
+      // Q8_0 activation: stored Q8_0, computed FP32.
+      //
+      // The residual row is hidden-wide (in_dim.width(), e.g. 64) and that is
+      // the granularity at which Q8_0 blocks (QK8_0=32) are packed. But this
+      // layer reshapes that row into (hidden/fs) rows of fs=head_dim (e.g. 8)
+      // for the per-feature rms_norm, and fs need not be 32-aligned. So:
+      //   1. dequant each original hidden-wide Q8_0 row into an FP32 scratch
+      //      (contiguous, fills the reshaped [H', fs] layout identically),
+      //   2. run rms_norm on the FP32 scratch at the reshaped dim (H', fs),
+      //   3. multiply gamma (fs-wide, FP32) in FP32,
+      //   4. requant each original hidden-wide row back into Q8_0 out_step.
+      unsigned int Hprime = in_step.getDim().height(); // h * (hidden/fs)
+      unsigned int fs = in_step.getDim().width();      // == feature_size
+      unsigned int hidden = in_dim.width();            // original row width
+      unsigned int h = to - from;                      // original row count
+      NNTR_THROW_IF(hidden % QK8_0 != 0, std::invalid_argument)
+        << "ReshapedRMSNorm Q8_0 path requires hidden_size divisible by 32";
+      NNTR_THROW_IF(Hprime * fs != h * hidden, std::invalid_argument)
+        << "ReshapedRMSNorm Q8_0 reshape element-count mismatch";
+
+      // FP32 scratches at the reshaped dim (same element count as the Q8_0
+      // step). clone(FP32) would throw (byte sizes differ), so build directly.
+      nntrainer::Tensor in_fp32(
+        nntrainer::TensorDim(1, 1, Hprime, fs,
+                             nntrainer::TensorDim::TensorType(
+                               in_step.getDim().getFormat(),
+                               ml::train::TensorDim::DataType::FP32)),
+        true);
+      nntrainer::Tensor out_fp32(
+        nntrainer::TensorDim(1, 1, Hprime, fs,
+                             nntrainer::TensorDim::TensorType(
+                               out_step.getDim().getFormat(),
+                               ml::train::TensorDim::DataType::FP32)),
+        true);
+
+      nntrainer::ComputeOps *o = nntrainer::getComputeOps();
+      const uint8_t *in_q8 = (const uint8_t *)in_step.getData();
+      size_t row_q8_bytes = Q8_0_SIZE * (hidden / QK8_0);
+      float *in_fp32_data = in_fp32.getData<float>();
+      // 1. dequant original hidden-wide rows (each covers hidden/fs reshaped
+      //    rows contiguously in the FP32 scratch).
+      for (unsigned int r = 0; r < h; ++r) {
+        o->dequantize_row_q8_0(in_q8 + r * row_q8_bytes,
+                               in_fp32_data + r * hidden, (int64_t)hidden);
+      }
+
+      // 2. rms_norm on the reshaped FP32 layout (Hprime rows of fs).
+      nntrainer::rms_norm_wrt_width_fp32_intrinsic(
+        in_fp32_data, out_fp32.getData<float>(), Hprime, fs, epsilon);
+
+      // 3. gamma (fs-wide, FP32) in FP32.
+      if (use_gamma) {
+        nntrainer::Tensor &gamma = context.getWeight(wt_idx[RMSParams::gamma]);
+        out_fp32.multiply_i(gamma);
+      }
+
+      // 4. requant original hidden-wide rows back into Q8_0 out_step.
+      const float *out_fp32_data = out_fp32.getData<float>();
+      uint8_t *out_q8 = (uint8_t *)out_step.getData();
+      for (unsigned int r = 0; r < h; ++r) {
+        o->quantize_row_q8_0(out_fp32_data + r * hidden,
+                             out_q8 + r * row_q8_bytes, (int64_t)hidden);
+      }
     } else {
       throw std::invalid_argument(
         "Error: not yet implemented for this data type");
     }
-    if (use_gamma) {
+    if (in_step.getDataType() != ml::train::TensorDim::DataType::Q8_0 &&
+        use_gamma) {
       nntrainer::Tensor &gamma = context.getWeight(wt_idx[RMSParams::gamma]);
       if (gamma.getDataType() != out_step.getDataType()) {
         nntrainer::Tensor gamma_cast = gamma.clone(out_step.getDataType());

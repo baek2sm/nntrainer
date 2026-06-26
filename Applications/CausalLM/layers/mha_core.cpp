@@ -23,11 +23,13 @@
 static std::mutex rope_init_mtx;
 
 #include <cpu_backend_gemm_decl.h>
+#include <cpu_backend.h>
 #include <fp16.h>
 #include <layer_context.h>
 #include <mha_core.h>
 #include <nntrainer_error.h>
 #include <node_exporter.h>
+#include <q8_0_tensor.h>
 #include <thread_manager.h>
 #include <util_func.h>
 
@@ -40,6 +42,50 @@ inline float convert_scalar(uint16_t h) {
 namespace causallm {
 
 #define tile_size 4
+
+/// Q8_0 activation helper for mha: dequantize a Q8_0 step tensor row-wise into
+/// an FP32 clone. The caller must ensure the input is Q8_0 and width % 32 == 0.
+static void dequant_q8_0_step_to_fp32(const nntrainer::Tensor &q8,
+                                       nntrainer::Tensor &fp32) {
+  nntrainer::ComputeOps *o = nntrainer::getComputeOps();
+  unsigned int H = q8.getDim().height();
+  unsigned int W = q8.getDim().width();
+  size_t row_q8_bytes = Q8_0_SIZE * (W / QK8_0);
+  const uint8_t *q8_data = (const uint8_t *)q8.getData();
+  float *fp32_data = fp32.getData<float>();
+  for (unsigned int r = 0; r < H; ++r) {
+    o->dequantize_row_q8_0(q8_data + r * row_q8_bytes, fp32_data + r * W,
+                           (int64_t)W);
+  }
+}
+
+/// Q8_0 activation helper for mha: requantize an FP32 result row-wise into a
+/// Q8_0 step tensor. Output width must be divisible by 32.
+static void requant_fp32_step_to_q8_0(const nntrainer::Tensor &fp32,
+                                      nntrainer::Tensor &q8) {
+  nntrainer::ComputeOps *o = nntrainer::getComputeOps();
+  unsigned int H = q8.getDim().height();
+  unsigned int W = q8.getDim().width();
+  size_t row_q8_bytes = Q8_0_SIZE * (W / QK8_0);
+  const float *fp32_data = fp32.getData<float>();
+  uint8_t *q8_data = (uint8_t *)q8.getData();
+  for (unsigned int r = 0; r < H; ++r) {
+    o->quantize_row_q8_0(fp32_data + r * W, q8_data + r * row_q8_bytes,
+                         (int64_t)W);
+  }
+}
+
+/// Q8_0 activation helper for mha: create an *empty* FP32 tensor with the same
+/// element shape/format as a Q8_0 source step. Replace `src.clone(FP32)`, which
+/// throws for a Q8_0 source (byte sizes differ — see fc_layer::make_fp32_like).
+static nntrainer::Tensor make_fp32_step_like(const nntrainer::Tensor &src) {
+  const nntrainer::TensorDim &d = src.getDim();
+  return nntrainer::Tensor(
+    nntrainer::TensorDim(d.batch(), d.channel(), d.height(), d.width(),
+                         nntrainer::TensorDim::TensorType(
+                           d.getFormat(), ml::train::TensorDim::DataType::FP32)),
+    true);
+}
 
 static void compute_kcaches_fp32_reference(
   const float *in, const float *kcache, float *output, int num_rows,
@@ -353,7 +399,31 @@ void MHACoreLayer::forwarding(nntrainer::RunLayerContext &context,
     nntrainer::Tensor output_step = output.getSharedDataTensor(
       output_step_dim, batch * output_dim.getFeatureLen(), true);
 
-    if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
+    if (query_step.getDataType() == ml::train::TensorDim::DataType::Q8_0) {
+      // Q8_0 activation: dequant Q/K/V step -> FP32, run the full attention in
+      // FP32 (existing FP32 path), then requant the FP32 output -> Q8_0.
+      nntrainer::Tensor Q_step = make_fp32_step_like(query_step);
+      nntrainer::Tensor K_step = make_fp32_step_like(key_step);
+      nntrainer::Tensor V_step = make_fp32_step_like(value_step);
+      nntrainer::Tensor O_step = make_fp32_step_like(output_step);
+
+      dequant_q8_0_step_to_fp32(query_step, Q_step);
+      dequant_q8_0_step_to_fp32(key_step, K_step);
+      dequant_q8_0_step_to_fp32(value_step, V_step);
+
+      if (use_sink) {
+        one_batch_incremental_forwarding(
+          batch, from, from, to, Q_step, K_step, V_step, O_step, cache_key,
+          cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
+          cache_value_step_dim, sink);
+      } else {
+        one_batch_incremental_forwarding(batch, from, from, to, Q_step, K_step,
+                                         V_step, O_step, cache_key, cache_value,
+                                         cache_key_dim, cache_key_step_dim,
+                                         cache_value_dim, cache_value_step_dim);
+      }
+      requant_fp32_step_to_q8_0(O_step, output_step);
+    } else if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
 #if ENABLE_FP16 && defined(__ANDROID__)
       nntrainer::TensorDim Q_step_dim = query_step_dim;
       nntrainer::TensorDim K_step_dim = key_step_dim;
@@ -518,7 +588,31 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
     nntrainer::Tensor output_step = output.getSharedDataTensor(
       output_step_dim, batch * output_dim.getFeatureLen(), true);
 
-    if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
+    if (query_step.getDataType() == ml::train::TensorDim::DataType::Q8_0) {
+      // Q8_0 activation: dequant Q/K/V step -> FP32, run the full attention in
+      // FP32 (existing FP32 path), then requant the FP32 output -> Q8_0.
+      nntrainer::Tensor Q_step = make_fp32_step_like(query_step);
+      nntrainer::Tensor K_step = make_fp32_step_like(key_step);
+      nntrainer::Tensor V_step = make_fp32_step_like(value_step);
+      nntrainer::Tensor O_step = make_fp32_step_like(output_step);
+
+      dequant_q8_0_step_to_fp32(query_step, Q_step);
+      dequant_q8_0_step_to_fp32(key_step, K_step);
+      dequant_q8_0_step_to_fp32(value_step, V_step);
+
+      if (use_sink) {
+        one_batch_incremental_forwarding(
+          batch, _from, from, to, Q_step, K_step, V_step, O_step, cache_key,
+          cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
+          cache_value_step_dim, sink);
+      } else {
+        one_batch_incremental_forwarding(batch, _from, from, to, Q_step, K_step,
+                                         V_step, O_step, cache_key, cache_value,
+                                         cache_key_dim, cache_key_step_dim,
+                                         cache_value_dim, cache_value_step_dim);
+      }
+      requant_fp32_step_to_q8_0(O_step, output_step);
+    } else if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
 #if ENABLE_FP16 && defined(__ANDROID__)
       nntrainer::TensorDim Q_step_dim = query_step_dim;
       nntrainer::TensorDim K_step_dim = key_step_dim;
