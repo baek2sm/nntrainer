@@ -340,6 +340,14 @@ void gemm_q4_0(const unsigned int M, std::vector<unsigned int> Ns,
   throw std::runtime_error("Error: NYI for gemm_q4_0 with vectored weights");
 }
 
+void gemm_q4_0_indirect_conv(const unsigned int M, const unsigned int N,
+                             const unsigned int K, const float *in,
+                             const ConvGatherParams &geom, const void *B,
+                             const unsigned int ldb, float *C,
+                             const unsigned int ldc) {
+  throw std::runtime_error("Error: NYI for gemm_q4_0_indirect_conv on x86");
+}
+
 void gemm_q4_K(const unsigned int M, const unsigned int N, const unsigned int K,
                const float *A, const unsigned int lda, const void *B,
                const unsigned int ldb, float *C, const unsigned int ldc) {
