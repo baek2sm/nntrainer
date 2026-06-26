@@ -65,7 +65,16 @@ void *Q8_0_Tensor::getData() const {
   if (!data)
     return nullptr;
   data->validate();
-  return data->getAddr<uint8_t>() + offset;
+  // `offset` is stored in *elements* (see TensorBase::allocateSrcTensor, which
+  // copies the element offset passed to getSharedDataTensor; TensorDim::
+  // getDataLen is element-count). Q8_0 packs 32 elements into Q8_0_SIZE bytes,
+  // so convert the element offset to a byte offset before indexing the uint8_t
+  // buffer. Slices are always row-aligned (width % QK8_0 == 0), so offset is a
+  // whole multiple of QK8_0. Without this, a shared Q8_0 sub-tensor (e.g. an
+  // activation slice in mha_core / rms_norm / lm_head) reads the wrong bytes
+  // and produces all-zero logits.
+  size_t byte_offset = (offset / QK8_0) * Q8_0_SIZE;
+  return data->getAddr<uint8_t>() + byte_offset;
 }
 
 size_t Q8_0_Tensor::size() const {

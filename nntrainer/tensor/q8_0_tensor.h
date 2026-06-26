@@ -39,7 +39,10 @@ struct block_q8_0 {
   int8_t qs[QK8_0]; // 32 signed int8 quants
 };
 
-#define Q8_0_SIZE sizeof(struct block_q8_0)
+/// @note Fully qualified so Q8_0_SIZE expands correctly even when used from
+/// a different namespace (e.g. causallm). An unqualified `struct block_q8_0`
+/// would declare a *new* incomplete type in that namespace and fail sizeof.
+#define Q8_0_SIZE sizeof(::nntrainer::block_q8_0)
 
 /**
  * @class Q8_0_Tensor
