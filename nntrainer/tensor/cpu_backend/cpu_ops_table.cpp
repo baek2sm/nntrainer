@@ -368,6 +368,21 @@ public:
                       unsigned int ldb, _FP16 *C, unsigned int ldc) override {
     nntrainer::gemm_q4_0<_FP16>(M, N, K, A, lda, B, ldb, C, ldc);
   }
+  // im2col-fused q4_0 conv GEMM, FP16 activation — FP16 mirror of the FP32
+  // indirect conv above. Same availability gate (NNTR_HAS_Q4_0_INDIRECT_CONV);
+  // the FP16 backend op is provided under the same macro (see
+  // arm_compute_backend gemm_q4_0_indirect_conv_fp16 + the
+  // __ggml..._indirect_GEMM_fp16 specialization).
+  bool supports_gemm_q4_0_indirect_conv_fp16() const override {
+    return NNTR_HAS_Q4_0_INDIRECT_CONV;
+  }
+  void gemm_q4_0_indirect_conv_fp16(unsigned int M, unsigned int N,
+                                    unsigned int K, const _FP16 *in,
+                                    const ConvGatherParams &geom, const void *B,
+                                    unsigned int ldb, _FP16 *C,
+                                    unsigned int ldc) override {
+    nntrainer::gemm_q4_0_indirect_conv_fp16(M, N, K, in, geom, B, ldb, C, ldc);
+  }
   void gemm_q6_K_fp16(unsigned int M, unsigned int N, unsigned int K,
                       const _FP16 *A, unsigned int lda, const void *B,
                       unsigned int ldb, _FP16 *C, unsigned int ldc) override {

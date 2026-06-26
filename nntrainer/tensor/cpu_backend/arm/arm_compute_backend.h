@@ -1207,6 +1207,20 @@ void gemm_q4_0_indirect_conv(const unsigned int M, const unsigned int N,
                              const ConvGatherParams &geom, const void *B,
                              const unsigned int ldb, float *C,
                              const unsigned int ldc);
+#ifdef ENABLE_FP16
+/**
+ * @brief FP16-activation q4_0 conv GEMM with im2col gather fused into q8_0
+ * activation packing (no FP16 col materialization). FP16 mirror of
+ * gemm_q4_0_indirect_conv above; used by HalfTensor::convQ4_0Indirect so a
+ * quant-weight conv can run on FP16 activations (W4A16) without throwing via
+ * TensorBase.
+ */
+void gemm_q4_0_indirect_conv_fp16(const unsigned int M, const unsigned int N,
+                                  const unsigned int K, const _FP16 *in,
+                                  const ConvGatherParams &geom, const void *B,
+                                  const unsigned int ldb, _FP16 *C,
+                                  const unsigned int ldc);
+#endif
 /**
  * @brief q4_K GEMM : A (M,K) * W.T (N,K) = O (M,N)
  *
