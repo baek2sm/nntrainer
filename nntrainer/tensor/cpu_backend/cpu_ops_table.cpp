@@ -395,6 +395,20 @@ public:
     nntrainer::compute_rotary_embedding_value(dim, half_, w, in, out, cos_,
                                               sin_);
   }
+
+  // FP16 Convolution
+  void depthwise_conv2d_fp16(
+    const _FP16 *input, const float *kernel, _FP16 *output, unsigned int batch,
+    unsigned int channels, unsigned int in_h, unsigned int in_w,
+    unsigned int out_h, unsigned int out_w, unsigned int kh, unsigned int kw,
+    unsigned int stride_h, unsigned int stride_w, unsigned int pad_top,
+    unsigned int pad_left, unsigned int dilation_h,
+    unsigned int dilation_w) override {
+    nntrainer::depthwise_conv2d_fp16(input, kernel, output, batch, channels,
+                                     in_h, in_w, out_h, out_w, kh, kw, stride_h,
+                                     stride_w, pad_top, pad_left, dilation_h,
+                                     dilation_w);
+  }
 #endif // ENABLE_FP16
 };
 
