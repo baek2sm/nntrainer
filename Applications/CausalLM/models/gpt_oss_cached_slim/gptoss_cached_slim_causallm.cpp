@@ -82,8 +82,7 @@ Tensor GptOssCachedSlimCausalLM::createAttention(const int layer_id,
      withKey("use_sink", "true"),
      withKey("rope_scaling_factor", ATTENTION_ROPE_SCALING_FACTOR),
      withKey("rope_scaling_type", "yarn"),
-     withKey("rope_scaling_max_position_embeddings", 4096),
-     withKey("use_gemm_attention", USE_FLASH_ATTENTION ? "true" : "false")}));
+     withKey("rope_scaling_max_position_embeddings", 4096)}));
   Tensor a = mha({q, k, v, cache_k, cache_v});
 
   // O layer
