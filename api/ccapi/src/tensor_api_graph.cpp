@@ -15,6 +15,8 @@
 
 #include "tensor_api_impl.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <model.h>
 
 #include <layer_context.h>
@@ -419,6 +421,43 @@ int Model::compile(std::vector<Tensor> &inputs, std::vector<Tensor> &outputs,
     }
   }
 
+  // Map a DataType to the string the "input" layer's input_dtype property
+  // accepts. Used for both primary inputs and additional leaves so a non-FP32
+  // declared input tensor (e.g. an FP16 image fed for FP16-activation models)
+  // produces an InputLayer whose output carries that dtype, instead of being
+  // silently dropped to FP32.
+  auto dtype_to_str = [](nntrainer::TensorDim::DataType dt) -> const char * {
+    using DT = nntrainer::TensorDim::DataType;
+    switch (dt) {
+    case DT::FP32:
+      return "FP32";
+    case DT::FP16:
+      return "FP16";
+    case DT::QINT4:
+      return "QINT4";
+    case DT::QINT8:
+      return "QINT8";
+    case DT::QINT16:
+      return "QINT16";
+    case DT::UINT4:
+      return "UINT4";
+    case DT::UINT8:
+      return "UINT8";
+    case DT::UINT16:
+      return "UINT16";
+    case DT::Q4_0:
+      return "Q4_0";
+    case DT::Q4_K:
+      return "Q4_K";
+    case DT::Q6_K:
+      return "Q6_K";
+    case DT::BCQ:
+      return "BCQ";
+    default:
+      return "FP32";
+    }
+  };
+
   int status;
   for (auto &inp : inputs) {
     std::string inp_name = inp.name();
@@ -464,8 +503,19 @@ int Model::compile(std::vector<Tensor> &inputs, std::vector<Tensor> &outputs,
     std::string shape_str = std::to_string(dim.channel()) + ":" +
                             std::to_string(dim.height()) + ":" +
                             std::to_string(dim.width());
-    auto input_layer =
-      createLayer("input", {"name=" + inp_name, "input_shape=" + shape_str});
+    std::vector<std::string> input_props = {"name=" + inp_name,
+                                            "input_shape=" + shape_str};
+    // Propagate a non-FP32 declared input dtype (e.g. an FP16 image for
+    // FP16-activation models) so the InputLayer output carries it. FP32 inputs
+    // emit nothing here, keeping the default path byte-identical.
+    if (dim.getDataType() != nntrainer::TensorDim::DataType::FP32) {
+      input_props.push_back(std::string("input_dtype=") +
+                            dtype_to_str(dim.getDataType()));
+    }
+    if (std::getenv("NNTR_INPUT_DTYPE_PROBE"))
+      fprintf(stderr, "[GRAPH_EMIT] inp_name=%s dim.dtype=%d props.size=%zu\n",
+              inp_name.c_str(), (int)dim.getDataType(), input_props.size());
+    auto input_layer = createLayer("input", input_props);
     status = addLayer(std::move(input_layer));
     if (status != ML_ERROR_NONE) {
       return status;
@@ -477,37 +527,6 @@ int Model::compile(std::vector<Tensor> &inputs, std::vector<Tensor> &outputs,
     std::string leaf_shape = std::to_string(leaf_info.dim.channel()) + ":" +
                              std::to_string(leaf_info.dim.height()) + ":" +
                              std::to_string(leaf_info.dim.width());
-    auto dtype_to_str = [](nntrainer::TensorDim::DataType dt) -> const char * {
-      using DT = nntrainer::TensorDim::DataType;
-      switch (dt) {
-      case DT::FP32:
-        return "FP32";
-      case DT::FP16:
-        return "FP16";
-      case DT::QINT4:
-        return "QINT4";
-      case DT::QINT8:
-        return "QINT8";
-      case DT::QINT16:
-        return "QINT16";
-      case DT::UINT4:
-        return "UINT4";
-      case DT::UINT8:
-        return "UINT8";
-      case DT::UINT16:
-        return "UINT16";
-      case DT::Q4_0:
-        return "Q4_0";
-      case DT::Q4_K:
-        return "Q4_K";
-      case DT::Q6_K:
-        return "Q6_K";
-      case DT::BCQ:
-        return "BCQ";
-      default:
-        return "FP32";
-      }
-    };
     std::vector<std::string> leaf_props = {"name=" + leaf_name,
                                            "input_shape=" + leaf_shape};
     // Only emit input_dtype when the leaf tensor explicitly carries a

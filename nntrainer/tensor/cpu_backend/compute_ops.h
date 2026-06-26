@@ -407,6 +407,21 @@ public:
                               const unsigned int ldb, _FP16 *C,
                               const unsigned int ldc);
 
+  /**
+   * @brief FP16-activation mirror of depthwise_conv2d_fp32. Same layout and
+   *        semantics (NCHW input/output, [C,1,kh,kw] kernel, no bias), but
+   *        reads/writes _FP16 while accumulating each output in float for
+   *        numerical parity with the FP32 path. Used by Conv2DLayer's grouped
+   *        path so an FP16 depthwise conv keeps the tight direct-loop kernel
+   *        instead of falling back to per-channel im2col + FP16 GEMV.
+   */
+  virtual void depthwise_conv2d_fp16(
+    const _FP16 *input, const float *kernel, _FP16 *output, unsigned int batch,
+    unsigned int channels, unsigned int in_h, unsigned int in_w,
+    unsigned int out_h, unsigned int out_w, unsigned int kh, unsigned int kw,
+    unsigned int stride_h, unsigned int stride_w, unsigned int pad_top,
+    unsigned int pad_left, unsigned int dilation_h, unsigned int dilation_w);
+
   // ===========================================================================
   // Rotary embedding
   // ===========================================================================
