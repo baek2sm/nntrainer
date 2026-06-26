@@ -177,6 +177,8 @@ unsigned int TensorDim::getDataTypeSize() const {
     return sizeof(uint8_t);
   case TensorDim::DataType::Q4_0:
     return sizeof(uint8_t);
+  case TensorDim::DataType::Q8_0:
+    return sizeof(uint8_t);
   default:
     return sizeof(float);
   }
