@@ -1351,6 +1351,14 @@ void dequantize_row_q4_0(const void *x, float *y, int64_t k);
 void dequantize_row_q8_0(const void *x_raw, float *y, int64_t k);
 
 /**
+ * @brief Quantize a row of float data to q8_0 (non-template, float overload).
+ * @note Concrete float overload preferred over the never-instantiated template
+ * by overload resolution; defined in arm_compute_backend.cpp via
+ * nntr_quantize_row_q8_0. Mirrors dequantize_row_q8_0(float) above.
+ */
+void quantize_row_q8_0(const float *src, void *dst, int64_t k);
+
+/**
  * @brief dequantize row of q6_K data to float
  *
  * @param x input to be dequantized from q6_K to float

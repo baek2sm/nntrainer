@@ -195,6 +195,12 @@ void ComputeOps::gemm_q8_0_fp32(unsigned int, unsigned int, unsigned int,
                                 unsigned int, float *, unsigned int) {
   NI(gemm_q8_0_fp32);
 }
+void ComputeOps::quantize_row_q8_0(const float *, void *, int64_t) {
+  NI(quantize_row_q8_0);
+}
+void ComputeOps::dequantize_row_q8_0(const void *, float *, int64_t) {
+  NI(dequantize_row_q8_0);
+}
 void ComputeOps::gemm_q4_K_fp32(unsigned int, unsigned int, unsigned int,
                                 const float *, unsigned int, const void *,
                                 unsigned int, float *, unsigned int) {

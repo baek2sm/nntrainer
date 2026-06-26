@@ -20,6 +20,7 @@
 #include <compute_ops.h>
 #include <fallback_internal.h>
 #include <ggml_interface.h>
+#include <nntr_ggml_impl.h>
 #include <nntrainer_error.h>
 #include <q4_0_utils.h>
 #include <x86_compute_backend.h>
@@ -420,6 +421,10 @@ void dequantize_row_q4_0(const void *x_raw, float *y, int64_t k) {
 
 void dequantize_row_q8_0(const void *x_raw, float *y, int64_t k) {
   __ggml_dequantize_row_q8_0(x_raw, y, k);
+}
+
+void quantize_row_q8_0(const float *src, void *dst, int64_t k) {
+  nntr_quantize_row_q8_0(src, dst, k);
 }
 
 void dequantize_row_q6_K(const void *x, float *y, int64_t k) {

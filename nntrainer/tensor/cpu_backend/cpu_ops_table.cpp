@@ -169,6 +169,12 @@ public:
                       unsigned int ldb, float *C, unsigned int ldc) override {
     nntrainer::gemm_q8_0(M, N, K, A, lda, B, ldb, C, ldc);
   }
+  void quantize_row_q8_0(const float *src, void *dst, int64_t k) override {
+    nntrainer::quantize_row_q8_0(src, dst, k);
+  }
+  void dequantize_row_q8_0(const void *x, float *y, int64_t k) override {
+    nntrainer::dequantize_row_q8_0(x, y, k);
+  }
   void gemm_q4_K_fp32(unsigned int M, unsigned int N, unsigned int K,
                       const float *A, unsigned int lda, const void *B,
                       unsigned int ldb, float *C, unsigned int ldc) override {
