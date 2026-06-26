@@ -1029,6 +1029,22 @@ public:
 };
 
 /**
+ * @brief FusedActivation Enumeration Information
+ *
+ * @note Unlike props::Activation (key "activation"), this property is NOT
+ * intercepted by LayerNode's realization props nor split off into a standalone
+ * activation node by ActivationRealizer. It lets a layer (e.g. Conv2D) fuse an
+ * elementwise activation directly into its output write, avoiding the extra
+ * full-tensor read+write pass a separate activation layer would cost.
+ */
+class FusedActivation final
+  : public EnumProperty<nntrainer::props::ActivationTypeInfo> {
+public:
+  using prop_tag = enum_class_prop_tag;
+  static constexpr const char *key = "fused_activation";
+};
+
+/**
  * @brief HiddenStateActivation Enumeration Information
  *
  */
