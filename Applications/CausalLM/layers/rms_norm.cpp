@@ -17,6 +17,8 @@
 
 #include "rms_norm.h"
 
+#include <q8_0_tensor.h>
+
 namespace causallm {
 
 static constexpr size_t SINGLE_INOUT_IDX = 0;
@@ -103,17 +105,69 @@ void RMSNormLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
         in_step.getData<_FP16>(), out_step.getData<_FP16>(), dim.height(),
         dim.width(), epsilon);
 #endif
+    } else if (in_step.getDataType() ==
+               ml::train::TensorDim::DataType::Q8_0) {
+      // Q8_0 activation: stored Q8_0, computed FP32. Dequant the input row(s)
+      // to an FP32 scratch, run FP32 rms_norm into an FP32 scratch, multiply
+      // by FP32 gamma, then requant the result back into the Q8_0 out_step.
+      const auto &dim = in_step.getDim();
+      unsigned int H = dim.height();
+      unsigned int W = dim.width();
+      NNTR_THROW_IF(W % QK8_0 != 0, std::invalid_argument)
+        << "RMSNorm Q8_0 path requires width divisible by 32";
+
+      // Q8_0 and FP32 have different byte sizes for the same element count, so
+      // clone(FP32) (which copies by bytes) would throw "size must match".
+      // Build FP32 scratches with matching H*W element counts instead.
+      nntrainer::Tensor in_fp32(
+        nntrainer::TensorDim(1, 1, H, W,
+                             nntrainer::TensorDim::TensorType(
+                               in_step.getDim().getFormat(),
+                               ml::train::TensorDim::DataType::FP32)),
+        true);
+      nntrainer::Tensor out_fp32(
+        nntrainer::TensorDim(1, 1, H, W,
+                             nntrainer::TensorDim::TensorType(
+                               out_step.getDim().getFormat(),
+                               ml::train::TensorDim::DataType::FP32)),
+        true);
+
+      nntrainer::ComputeOps *o = nntrainer::getComputeOps();
+      const uint8_t *in_q8 = (const uint8_t *)in_step.getData();
+      size_t row_q8_bytes = Q8_0_SIZE * (W / QK8_0);
+      float *in_fp32_data = in_fp32.getData<float>();
+      for (unsigned int r = 0; r < H; ++r) {
+        o->dequantize_row_q8_0(in_q8 + r * row_q8_bytes,
+                               in_fp32_data + r * W, (int64_t)W);
+      }
+
+      nntrainer::rms_norm_wrt_width_fp32_intrinsic(
+        in_fp32_data, out_fp32.getData<float>(), H, W, epsilon);
+
+      // gamma is FP32 (see finalize); multiply in FP32 before requant.
+      out_fp32.multiply_i(gamma);
+
+      // requant FP32 result -> Q8_0 out_step
+      const float *out_fp32_data = out_fp32.getData<float>();
+      uint8_t *out_q8 = (uint8_t *)out_step.getData();
+      for (unsigned int r = 0; r < H; ++r) {
+        o->quantize_row_q8_0(out_fp32_data + r * W, out_q8 + r * row_q8_bytes,
+                             (int64_t)W);
+      }
     } else {
       throw std::invalid_argument(
         "Error: not yet implemented for this data type");
     }
     // gamma (unquantized) may be stored at a different dtype than the FP16
     // activation; cast it to match before the elementwise multiply.
-    if (gamma.getDataType() != out_step.getDataType()) {
-      nntrainer::Tensor gamma_cast = gamma.clone(out_step.getDataType());
-      out_step.multiply_i(gamma_cast);
-    } else {
-      out_step.multiply_i(gamma);
+    // (Q8_0 path already applied gamma in FP32 above and skips this.)
+    if (in_step.getDataType() != ml::train::TensorDim::DataType::Q8_0) {
+      if (gamma.getDataType() != out_step.getDataType()) {
+        nntrainer::Tensor gamma_cast = gamma.clone(out_step.getDataType());
+        out_step.multiply_i(gamma_cast);
+      } else {
+        out_step.multiply_i(gamma);
+      }
     }
 #ifdef DEBUG
     std::cout << context.getName() << " \n input:" << in_step
