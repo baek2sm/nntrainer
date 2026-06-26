@@ -1012,6 +1012,23 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
                          0.0f, S.data(), bk);
 #endif
 
+        // Apply attention logit softcapping (tanh(score / cap) * cap) before
+        // masking + online softmax, mirroring the reference path
+        // (softmax_triangle). Gemma3/Gemma4 set attn_logit_softcapping > 0;
+        // without this the flash-attention fast path diverges from the
+        // reference on those models. Applied to all valid scores here; the
+        // -INFINITY masking below then zeroes out the masked positions for
+        // softmax (tanh of a finite value stays finite, so masking must run
+        // after, not before, softcapping).
+        if (attn_logit_softcapping > 0.0f) {
+          const float inv_cap = 1.0f / attn_logit_softcapping;
+          const float cap = attn_logit_softcapping;
+          float *s_all = S.data();
+          const size_t s_cnt = (size_t)bq * bk;
+          for (size_t j = 0; j < s_cnt; ++j)
+            s_all[j] = std::tanh(s_all[j] * inv_cap) * cap;
+        }
+
         for (unsigned int i = 0; i < bq; ++i) {
           float *s = S.data() + (size_t)i * bk;
           const long long q_abs = (long long)cache_from + qb + i;
