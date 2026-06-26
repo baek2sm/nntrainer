@@ -367,9 +367,10 @@ makeQwen3Case(const causallm_test::TinyCausalLMDataType &data_type) {
     "Qwen3_" + data_type.name,
     data_type,
     {"hello tok4", makeExpectedQwen3Logits(),
-     data_type.name == "FP32"       ? 1e-4f
-     : data_type.name == "Q40_FP16" ? 2e-3f
-                                    : 1e-3f},
+     data_type.name == "FP32"        ? 1e-4f
+     : data_type.name == "Q40_FP16"  ? 2e-3f
+     : data_type.name == "Q40_Q8_0"  ? 1e-2f
+                                     : 1e-3f},
     makeTinyQwen3Config,
     makeQwen3LayerDtypeMap,
     [](causallm::json &cfg, causallm::json &generation_cfg,
@@ -438,7 +439,8 @@ TEST_P(CausalLMTinyModelTest, PromptProducesExpectedLogits) {
 INSTANTIATE_TEST_SUITE_P(
   Qwen3, CausalLMTinyModelTest,
   ::testing::Values(makeQwen3Case(causallm_test::makeTinyFp32DataType()),
-                    makeQwen3Case(causallm_test::makeTinyQ40Fp32DataType())),
+                    makeQwen3Case(causallm_test::makeTinyQ40Fp32DataType()),
+                    makeQwen3Case(causallm_test::makeTinyQ40Q8_0DataType())),
   [](const ::testing::TestParamInfo<causallm_test::TinyCausalLMCase> &info) {
     return info.param.name;
   });

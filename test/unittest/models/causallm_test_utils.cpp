@@ -199,6 +199,15 @@ TinyCausalLMDataType makeTinyQ40Fp16DataType() {
 }
 
 /**
+ * @brief Make Q4_0 weights with Q8_0 activations data type variant
+ */
+TinyCausalLMDataType makeTinyQ40Q8_0DataType() {
+  return {
+    "Q40_Q8_0", "Q4_0", "Q4_0", "Q4_0", "Q4_0-Q8_0",
+  };
+}
+
+/**
  * @brief Convert a test dtype string to an nntrainer tensor data type
  */
 ml::train::TensorDim::DataType toTensorDataType(const std::string &dtype) {
@@ -208,6 +217,8 @@ ml::train::TensorDim::DataType toTensorDataType(const std::string &dtype) {
     return ml::train::TensorDim::DataType::FP16;
   if (dtype == "Q4_0")
     return ml::train::TensorDim::DataType::Q4_0;
+  if (dtype == "Q8_0")
+    return ml::train::TensorDim::DataType::Q8_0;
   if (dtype == "NONE")
     return ml::train::TensorDim::DataType::NONE;
 
