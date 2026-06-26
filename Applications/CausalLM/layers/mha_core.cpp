@@ -1018,8 +1018,13 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
     const unsigned int bq = std::min(Bq, N_q - qb);
     const float *Qp_fp32 =
       q_fp16 ? nullptr : (Qa_fp32.data() + (size_t)h_q * N_q * d);
+    // Qp_fp16 is only consumed by the ARM NEON FMLAL QK path below; on x86 the
+    // avx2 path uses Qp_fp32, so guard the declaration to avoid an
+    // unused-but-set-variable warning under -Werror -Wall on x86 CI.
+#if !defined(__x86_64__) && !defined(__i386__)
     const uint16_t *Qp_fp16 =
       q_fp16 ? (Qa_fp16.data() + (size_t)h_q * N_q * d) : nullptr;
+#endif
     const uint16_t *Kp = Ka.data() + (size_t)h_kv * N_kv * d;
     const uint16_t *Vp = Va.data() + (size_t)h_kv * N_kv * d;
     float *Oh = o_fp16 ? nullptr : (O + h_q * d);
