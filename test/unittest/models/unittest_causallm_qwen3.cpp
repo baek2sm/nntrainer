@@ -33,51 +33,17 @@
 namespace {
 
 /**
- * @brief Tiny Qwen3 CausalLM adapter for common model tests
+ * @brief Tiny Qwen3 CausalLM adapter (inference shared by CausalLMTestAdapter)
  */
-class TinyQwen3CausalLM final : public causallm::Qwen3CausalLM,
-                                public causallm_test::TinyCausalLMRunner {
-public:
-  /**
-   * @brief Construct a tiny Qwen3 CausalLM test adapter
-   */
-  TinyQwen3CausalLM(causallm::json &cfg, causallm::json &generation_cfg,
-                    causallm::json &nntr_cfg) :
-    causallm::Transformer(cfg, generation_cfg, nntr_cfg,
-                          causallm::ModelType::CAUSALLM),
-    causallm::Qwen3CausalLM(cfg, generation_cfg, nntr_cfg) {}
+using TinyQwen3CausalLM =
+  causallm_test::CausalLMTestAdapter<causallm::Qwen3CausalLM>;
 
-  /**
-   * @brief Initialize the tiny Qwen3 model
-   */
-  void initializeModel() override { initialize(); }
-
-  /**
-   * @brief Save tiny Qwen3 model weights
-   */
-  void saveWeight(const std::string &path) override { save_weight(path); }
-
-  /**
-   * @brief Save tiny Qwen3 model weights with dtype conversion
-   */
-  void saveWeightWithDtype(
-    const std::string &path,
-    const std::map<std::string, ml::train::TensorDim::DataType>
-      &layer_dtype_map) override {
-    save_weight(path, ml::train::TensorDim::DataType::NONE, layer_dtype_map);
-  }
-
-  /**
-   * @brief Load tiny Qwen3 model weights
-   */
-  void loadWeight(const std::string &path) override { load_weight(path); }
-
-  /**
-   * @brief Set deterministic tiny Qwen3 weights for golden token tests
-   */
-  void setDeterministicWeights() override {
-    auto set_weights = [](ml::train::Layer &layer,
-                          nntrainer::RunLayerContext &context, void *) {
+/**
+ * @brief Populate deterministic tiny Qwen3 weights for golden token tests
+ */
+void setupQwen3DeterministicWeights(TinyQwen3CausalLM &model) {
+  model.forEachLayer(
+    [](ml::train::Layer &layer, nntrainer::RunLayerContext &context, void *) {
       if (layer.getName() == "output_of_causallm")
         return;
 
@@ -96,103 +62,8 @@ public:
           weight.setValue(0, 0, 4, 0, 2.0f);
         }
       }
-    };
-
-    model->forEachLayer(set_weights, nullptr);
-  }
-
-  /**
-   * @brief Run one prompt through the tiny Qwen3 model
-   */
-  void runPrompt(const std::string &prompt) override {
-    run(prompt, false, "", "", false);
-  }
-
-  /**
-   * @brief Run Qwen3 prefill and return logits before sampling
-   */
-  std::vector<float> prefillLogits(const std::string &prompt) override {
-    allocateAndBindKVCache();
-
-    auto encoded = tokenizer->Encode(prompt);
-    if (encoded.empty())
-      throw std::invalid_argument("tiny Qwen3 prompt encoded to no tokens");
-
-    const unsigned int num_allow_str = MAX_SEQ_LEN - NUM_TO_GENERATE;
-    const unsigned int init_len = static_cast<unsigned int>(
-      std::min<size_t>(encoded.size(), num_allow_str));
-    std::vector<float> input_sample(
-      static_cast<size_t>(BATCH_SIZE) * MAX_SEQ_LEN, 0.0f);
-
-    for (unsigned int b = 0; b < BATCH_SIZE; ++b) {
-      for (unsigned int i = 0; i < init_len; ++i) {
-        const auto token_id = static_cast<unsigned int>(encoded[i]);
-        input_sample[static_cast<size_t>(b) * MAX_SEQ_LEN + i] =
-          static_cast<float>(token_id);
-        ids_history[static_cast<size_t>(b) * MAX_SEQ_LEN + i] = token_id;
-      }
-    }
-
-    std::vector<std::pair<std::string, float *>> cache_inputs;
-    cache_inputs.reserve(static_cast<size_t>(NUM_LAYERS) * 2);
-    for (int i = 0; i < NUM_LAYERS; ++i) {
-      cache_inputs.emplace_back(
-        "cache_k_l" + std::to_string(i),
-        reinterpret_cast<float *>(kv_cache.getKeyCache(i).getData()));
-      cache_inputs.emplace_back(
-        "cache_v_l" + std::to_string(i),
-        reinterpret_cast<float *>(kv_cache.getValueCache(i).getData()));
-    }
-
-    std::sort(
-      cache_inputs.begin(), cache_inputs.end(),
-      [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
-
-    std::vector<float *> input;
-    input.reserve(1 + cache_inputs.size());
-    input.push_back(input_sample.data());
-    for (const auto &cache_input : cache_inputs)
-      input.push_back(cache_input.second);
-
-    std::vector<float *> label;
-    setKVCachePosition(0);
-    auto output = model->incremental_inference(BATCH_SIZE, input, label,
-                                               init_len, 0, init_len, false);
-    std::vector<float> logits(output[0], output[0] + NUM_VOCAB);
-    for (auto &out : output)
-      delete[] out;
-
-    return logits;
-  }
-
-  /**
-   * @brief Get generated output text
-   */
-  std::string getOutputText(int batch_idx = 0) const override {
-    return getOutput(batch_idx);
-  }
-
-  /**
-   * @brief Get whether the tiny Qwen3 model has completed run()
-   */
-  bool hasRun() const override { return causallm::CausalLM::hasRun(); }
-
-  /**
-   * @brief Read one token from the Qwen3 input/output history
-   */
-  unsigned int tokenAt(size_t idx) const override { return ids_history[idx]; }
-
-  /**
-   * @brief Generate ids from logits through Qwen3 decoding logic
-   */
-  std::vector<unsigned int>
-  generateFromLogits(float *logits, bool do_sample, float repetition_penalty,
-                     unsigned int *input_ids,
-                     unsigned int num_input_ids) override {
-    return generate(logits, do_sample, repetition_penalty, input_ids,
-                    num_input_ids);
-  }
-};
+    });
+}
 
 /**
  * @brief Files generated for one tiny Qwen3 embedding test invocation
@@ -351,6 +222,20 @@ causallm::json makeTinyQwen3Config() {
 }
 
 /**
+ * @brief Make the tiny Qwen3 flash-attention model config (32-token prefill)
+ *
+ * Identical to makeTinyQwen3Config() except max_position_embeddings=64 to
+ * accommodate the 32-token flash-attention input plus generation headroom.
+ * Must be paired with makeTinyNntrainerFlashConfig (init_seq_len=32,
+ * max_seq_len=64).
+ */
+causallm::json makeTinyQwen3FlashConfig() {
+  auto cfg = makeTinyQwen3Config();
+  cfg["max_position_embeddings"] = 64;
+  return cfg;
+}
+
+/**
  * @brief Make the tiny Qwen3 embedding model config
  */
 causallm::json makeTinyQwen3EmbeddingConfig() {
@@ -496,13 +381,48 @@ makeQwen3Case(const causallm_test::TinyCausalLMDataType &data_type) {
     "Qwen3_" + data_type.name,
     data_type,
     {"hello tok4", makeExpectedQwen3Logits(),
-     data_type.name == "FP32" ? 1e-4f : 1e-3f},
+     data_type.name == "FP32"       ? 1e-4f
+     : data_type.name == "Q40_FP16" ? 2e-3f
+                                    : 1e-3f},
     makeTinyQwen3Config,
     makeQwen3LayerDtypeMap,
     [](causallm::json &cfg, causallm::json &generation_cfg,
        causallm::json &nntr_cfg) {
       return std::make_unique<TinyQwen3CausalLM>(cfg, generation_cfg, nntr_cfg);
     },
+    [](causallm_test::TinyCausalLMRunner &runner) {
+      setupQwen3DeterministicWeights(static_cast<TinyQwen3CausalLM &>(runner));
+    },
+  };
+}
+
+/**
+ * @brief Make a Qwen3 flash-attention test case (32-token prefill)
+ *
+ * Uses makeTinyQwen3FlashConfig (max_position_embeddings=64) and
+ * makeTinyNntrainerFlashConfig (init_seq_len=32, max_seq_len=64).
+ * Only registered with CausalLMFlashModelTest which omits
+ * PromptProducesExpectedLogits — exact logit values for the flash fixture
+ * are verified by Qwen3FlashDifferentialTest instead.
+ */
+causallm_test::TinyCausalLMCase
+makeQwen3FlashCase(const causallm_test::TinyCausalLMDataType &data_type) {
+  return {
+    "Qwen3Flash_" + data_type.name,
+    data_type,
+    // Placeholder: PromptProducesExpectedLogits is not run for this suite.
+    {"hello tok4", std::vector<float>(32, 0.0f),
+     data_type.name == "Q40_FP16" ? 2e-3f : 1e-3f},
+    makeTinyQwen3FlashConfig,
+    makeQwen3LayerDtypeMap,
+    [](causallm::json &cfg, causallm::json &generation_cfg,
+       causallm::json &nntr_cfg) {
+      return std::make_unique<TinyQwen3CausalLM>(cfg, generation_cfg, nntr_cfg);
+    },
+    [](causallm_test::TinyCausalLMRunner &runner) {
+      setupQwen3DeterministicWeights(static_cast<TinyQwen3CausalLM &>(runner));
+    },
+    causallm_test::makeTinyNntrainerFlashConfig,
   };
 }
 
@@ -566,6 +486,85 @@ INSTANTIATE_TEST_SUITE_P(
   [](const ::testing::TestParamInfo<causallm_test::TinyCausalLMCase> &info) {
     return info.param.name;
   });
+
+#ifdef ENABLE_FP16
+INSTANTIATE_TEST_SUITE_P(
+  Qwen3Fp16, CausalLMTinyModelTest,
+  ::testing::Values(makeQwen3Case(causallm_test::makeTinyQ40Fp16DataType())),
+  [](const ::testing::TestParamInfo<causallm_test::TinyCausalLMCase> &info) {
+    return info.param.name;
+  });
+#endif
+
+/**
+ * @brief Parameterized fixture for 32-token flash-attention model cases
+ *
+ * Registers only the two tests that do not require hardcoded expected logits.
+ * Exact logit values for 32-token inputs are covered by
+ * Qwen3FlashDifferentialTest (compare against the qwen3_flash_tiny HF fixture).
+ *
+ * On Android+ENABLE_FP16 builds the 32-token prefill step triggers
+ * gemm_attention() (step_size=32 >= FLASH_MIN_PREFILL=32), exercising the
+ * flash attention code path that previously crashed in production.
+ */
+class CausalLMFlashModelTest
+  : public ::testing::TestWithParam<causallm_test::TinyCausalLMCase> {
+protected:
+  causallm_test::TinyCausalLMFiles makeFiles() const {
+    const auto *info = ::testing::UnitTest::GetInstance()->current_test_info();
+    std::string suite_name = "CausalLMFlashModelTest";
+    std::string test_name = "Unknown";
+
+    if (info != nullptr) {
+      suite_name = info->test_suite_name();
+      test_name = info->name();
+    }
+
+    return causallm_test::makeTinyCausalLMFiles(suite_name, test_name,
+                                                GetParam().name);
+  }
+};
+
+/**
+ * @brief Save/load round-trip preserves logits for 32-token flash-attention
+ * input
+ */
+TEST_P(CausalLMFlashModelTest, WeightRoundTripProducesSameLogits) {
+  const auto files = makeFiles();
+  causallm_test::expectWeightRoundTripProducesSameLogits(GetParam(), files);
+}
+
+/**
+ * @brief Greedy decoding selects the argmax logit (flash model)
+ */
+TEST_P(CausalLMFlashModelTest, GreedyGenerationSelectsArgmaxLogit) {
+  const auto files = makeFiles();
+  auto config =
+    causallm_test::makeTinyCausalLMConfig(GetParam(), files.tokenizer_path);
+  auto model =
+    GetParam().create_model(config.model, config.generation, config.nntrainer);
+
+  causallm_test::expectGreedyGenerationSelectsArgmax(*model);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+  Qwen3Flash, CausalLMFlashModelTest,
+  ::testing::Values(
+    makeQwen3FlashCase(causallm_test::makeTinyFp32DataType()),
+    makeQwen3FlashCase(causallm_test::makeTinyQ40Fp32DataType())),
+  [](const ::testing::TestParamInfo<causallm_test::TinyCausalLMCase> &info) {
+    return info.param.name;
+  });
+
+#ifdef ENABLE_FP16
+INSTANTIATE_TEST_SUITE_P(
+  Qwen3FlashFp16, CausalLMFlashModelTest,
+  ::testing::Values(
+    makeQwen3FlashCase(causallm_test::makeTinyQ40Fp16DataType())),
+  [](const ::testing::TestParamInfo<causallm_test::TinyCausalLMCase> &info) {
+    return info.param.name;
+  });
+#endif
 
 /**
  * @brief Test that a tiny Qwen3 embedding model can save/load and encode

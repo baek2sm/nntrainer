@@ -35,14 +35,15 @@ void EmbeddingLayer::finalize(nntrainer::InitLayerContext &context) {
   NNTR_THROW_IF(context.getNumInputs() != 1, std::invalid_argument)
     << "Embedding layer takes only one input";
 
+  // Token IDs are integers — embedding caller is expected to provide FP32
+  // input (e.g., via an explicit input layer with input_dtype=FP32). The
+  // historical "must be FP32" check is removed so FP16-activation models
+  // still construct, but the actual lookup expects integer-valued data.
+
   const nntrainer::TensorDim &input_dim =
     context.getInputDimensions()[SINGLE_INOUT_IDX];
   NNTR_THROW_IF(input_dim.channel() != 1, std::invalid_argument)
     << "Embedding layer takes only one for channel size";
-
-  NNTR_THROW_IF(input_dim.getDataType() != nntrainer::TensorDim::DataType::FP32,
-                std::invalid_argument)
-    << "Embedding layer takes only FP32 input data";
 
   auto &weight_regularizer =
     std::get<nntrainer::props::WeightRegularizer>(*layer_impl_props);
@@ -130,17 +131,43 @@ void EmbeddingLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
       if (weight.getDataType() == nntrainer::TensorDim::DataType::Q6_K) {
         ///@note this should be replaced with quantizer operation
         int num_blocks_per_row = (weight.width() + 256 - 1) / 256;
-        nntrainer::dequantize_row_q6_K(
-          (void *)((char *)weight.getData<uint8_t>() +
-                   (210 * num_blocks_per_row) * embed_idx),
-          out_tensor.getData(), out_dim);
+        const void *src = (void *)((char *)weight.getData<uint8_t>() +
+                                   (210 * num_blocks_per_row) * embed_idx);
+        if (out_tensor.getDataType() == nntrainer::TensorDim::DataType::FP32) {
+          nntrainer::dequantize_row_q6_K(src, out_tensor.getData(), out_dim);
+        } else {
+          // dequantize_row_* writes FP32; under a non-FP32 (e.g. FP16)
+          // activation, writing straight into out_tensor corrupts the embedding
+          // (and overruns the buffer by 2x). Dequantize into an FP32 temp then
+          // cast into the activation dtype.
+          nntrainer::TensorDim fp32_dim(
+            {1, 1, 1, out_dim}, nntrainer::TensorDim::TensorType(
+                                  out_tensor_dim.getFormat(),
+                                  nntrainer::TensorDim::DataType::FP32));
+          nntrainer::Tensor tmp(fp32_dim, true);
+          nntrainer::dequantize_row_q6_K(src, tmp.getData(), out_dim);
+          out_tensor.copyData(tmp);
+        }
       } else if (weight.getDataType() == nntrainer::TensorDim::DataType::Q4_0) {
         ///@note this should be replaced with quantizer operation
         int num_blocks_per_row = (weight.width() + 32 - 1) / 32;
-        nntrainer::dequantize_row_q4_0(
-          (void *)((char *)weight.getData<uint8_t>() +
-                   (18 * num_blocks_per_row) * embed_idx),
-          out_tensor.getData(), out_dim);
+        const void *src = (void *)((char *)weight.getData<uint8_t>() +
+                                   (18 * num_blocks_per_row) * embed_idx);
+        if (out_tensor.getDataType() == nntrainer::TensorDim::DataType::FP32) {
+          nntrainer::dequantize_row_q4_0(src, out_tensor.getData(), out_dim);
+        } else {
+          // dequantize_row_* writes FP32; under a non-FP32 (e.g. FP16)
+          // activation, writing straight into out_tensor corrupts the embedding
+          // (and overruns the buffer by 2x). Dequantize into an FP32 temp then
+          // cast into the activation dtype.
+          nntrainer::TensorDim fp32_dim(
+            {1, 1, 1, out_dim}, nntrainer::TensorDim::TensorType(
+                                  out_tensor_dim.getFormat(),
+                                  nntrainer::TensorDim::DataType::FP32));
+          nntrainer::Tensor tmp(fp32_dim, true);
+          nntrainer::dequantize_row_q4_0(src, tmp.getData(), out_dim);
+          out_tensor.copyData(tmp);
+        }
       } else {
         out_tensor.copyData(cur_weight);
       }
