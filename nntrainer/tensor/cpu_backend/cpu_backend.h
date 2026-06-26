@@ -1212,6 +1212,24 @@ extern void dequantize_row_q4_K(const void *x, float *y, int64_t k);
 extern void dequantize_row_q4_0(const void *x, float *y, int64_t k);
 
 /**
+ * @brief quantize a row of float data to q8_0
+ *
+ * @param src input float data
+ * @param dst output q8_0 data
+ * @param k number of elements in src
+ */
+extern void quantize_row_q8_0(const float *src, void *dst, int64_t k);
+
+/**
+ * @brief dequantize row of q8_0 data to float
+ *
+ * @param x input to be dequantized from q8_0 to float
+ * @param y dequantized data output
+ * @param k number of elements in x
+ */
+extern void dequantize_row_q8_0(const void *x, float *y, int64_t k);
+
+/**
  * @brief dequantize row of q6_K data to float
  *
  * @param x input to be dequantized from q6_K to float

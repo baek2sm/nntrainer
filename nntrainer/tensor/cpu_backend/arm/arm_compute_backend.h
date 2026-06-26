@@ -1400,6 +1400,14 @@ void quantize_row_q8_0(const T *__restrict src, void *__restrict dst,
                        int64_t k);
 
 /**
+ * @brief Quantize a row of float data to q8_0 (non-template, float overload).
+ * @note Concrete float overload preferred over the template by overload
+ * resolution; defined (always-compiled) in arm_compute_backend.cpp. Mirrors
+ * the concrete dequantize_row_q4_0 float overload pattern.
+ */
+void quantize_row_q8_0(const float *src, void *dst, int64_t k);
+
+/**
  * @brief Quantize T to q8_0 Quantization format
  *
  * @param src input src to be quantized
@@ -1422,6 +1430,13 @@ size_t quantize_q8_0(const T *src, void *dst, int64_t nrow, int64_t n_per_row,
  */
 template <typename T = float>
 void dequantize_row_q8_0(const void *x_raw, T *y, int64_t k);
+
+/**
+ * @brief Dequantize a row of q8_0 data to float (non-template, float overload).
+ * @note Concrete float overload preferred over the template; defined
+ * (always-compiled) in arm_compute_backend.cpp.
+ */
+void dequantize_row_q8_0(const void *x_raw, float *y, int64_t k);
 
 /**
  * @brief rms normalization computation w.r.t. width in H*W matrix input
