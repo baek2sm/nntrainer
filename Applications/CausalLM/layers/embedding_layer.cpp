@@ -18,6 +18,7 @@
 #include <nntrainer_error.h>
 #include <nntrainer_log.h>
 #include <node_exporter.h>
+#include <q8_0_tensor.h>
 #include <thread_manager.h>
 #include <util_func.h>
 
@@ -133,7 +134,58 @@ void EmbeddingLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
       nntrainer::Tensor out_tensor =
         batchsliced_hidden.getSharedDataTensor(out_tensor_dim, out_dim * (i));
 
-      if (weight.getDataType() == nntrainer::TensorDim::DataType::Q6_K) {
+      // Q8_0 activation: the output residual stream is Q8_0. Dequant the weight
+      // row into an FP32 scratch, apply scale, then requant into out_tensor.
+      if (out_tensor.getDataType() == nntrainer::TensorDim::DataType::Q8_0) {
+        nntrainer::ComputeOps *o = nntrainer::getComputeOps();
+        nntrainer::Tensor fp32_row(
+          nntrainer::TensorDim({1, 1, 1, out_dim}, {nntrainer::Tformat::NCHW,
+                                                    nntrainer::TensorDim::DataType::FP32}),
+          true);
+        float *fp32_data = fp32_row.getData<float>();
+
+        if (weight.getDataType() == nntrainer::TensorDim::DataType::Q6_K) {
+          int num_blocks_per_row = (weight.width() + 256 - 1) / 256;
+          nntrainer::dequantize_row_q6_K(
+            (void *)((char *)weight.getData<uint8_t>() +
+                     (210 * num_blocks_per_row) * embed_idx),
+            fp32_data, out_dim);
+        } else if (weight.getDataType() ==
+                   nntrainer::TensorDim::DataType::Q4_0) {
+          int num_blocks_per_row = (weight.width() + 32 - 1) / 32;
+          nntrainer::dequantize_row_q4_0(
+            (void *)((char *)weight.getData<uint8_t>() +
+                     (18 * num_blocks_per_row) * embed_idx),
+            fp32_data, out_dim);
+        } else if (weight.getDataType() ==
+                   nntrainer::TensorDim::DataType::Q8_0) {
+          // Q8_0 weight x Q8_0 activation: dequant the Q8_0 weight row to
+          // FP32, then requant into the Q8_0 residual (34 bytes per 32-elem
+          // block).
+          constexpr int Q8_0_BLOCK_SIZE = 32;
+          constexpr int Q8_0_BYTES_PER_BLOCK = 34;
+          int num_blocks_per_row =
+            (weight.width() + Q8_0_BLOCK_SIZE - 1) / Q8_0_BLOCK_SIZE;
+          nntrainer::dequantize_row_q8_0(
+            (void *)((char *)weight.getData<uint8_t>() +
+                     (Q8_0_BYTES_PER_BLOCK * num_blocks_per_row) * embed_idx),
+            fp32_data, out_dim);
+        } else {
+          fp32_row.copyData(cur_weight);
+        }
+
+        if (scale != 1.0f) {
+          fp32_row.multiply_i(scale);
+        }
+
+        NNTR_THROW_IF(out_dim % QK8_0 != 0, std::invalid_argument)
+          << "Embedding Q8_0 output requires width divisible by 32";
+        size_t row_q8_bytes =
+          Q8_0_SIZE * (out_dim / QK8_0);
+        o->quantize_row_q8_0(fp32_data,
+                             (uint8_t *)out_tensor.getData() + 0 * row_q8_bytes,
+                             (int64_t)out_dim);
+      } else if (weight.getDataType() == nntrainer::TensorDim::DataType::Q6_K) {
         ///@note this should be replaced with quantizer operation
         int num_blocks_per_row = (weight.width() + 256 - 1) / 256;
         nntrainer::dequantize_row_q6_K(
@@ -165,7 +217,8 @@ void EmbeddingLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
         out_tensor.copyData(cur_weight);
       }
 
-      if (scale != 1.0f) {
+      if (scale != 1.0f && out_tensor.getDataType() !=
+                             nntrainer::TensorDim::DataType::Q8_0) {
         out_tensor.multiply_i(scale);
       }
     });

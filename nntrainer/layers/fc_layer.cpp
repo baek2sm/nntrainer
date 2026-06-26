@@ -22,12 +22,14 @@
  */
 
 #include <common_properties.h>
+#include <cpu_backend.h>
 #include <fc_layer.h>
 #include <layer_context.h>
 #include <lazy_tensor.h>
 #include <nntrainer_error.h>
 #include <nntrainer_log.h>
 #include <node_exporter.h>
+#include <q8_0_tensor.h>
 #include <util_func.h>
 
 #include <iostream>
@@ -214,10 +216,101 @@ void FullyConnectedLayer::setBatch(nntrainer::RunLayerContext &context,
   }
 }
 
+namespace {
+/// Q8_0 activation helper: create an *empty* FP32 tensor with the same element
+/// shape (batch/channel/height/width) and format as the source. This replaces
+/// `src.clone(FP32)`, which is invalid for a Q8_0 source — clone copies by
+/// bytes and Q8_0's byte size (Q8_0_SIZE * H*W / QK8_0) differs from FP32's
+/// (4 * H*W), so clone throws "size must match". The scratch is filled later
+/// by dequant_q8_0_to_fp32 / dot, so it only needs to be allocated (ZEROS).
+Tensor make_fp32_like(const Tensor &src) {
+  const TensorDim &d = src.getDim();
+  return Tensor(TensorDim(d.batch(), d.channel(), d.height(), d.width(),
+                          TensorDim::TensorType(d.getFormat(),
+                                                Tdatatype::FP32)),
+                true);
+}
+
+/// Q8_0 activation helper: dequantize a Q8_0 activation tensor row-wise into an
+/// FP32 scratch (same shape). The caller must ensure the input is Q8_0 and
+/// width is divisible by QK8_0.
+void dequant_q8_0_to_fp32(const Tensor &q8, Tensor &fp32) {
+  ComputeOps *o = getComputeOps();
+  unsigned int H = q8.getDim().height();
+  unsigned int W = q8.getDim().width();
+  size_t row_q8_bytes = Q8_0_SIZE * (W / QK8_0);
+  const uint8_t *q8_data = (const uint8_t *)q8.getData();
+  float *fp32_data = fp32.getData<float>();
+  for (unsigned int r = 0; r < H; ++r) {
+    o->dequantize_row_q8_0(q8_data + r * row_q8_bytes, fp32_data + r * W,
+                           (int64_t)W);
+  }
+}
+
+/// Q8_0 activation helper: requantize an FP32 result row-wise into a Q8_0
+/// tensor (same shape). Output width must be divisible by QK8_0.
+void requant_fp32_to_q8_0(const Tensor &fp32, Tensor &q8) {
+  ComputeOps *o = getComputeOps();
+  unsigned int H = q8.getDim().height();
+  unsigned int W = q8.getDim().width();
+  size_t row_q8_bytes = Q8_0_SIZE * (W / QK8_0);
+  const float *fp32_data = fp32.getData<float>();
+  uint8_t *q8_data = (uint8_t *)q8.getData();
+  for (unsigned int r = 0; r < H; ++r) {
+    o->quantize_row_q8_0(fp32_data + r * W, q8_data + r * row_q8_bytes,
+                         (int64_t)W);
+  }
+}
+} // namespace
+
 void FullyConnectedLayer::forwarding(RunLayerContext &context, bool training) {
   Tensor &weight = context.getWeight(weight_idx[FCParams::weight]);
   Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);
   Tensor &input_ = context.getInput(SINGLE_INOUT_IDX);
+
+  bool act_is_q8_0 = hidden_.getDataType() == Tdatatype::Q8_0;
+
+  if (act_is_q8_0) {
+    // Q8_0 activation: dequant input -> FP32, dot in FP32 into an FP32 scratch,
+    // add bias/lora in FP32, then requant the result back into the Q8_0 hidden_.
+    Tensor input_fp32 = make_fp32_like(input_);
+    dequant_q8_0_to_fp32(input_, input_fp32);
+
+    Tensor out_fp32 = make_fp32_like(hidden_);
+    if (quantizer != nullptr) {
+      Tensor weight_ = quantizer->dequantize(weight, Tdatatype::FP32);
+      input_fp32.dot(weight_, out_fp32, false, false);
+    } else {
+      input_fp32.dot(weight, out_fp32, false, false);
+    }
+
+    if (!std::get<props::LoraRank>(fc_props).empty()) {
+      Tensor &loraA = context.getWeight(lora_idx[LORAParams::loraA]);
+      Tensor &loraB = context.getWeight(lora_idx[LORAParams::loraB]);
+      Tensor &hidden_tmp_lora =
+        context.getTensor(lora_idx[LORAParams::loraTmp]);
+      Tensor &hidden_out_lora =
+        context.getTensor(lora_idx[LORAParams::loraOut]);
+
+      input_fp32.dot(loraA, hidden_tmp_lora, false, false);
+      hidden_tmp_lora.dot(loraB, hidden_out_lora, false, false);
+      hidden_out_lora.multiply_i(lora_scaling);
+      out_fp32.add_i(hidden_out_lora);
+    }
+
+    if (auto &disable_bias = std::get<props::DisableBias>(*layer_impl_props);
+        disable_bias.empty() || disable_bias.get() == false) {
+      Tensor &bias = context.getWeight(weight_idx[FCParams::bias]);
+      // bias is FP32 for quantized weights; add directly in FP32.
+      Tensor bias_fp32 = bias.getDataType() == Tdatatype::FP32
+                           ? bias
+                           : bias.clone(Tdatatype::FP32);
+      out_fp32.add_i(bias_fp32);
+    }
+
+    requant_fp32_to_q8_0(out_fp32, hidden_);
+    return;
+  }
 
   ///@todo This dequantization action should be moved to tensor.dot()
   if (quantizer != nullptr) {
@@ -290,6 +383,42 @@ void FullyConnectedLayer::incremental_forwarding(RunLayerContext &context,
       input_step_dim, b * hidden_dim.getFeatureLen(), true);
     Tensor hidden_step = hidden_.getSharedDataTensor(
       hidden_step_dim, b * hidden_dim.getFeatureLen(), true);
+
+    bool act_is_q8_0 = hidden_step.getDataType() == Tdatatype::Q8_0;
+
+    if (act_is_q8_0) {
+      // Q8_0 activation path: dequant step -> FP32, dot in FP32, bias in FP32,
+      // requant -> Q8_0 hidden_step.
+      Tensor input_fp32_step = make_fp32_like(input_step);
+      dequant_q8_0_to_fp32(input_step, input_fp32_step);
+
+      Tensor out_fp32_step = make_fp32_like(hidden_step);
+      if (quantizer != nullptr) {
+        Tensor weight_ = quantizer->dequantize(weight, Tdatatype::FP32);
+        input_fp32_step.dot(weight_, out_fp32_step, false, false);
+      } else {
+        input_fp32_step.dot(weight, out_fp32_step, false, false);
+      }
+
+      if (!std::get<props::LoraRank>(fc_props).empty()) {
+        input_fp32_step.dot(loraA, hidden_tmp_lora, false, false);
+        hidden_tmp_lora.dot(loraB, hidden_out_lora, false, false);
+        hidden_out_lora.multiply_i(lora_scaling);
+        out_fp32_step.add_i(hidden_out_lora);
+      }
+
+      if (auto &disable_bias = std::get<props::DisableBias>(*layer_impl_props);
+          disable_bias.empty() || disable_bias.get() == false) {
+        Tensor &bias = context.getWeight(weight_idx[FCParams::bias]);
+        Tensor bias_fp32 = bias.getDataType() == Tdatatype::FP32
+                             ? bias
+                             : bias.clone(Tdatatype::FP32);
+        out_fp32_step.add_i(bias_fp32);
+      }
+
+      requant_fp32_to_q8_0(out_fp32_step, hidden_step);
+      continue;
+    }
 
     input_step.dot(weight, hidden_step, false, false);
 
