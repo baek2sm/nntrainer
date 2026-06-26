@@ -191,6 +191,12 @@ public:
   void dequantize_row_q4_0(const void *x, float *y, int64_t k) override {
     nntrainer::dequantize_row_q4_0(x, y, k);
   }
+  void quantize_row_q8_0(const float *src, void *dst, int64_t k) override {
+    nntrainer::quantize_row_q8_0(src, dst, k);
+  }
+  void dequantize_row_q8_0(const void *x, float *y, int64_t k) override {
+    nntrainer::dequantize_row_q8_0(x, y, k);
+  }
   void repack_q4_0(void *dst, void *src, size_t ds, unsigned int M,
                    unsigned int N) override {
     nntrainer::repack_q4_0(dst, src, ds, M, N);

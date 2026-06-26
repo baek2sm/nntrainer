@@ -216,6 +216,12 @@ size_t ComputeOps::quantize_q4_0(const float *, void *, int64_t, int64_t,
 void ComputeOps::dequantize_row_q4_0(const void *, float *, int64_t) {
   NI(dequantize_row_q4_0);
 }
+void ComputeOps::quantize_row_q8_0(const float *, void *, int64_t) {
+  NI(quantize_row_q8_0);
+}
+void ComputeOps::dequantize_row_q8_0(const void *, float *, int64_t) {
+  NI(dequantize_row_q8_0);
+}
 void ComputeOps::repack_q4_0(void *, void *, size_t, unsigned int,
                              unsigned int) {
   NI(repack_q4_0);

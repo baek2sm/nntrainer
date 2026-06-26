@@ -180,6 +180,8 @@ public:
   virtual void dequantize_row_q4_0(const void *x, float *y, int64_t k);
   virtual void repack_q4_0(void *dst, void *src, size_t data_size,
                            const unsigned int M, const unsigned int N);
+  virtual void quantize_row_q8_0(const float *src, void *dst, int64_t k);
+  virtual void dequantize_row_q8_0(const void *x, float *y, int64_t k);
 
   // ===========================================================================
   // Clamp

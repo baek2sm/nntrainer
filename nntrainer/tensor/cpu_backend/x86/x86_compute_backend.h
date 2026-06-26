@@ -1148,6 +1148,16 @@ void quantize_row_q8_0(const T *__restrict src, void *__restrict dst,
                        int64_t k);
 
 /**
+ * @brief Quantize a row of float data to q8_0 (non-template, float overload).
+ * @note The template declaration above is kept for the FP16 path. This
+ * non-template float overload is the one actually defined (always-compiled,
+ * fp16-independent) so that overload resolution prefers it over the template
+ * — matching how dequantize_row_q4_0 declares a concrete float overload
+ * alongside its callers. See x86_compute_backend.cpp for the definition.
+ */
+void quantize_row_q8_0(const float *src, void *dst, int64_t k);
+
+/**
  * @brief Quantize T to q8_0 Quantization format
  *
  * @param src input src to be quantized
@@ -1170,6 +1180,14 @@ size_t quantize_q8_0(const T *src, void *dst, int64_t nrow, int64_t n_per_row,
  */
 template <typename T = float>
 void dequantize_row_q8_0(const void *x_raw, T *y, int64_t k);
+
+/**
+ * @brief Dequantize a row of q8_0 data to float (non-template, float overload).
+ * @note See quantize_row_q8_0(float*) above: concrete float overload so that
+ * overload resolution prefers this (defined, always-compiled) function over
+ * the never-instantiated template. Defined in x86_compute_backend.cpp.
+ */
+void dequantize_row_q8_0(const void *x_raw, float *y, int64_t k);
 
 /**
  * @brief Multihead softmax, exp(x_i) / sum(exp(x_i)), inplace version
