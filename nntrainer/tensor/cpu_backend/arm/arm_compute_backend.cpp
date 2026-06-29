@@ -563,6 +563,84 @@ void depthwise_conv2d_fp16(const _FP16 *input, const float *kernel,
                            unsigned int stride_h, unsigned int stride_w,
                            unsigned int pad_top, unsigned int pad_left,
                            unsigned int dilation_h, unsigned int dilation_w) {
+#ifdef USE_NEON
+  if (kh == 3 && kw == 3 && dilation_h == 1 && dilation_w == 1 && stride_w == 1) {
+    auto &tm = ThreadManager::Global();
+    tm.parallel_for(0, (size_t)batch * channels, [&](size_t bc) {
+      const unsigned int c = (unsigned int)(bc % channels);
+      const _FP16 *inc = input + bc * in_h * in_w;
+      const float *fc = kernel + (size_t)c * 9;
+      _FP16 *outc = output + bc * out_h * out_w;
+
+      float32x4_t k00 = vdupq_n_f32(fc[0]);
+      float32x4_t k01 = vdupq_n_f32(fc[1]);
+      float32x4_t k02 = vdupq_n_f32(fc[2]);
+      float32x4_t k10 = vdupq_n_f32(fc[3]);
+      float32x4_t k11 = vdupq_n_f32(fc[4]);
+      float32x4_t k12 = vdupq_n_f32(fc[5]);
+      float32x4_t k20 = vdupq_n_f32(fc[6]);
+      float32x4_t k21 = vdupq_n_f32(fc[7]);
+      float32x4_t k22 = vdupq_n_f32(fc[8]);
+
+      for (unsigned int oh = 0; oh < out_h; ++oh) {
+        int ih0 = (int)oh * (int)stride_h - (int)pad_top;
+        unsigned int ow = 0;
+        
+        for (; ow + 3 < out_w; ow += 4) {
+          int iw0 = (int)ow - (int)pad_left;
+          float32x4_t acc = vdupq_n_f32(0.0f);
+          
+          for (int ki = 0; ki < 3; ++ki) {
+            int ih = ih0 + ki;
+            if (ih >= 0 && ih < (int)in_h) {
+              float32x4_t k0 = (ki == 0) ? k00 : (ki == 1) ? k10 : k20;
+              float32x4_t k1 = (ki == 0) ? k01 : (ki == 1) ? k11 : k21;
+              float32x4_t k2 = (ki == 0) ? k02 : (ki == 1) ? k12 : k22;
+              
+              if (iw0 >= 0 && iw0 + 7 < (int)in_w) {
+                const __fp16 *p = (const __fp16 *)(inc + ih * in_w + iw0);
+                float16x8_t load0 = vld1q_f16(p);
+                float16x4_t h0 = vget_low_f16(load0);
+                float16x4_t h1 = vget_low_f16(vextq_f16(load0, load0, 1));
+                float16x4_t h2 = vget_low_f16(vextq_f16(load0, load0, 2));
+                acc = vmlaq_f32(acc, vcvt_f32_f16(h0), k0);
+                acc = vmlaq_f32(acc, vcvt_f32_f16(h1), k1);
+                acc = vmlaq_f32(acc, vcvt_f32_f16(h2), k2);
+              } else {
+                float acc_arr[4] = {0};
+                for (unsigned int v = 0; v < 4; ++v) {
+                  int iw = iw0 + v;
+                  if (iw >= 0 && iw < (int)in_w) acc_arr[v] += (float)inc[ih * in_w + iw] * fc[ki*3];
+                  if (iw+1 >= 0 && iw+1 < (int)in_w) acc_arr[v] += (float)inc[ih * in_w + iw + 1] * fc[ki*3+1];
+                  if (iw+2 >= 0 && iw+2 < (int)in_w) acc_arr[v] += (float)inc[ih * in_w + iw + 2] * fc[ki*3+2];
+                }
+                acc = vaddq_f32(acc, vld1q_f32(acc_arr));
+              }
+            }
+          }
+          
+          vst1_f16((__fp16*)&outc[oh * out_w + ow], vcvt_f16_f32(acc));
+        }
+        
+        for (; ow < out_w; ++ow) {
+          int iw0 = (int)ow - (int)pad_left;
+          float acc = 0.0f;
+          for (unsigned int ki = 0; ki < 3; ++ki) {
+            int ih = ih0 + (int)ki;
+            if (ih < 0 || ih >= (int)in_h) continue;
+            for (unsigned int kj = 0; kj < 3; ++kj) {
+              int iw = iw0 + (int)kj;
+              if (iw < 0 || iw >= (int)in_w) continue;
+              acc += static_cast<float>(inc[ih * in_w + iw]) * fc[ki * 3 + kj];
+            }
+          }
+          outc[oh * out_w + ow] = static_cast<_FP16>(acc);
+        }
+      }
+    });
+    return;
+  }
+#endif
   // TODO: NEON fp16 specialization (the scalar fallback already accumulates in
   // float for parity and is channel-parallel).
   __fallback_depthwise_conv2d_fp16(

@@ -314,14 +314,18 @@ def check_conv_filter_eligibility(name: str, shape: list,
 
     CRS = in_ch * kh * kw
 
-    # Q4_0 block alignment: both K and N dimensions must be divisible by 32
-    reasons = []
-    if CRS % QK4_0 != 0:
-        reasons.append(f"CRS={CRS} not div32")
-    if out_ch % QK4_0 != 0:
-        reasons.append(f"out_ch={out_ch} not div32")
-    if reasons:
-        return False, ", ".join(reasons)
+    # Special handling for conv0 (3 input channels, 3x3 kernel -> CRS=27)
+    if CRS == 27 and out_ch % QK4_0 == 0:
+        pass # Will pad to 32 later
+    else:
+        # Q4_0 block alignment: both K and N dimensions must be divisible by 32
+        reasons = []
+        if CRS % QK4_0 != 0:
+            reasons.append(f"CRS={CRS} not div32")
+        if out_ch % QK4_0 != 0:
+            reasons.append(f"out_ch={out_ch} not div32")
+        if reasons:
+            return False, ", ".join(reasons)
 
     # Repack alignment: out_ch (N) must be divisible by interleave
     if out_ch % interleave != 0:
@@ -350,18 +354,23 @@ def quantize_filter(raw: bytes, shape: list, interleave: int):
     """
     out_ch, in_ch, kh, kw = shape
     CRS = in_ch * kh * kw
-
     w = np.frombuffer(raw, dtype=np.float32).reshape(shape)
 
     # Flatten to [N=out_ch, K=CRS]: C-contiguous reshape preserves
     # (in_ch, kh, kw) -> K ordering = ic*kh*kw + ki*kw + kj (im2col match)
-    w2d = w.reshape(out_ch, CRS)  # [N, K]
+    w2d = w.reshape(out_ch, CRS)
+    
+    # Pad conv0 CRS from 27 to 32
+    if CRS == 27 and out_ch % QK4_0 == 0:
+        w2d = np.pad(w2d, ((0, 0), (0, 32 - 27)), mode='constant', constant_values=0)
+        CRS = 32
 
     # Step 1: quantize to plain Q4_0 blocks
-    raw_q40 = quantize_q4_0(w2d)
+    # w2d is [out_ch, CRS]  (N x K)
+    raw_q4_0 = quantize_q4_0(w2d)
 
     # Step 2: repack to q4_0x{interleave}
-    repacked = repack_q4_0(raw_q40, out_ch, CRS, interleave)
+    repacked = repack_q4_0(raw_q4_0, out_ch, CRS, interleave)
 
     # Verify size
     expected_bytes = (out_ch * CRS // QK4_0) * Q4_0_BLOCK_BYTES

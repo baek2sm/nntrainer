@@ -196,7 +196,7 @@ static void im2col(const Tensor &in, const TensorDim &kdim,
                    const std::array<unsigned int, 4> &padding,
                    const std::array<props::Stride, CONV2D_DIM> &mstride,
                    const std::array<props::Dilation, CONV2D_DIM> &dilation,
-                   Tensor &out) {
+                   Tensor &out, unsigned int owidth_target = 0) {
   /// for channel last mode, this is deprecated for now, leaving here on
   /// purpose.
   /** @code
@@ -264,8 +264,9 @@ static void im2col(const Tensor &in, const TensorDim &kdim,
   unsigned int out_height = (height - eff_k_height) / mstride[0] + 1;
   unsigned int out_width = (width - eff_k_width) / mstride[1] + 1;
 
+  unsigned int owidth = owidth_target == 0 ? in.channel() * k_height * k_width : owidth_target;
   out.reshape(
-    TensorDim({out_height * out_width, in.channel() * k_height * k_width},
+    TensorDim({out_height * out_width, owidth},
               in.getTensorType()));
   // float *out_data = out.getData();
 
@@ -274,7 +275,6 @@ static void im2col(const Tensor &in, const TensorDim &kdim,
 
     /// get a patch, size of kernel
     /// hs is height_strided, ws is width_strided
-    unsigned int owidth = out.width();
     const int hstride = mstride[0];
 
     /// Raw contiguous-NCHW input base + inner strides. `in` is a (batch-sliced)
@@ -436,10 +436,11 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
                             kernel_size[0], kernel_size[1], in_t_type);
   // A quantized (groups==1) conv stores its filter as a [CRS, out_ch] matmul
   // weight (CRS = in_ch*kh*kw), consumed by the quantized GEMM after im2col.
+  unsigned int CRS = in_dim.channel() * kernel_size[0].get() * kernel_size[1].get();
+  unsigned int CRS_padded = ((CRS - 1) / 32 + 1) * 32;
   TensorDim kernel_dim = quant_matmul_filter
                            ? TensorDim(1, 1,
-                                       in_dim.channel() * kernel_size[0].get() *
-                                         kernel_size[1].get(),
+                                       CRS_padded,
                                        filter_size, in_t_type)
                            : real_kernel_dim;
 
@@ -512,8 +513,9 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
     // that never materialize a col buffer: the 1x1 path (im2col is an identity
     // handled by an input transpose) and, where the fused backend op exists,
     // the non-1x1 path (gather is fused into the q8_0 activation packing).
-    if (!(quant_matmul_filter && (is_1x1_s1 || NNTR_HAS_Q4_0_INDIRECT_CONV))) {
-      TensorDim col_dim(in_dim.batch(), 1, real_kernel_dim.getFeatureLen(),
+    if (!(quant_matmul_filter && (is_1x1_s1 || (CRS == CRS_padded && NNTR_HAS_Q4_0_INDIRECT_CONV)))) {
+      unsigned int CRS_padded = ((real_kernel_dim.getFeatureLen() - 1) / 32 + 1) * 32;
+      TensorDim col_dim(in_dim.batch(), 1, CRS_padded,
                         owoh, scratch_type);
       wt_idx[ConvParams::im2col_scratch] =
         context.requestTensor(col_dim, "im2col", Initializer::NONE, false,
@@ -618,8 +620,10 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     // Zero the column buffer once up front (im2col skips padding; the GEMM
     // output is fully overwritten so it needs no zeroing). Each batch element
     // writes a disjoint batch-slice, so this stays correct under ParallelBatch.
+    unsigned int CRS = in_dim.channel() * kernel_size[0].get() * kernel_size[1].get();
+    unsigned int CRS_padded = ((CRS - 1) / 32 + 1) * 32;
     const bool use_im2col_scratch =
-      !(weight_is_quant && (is_1x1_s1 || NNTR_HAS_Q4_0_INDIRECT_CONV));
+      !(weight_is_quant && (is_1x1_s1 || (CRS == CRS_padded && NNTR_HAS_Q4_0_INDIRECT_CONV)));
     Tensor *col_scratch =
       use_im2col_scratch
         ? &context.getTensor(wt_idx[ConvParams::im2col_scratch])
@@ -653,7 +657,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             in_sub.reshape({in_dim.channel(), owoh});
             Tensor act = in_sub.transpose("0:2:1");
             act.dot(filter_kernel, tmp, false, false);
-          } else if (NNTR_HAS_Q4_0_INDIRECT_CONV) {
+          } else if (NNTR_HAS_Q4_0_INDIRECT_CONV && CRS == CRS_padded) {
             // Fused im2col gather: the FP32 col buffer is never materialized.
             // The gather runs inside the GEMM's q8_0 activation packing,
             // directly from the NCHW input, producing rows byte-identical to
@@ -685,7 +689,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             // and makes the GEMM emit CRS rows into the owoh-row `tmp`,
             // overflowing it whenever CRS > owoh (deep convs) -> heap
             // corruption.
-            im2col(in_sub, kdim, padding, stride, dilation, col);
+            im2col(in_sub, kdim, padding, stride, dilation, col, CRS_padded);
             col.dot(filter_kernel, tmp, false, false);
           }
           // [OH*OW, out_ch] -> [out_ch, OH*OW] written straight into the
