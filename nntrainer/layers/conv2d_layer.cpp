@@ -31,6 +31,7 @@
 #include <node_exporter.h>
 #include <profiler.h>
 #include <tensor_dim.h>
+#include <q8_0_tensor.h>
 #include <thread>
 #include <thread_manager.h>
 #include <util_func.h>
@@ -107,6 +108,53 @@ static inline void quantize_row_q8_0_stride(const _FP16 *src, int stride, void *
       y[i].qs[j] = std::roundf(x0);
     }
   }
+}
+
+static inline void transpose_quantize_q8_0(const _FP16 *src, int in_ch, int owoh, void *vy) {
+  struct local_block_q8_0 {
+    uint16_t d;
+    int8_t qs[32];
+  };
+
+  local_block_q8_0 *y = (local_block_q8_0 *)vy;
+  const int qk = 32;
+  const int nb = in_ch / qk;
+
+  auto &tm = ThreadManager::Global();
+  const unsigned int chunk_size = 1024;
+  const size_t loops = (owoh + chunk_size - 1) / chunk_size;
+
+  tm.parallel_for(0, loops, [=](size_t idx) {
+    unsigned int r_start = idx * chunk_size;
+    unsigned int r_end = std::min(r_start + chunk_size, (unsigned int)owoh);
+
+    for (unsigned int r = r_start; r < r_end; ++r) {
+      for (int b = 0; b < nb; ++b) {
+        float amax = 0.0f;
+        for (int j = 0; j < qk; ++j) {
+          int c = b * qk + j;
+          float val = std::abs(static_cast<float>(src[c * owoh + r]));
+          if (val > amax) {
+            amax = val;
+          }
+        }
+
+        const float d = amax / ((1 << 7) - 1);
+        const float id = d ? 1.0f / d : 0.0f;
+
+        _FP16 d_half = static_cast<_FP16>(d);
+        uint16_t d_u16;
+        std::memcpy(&d_u16, &d_half, 2);
+        y[r * nb + b].d = d_u16;
+
+        for (int j = 0; j < qk; ++j) {
+          int c = b * qk + j;
+          float x0 = static_cast<float>(src[c * owoh + r]) * id;
+          y[r * nb + b].qs[j] = std::roundf(x0);
+        }
+      }
+    }
+  });
 }
 #endif
 
@@ -549,7 +597,9 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
     // that never materialize a col buffer: the 1x1 path (im2col is an identity
     // handled by an input transpose) and, where the fused backend op exists,
     // the non-1x1 path (gather is fused into the q8_0 activation packing).
-    if (!(quant_matmul_filter && (is_1x1_s1 || (CRS == CRS_padded && NNTR_HAS_Q4_0_INDIRECT_CONV)))) {
+    // EXCEPT: For 1x1 stride-1 quant matmul, we want to allocate im2col_scratch
+    // to store the transposed/quantized Q8_0 activation!
+    if (!(quant_matmul_filter && !is_1x1_s1 && (CRS == CRS_padded && NNTR_HAS_Q4_0_INDIRECT_CONV))) {
       unsigned int h = quant_matmul_filter ? CRS_padded : real_kernel_dim.getFeatureLen();
       TensorDim col_dim(in_dim.batch(), 1, h,
                         owoh, scratch_type);
@@ -558,15 +608,8 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
                               TensorLifespan::FORWARD_FUNC_LIFESPAN);
     }
     // quantized GEMM output [batch, 1, OH*OW, out_ch] (quant path only).
-    if (quant_matmul_filter || groups == 1) {
-      auto tmp_type = scratch_type;
-      unsigned int h = owoh, w = filter_size;
-      if (groups == 1 && !quant_matmul_filter) {
-        tmp_type.data_type = Tdatatype::FP32;
-        h = filter_size;
-        w = owoh;
-      }
-      TensorDim tmp_dim(in_dim.batch(), 1, h, w, tmp_type);
+    if (quant_matmul_filter) {
+      TensorDim tmp_dim(in_dim.batch(), 1, owoh, filter_size, scratch_type);
       wt_idx[ConvParams::qgemm_scratch] =
         context.requestTensor(tmp_dim, "qgemm_out", Initializer::NONE, false,
                               TensorLifespan::FORWARD_FUNC_LIFESPAN);
@@ -672,14 +715,14 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     unsigned int CRS = in_dim.channel() * kernel_size[0].get() * kernel_size[1].get();
     unsigned int CRS_padded = ((CRS - 1) / 32 + 1) * 32;
     const bool use_im2col_scratch =
-      !(weight_is_quant && (is_1x1_s1 || (CRS == CRS_padded && NNTR_HAS_Q4_0_INDIRECT_CONV)));
+      !(weight_is_quant && !is_1x1_s1 && (CRS == CRS_padded && NNTR_HAS_Q4_0_INDIRECT_CONV));
     Tensor *col_scratch =
       use_im2col_scratch
         ? &context.getTensor(wt_idx[ConvParams::im2col_scratch])
         : nullptr;
     Tensor *qgemm_scratch =
-      (groups == 1) ? &context.getTensor(wt_idx[ConvParams::qgemm_scratch])
-                    : nullptr;
+      weight_is_quant ? &context.getTensor(wt_idx[ConvParams::qgemm_scratch])
+                      : nullptr;
     if (col_scratch != nullptr) {
       col_scratch->setZero();
     }
@@ -704,12 +747,22 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
           tmp.reshape(
             TensorDim(1, 1, owoh, filter_size, compute_type));
           if (is_1x1_s1) {
-            // 1x1 stride-1: im2col is an identity. The raw input is laid out as
-            // [in_ch, OH*OW] (NCHW), so transpose to the act layout [OH*OW,
-            // CRS] (CRS == in_ch here).
-            in_sub.reshape({in_dim.channel(), owoh});
-            Tensor act = in_sub.transpose("0:2:1");
-            act.dot(filter_kernel, tmp, false, false);
+#ifdef ENABLE_FP16
+            // 1x1 stride-1 matmul: transpose and quantize FP16 [in_ch, owoh]
+            // to Q8_0 [owoh, in_ch] in a single fast pass!
+            Tensor col = col_scratch->getBatchSlice(b, 1);
+            TensorDim::TensorType q80_type = in_sub.getTensorType();
+            q80_type.data_type = nntrainer::Tdatatype::Q8_0;
+            nntrainer::Q8_0_Tensor act_q80(
+              TensorDim(1, 1, owoh, in_dim.channel(), q80_type),
+              false); // Do not allocate new memory on heap!
+            act_q80.setMemoryData(col.getMemoryData(), col.getOffset());
+
+            transpose_quantize_q8_0(in_sub.getData<_FP16>(), in_dim.channel(), owoh, act_q80.getData());
+            act_q80.dot(filter_kernel, tmp, false, false);
+#else
+            throw std::invalid_argument("1x1 quant matmul is not supported on this platform.");
+#endif
           } else if (NNTR_HAS_Q4_0_INDIRECT_CONV && CRS == CRS_padded) {
             // Fused im2col gather: the FP32 col buffer is never materialized.
             // The gather runs inside the GEMM's q8_0 activation packing,
@@ -772,17 +825,35 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             out.reshape({filter_size, owoh});
             tmp.transpose("0:2:1", out);
           }
+#ifdef ENABLE_FP16
+          if (out.getDataType() == nntrainer::Tdatatype::FP16) {
+            _FP16 *od = out.getData<_FP16>();
+            for (size_t i = 0; i < out.size(); ++i) {
+              if (std::isnan(static_cast<float>(od[i]))) {
+                std::cout << "[Conv2D DEBUG] NaN detected in out at index " << i << " of layer " << context.getName() << std::endl;
+                break;
+              }
+            }
+          }
+#endif
         } else {
           Tensor result = col_scratch->getBatchSlice(b, 1);
-          Tensor tmp = qgemm_scratch->getBatchSlice(b, 1);
-          TensorDim::TensorType fp32_type = in_sub.getTensorType();
-          fp32_type.data_type = nntrainer::Tdatatype::FP32;
-          tmp.reshape(
-            TensorDim(1, 1, filter_size, owoh, fp32_type));
-          im2col(in_sub, filter_dim, padding, stride, dilation, result);
-          filter_kernel.dot(result, tmp, false, true);
           out.reshape({filter_size, owoh});
-          out.copyData(tmp);
+#ifdef ENABLE_FP16
+          if (in_sub.getDataType() == nntrainer::Tdatatype::FP16) {
+            const _FP16 *id = in_sub.getData<_FP16>();
+            for (size_t i = 0; i < in_sub.size(); ++i) {
+              float val = static_cast<float>(id[i]);
+              if (std::isnan(val) || std::isinf(val)) {
+                std::cout << "[Conv2D DEBUG] NaN/Inf detected in in_sub of layer " << context.getName() << " at index " << i << " value: " << val << std::endl;
+                break;
+              }
+            }
+          }
+#endif
+          im2col(in_sub, filter_dim, padding, stride, dilation, result);
+          // filter kernel is (K, CRS), result is (CRS, OH*OW)
+          filter_kernel.dot(result, out, false, true);
         }
       }
     };

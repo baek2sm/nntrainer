@@ -438,7 +438,7 @@ sharedConstTensors NeuralNetwork::forwarding(
                  forwarding of the first node.
 
          Step 3. Then check the look a head which says how many layer weights
-       need to be loaded before running to hide overehad due to FSU,
+        need to be loaded before running to hide overehad due to FSU,
 
          Step 4. Try to get the tesors by asking tensors for layers which is
        done by thread pool
@@ -455,6 +455,30 @@ sharedConstTensors NeuralNetwork::forwarding(
       node->forwarding(training);
       model_graph.inActive(f);
       model_graph.LoadTensors(f + lookahead);
+    }
+
+    for (unsigned int i = 0; i < node->getNumOutputs(); ++i) {
+      Tensor out = node->getOutput(i);
+    #ifdef ENABLE_FP16
+      if (out.getDataType() == nntrainer::Tdatatype::FP16) {
+        const _FP16 *od = out.getData<_FP16>();
+        for (size_t j = 0; j < out.size(); ++j) {
+          if (std::isnan(static_cast<float>(od[j]))) {
+            std::cout << "[NeuralNetwork DEBUG] NaN detected in output of layer " << node->getName() << " (index " << j << " of " << out.size() << ")" << std::endl;
+            break;
+          }
+        }
+      } else
+    #endif
+      if (out.getDataType() == nntrainer::Tdatatype::FP32) {
+        const float *od = out.getData<float>();
+        for (size_t j = 0; j < out.size(); ++j) {
+          if (std::isnan(od[j])) {
+            std::cout << "[NeuralNetwork DEBUG] NaN detected in output of layer " << node->getName() << " (index " << j << " of " << out.size() << ")" << std::endl;
+            break;
+          }
+        }
+      }
     }
   };
 

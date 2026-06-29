@@ -144,6 +144,9 @@ public:
   Tensor &convQ4_0Indirect(Tensor const &weight, Tensor &output,
                            const ConvGatherParams &geom) const override;
 
+  Tensor &dot(Tensor const &input, Tensor &output, bool trans = false,
+              bool trans_in = false, float beta = 0.0) const override;
+
 private:
   void copy_q80(const void *buf);
 

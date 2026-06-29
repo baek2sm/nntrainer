@@ -33,6 +33,13 @@ void shgemm(const unsigned int TStorageOrder, bool TransA, bool TransB,
   float *B_ = new float[N * K];
   scopy(N * K, B, 1, B_, 1);
 
+  for (unsigned int i = 0; i < N * K; ++i) {
+    if (std::isnan(B_[i])) {
+      std::cout << "[shgemm DEBUG] NaN detected in B_ at index " << i << " of " << N * K << std::endl;
+      break;
+    }
+  }
+
 #ifdef USE_BLAS
   __cblas_sgemm(TStorageOrder, TransA, TransB, M, N, K, alpha, A, lda, B_, ldb,
                 beta, C, ldc);
