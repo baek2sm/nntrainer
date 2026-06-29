@@ -122,6 +122,15 @@ void __ggml_q4_0_8x8_q8_0_GEMM(const unsigned int M, const unsigned int N,
                                const unsigned int ldc);
 
 /**
+ * @brief Q8_0 weight x Q8_0 activation GEMM dispatcher.
+ */
+void __ggml_q8_0_q8_0_GEMM(const unsigned int M, const unsigned int N,
+                           const unsigned int K, const float *A,
+                           const unsigned int lda, const void *B,
+                           const unsigned int ldb, float *C,
+                           const unsigned int ldc);
+
+/**
  * @brief A(M, K) * W.T(N, K) = (M, N)
  *
  * @param M as descripted above

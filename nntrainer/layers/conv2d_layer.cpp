@@ -1046,21 +1046,47 @@ void Conv2DLayer::save(std::ofstream &file, RunLayerContext &run_context,
     const unsigned int out_ch = dim.batch();
     const unsigned int CRS = dim.channel() * dim.height() * dim.width();
 
+    unsigned int out_ch_padded = out_ch;
+    unsigned int CRS_padded_save = CRS;
+    bool eligible = true;
+
     if (out_ch <= 1 || CRS <= 1 || out_ch % 32 != 0 || CRS % 32 != 0) {
+      if (CRS == 27 && out_ch % 32 == 0) {
+        CRS_padded_save = 32;
+      } else if (out_ch == 1 && CRS % 32 == 0) {
+        out_ch_padded = 32;
+      } else {
+        eligible = false;
+      }
+    }
+
+    if (!eligible) {
       // Not Q4_0-eligible (bias, or block-misaligned): keep FP32 so the saved
       // tensor still matches what the runtime layer allocates for it.
       weight.save(file);
       continue;
     }
 
+    const float *src_data = weight.getData<float>();
+    std::vector<float> padded_src;
+    if (CRS_padded_save != CRS || out_ch_padded != out_ch) {
+      padded_src.resize(out_ch_padded * CRS_padded_save, 0.0f);
+      for (unsigned int oc = 0; oc < out_ch; ++oc) {
+        for (unsigned int crs = 0; crs < CRS; ++crs) {
+          padded_src[oc * CRS_padded_save + crs] = src_data[oc * CRS + crs];
+        }
+      }
+      src_data = padded_src.data();
+    }
+
     // [1, 1, K=CRS, N=out_ch] is the matmul-weight shape the quantized conv
     // consumes at load (Conv2DLayer::finalize builds the same shape).
-    Tensor quant_weight(1, 1, CRS, out_ch, {Tformat::NCHW, dtype});
+    Tensor quant_weight(1, 1, CRS_padded_save, out_ch_padded, {Tformat::NCHW, dtype});
     std::vector<char> tmp(quant_weight.size());
 
-    quantize_q4_0(weight.getData<float>(), tmp.data(), out_ch, CRS, nullptr);
+    quantize_q4_0(src_data, tmp.data(), out_ch_padded, CRS_padded_save, nullptr);
     repack_q4_0(quant_weight.getData<uint8_t>(), tmp.data(),
-                quant_weight.size(), out_ch, CRS, target_isa);
+                quant_weight.size(), out_ch_padded, CRS_padded_save, target_isa);
     quant_weight.save(file);
   }
 }

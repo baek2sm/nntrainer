@@ -19,6 +19,7 @@
 #include <fallback_internal.h>
 #include <ggml_interface.h>
 #include <neon_impl.h>
+#include <nntr_ggml_impl.h>
 #include <nntrainer_error.h>
 #include <q4_0_utils.h>
 
@@ -383,6 +384,13 @@ void gemm_q4_0(const unsigned int M, const unsigned int N, const unsigned int K,
   return __ggml_q4_0_4x8_q8_0_GEMM<float>(M, N, K, A, lda, B, ldb, C, ldc);
 }
 
+template <>
+void gemm_q8_0(const unsigned int M, const unsigned int N, const unsigned int K,
+               const float *A, const unsigned int lda, const void *B,
+               const unsigned int ldb, float *C, const unsigned int ldc) {
+  return __ggml_q8_0_q8_0_GEMM(M, N, K, A, lda, B, ldb, C, ldc);
+}
+
 void gemm_q4_0(const unsigned int M, std::vector<unsigned int> Ns,
                const unsigned int K, const float *A, const unsigned int lda,
                std::vector<void *> Bs, std::vector<unsigned int> ldbs,
@@ -443,6 +451,11 @@ size_t quantize_q4_0(const float *src, void *dst, int64_t nrow,
   return __ggml_quantize_q4_0(src, dst, nrow, n_per_row, quant_weights);
 }
 
+size_t quantize_q8_0(const float *src, void *dst, int64_t nrow,
+                     int64_t n_per_row, const float *quant_weights) {
+  return __ggml_quantize_q8_0(src, dst, nrow, n_per_row, quant_weights);
+}
+
 size_t quantize_q4_K(const float *src, void *dst, int64_t nrow,
                      int64_t n_per_row, const float *quant_weights) {
   return __ggml_quantize_q4_K(src, dst, nrow, n_per_row, quant_weights);
@@ -469,6 +482,14 @@ void dequantize_row_q4_K(const void *x_raw, float *y, int64_t k) {
 
 void dequantize_row_q4_0(const void *x_raw, float *y, int64_t k) {
   __ggml_dequantize_row_q4_0(x_raw, y, k);
+}
+
+void dequantize_row_q8_0(const void *x_raw, float *y, int64_t k) {
+  __ggml_dequantize_row_q8_0(x_raw, y, k);
+}
+
+void quantize_row_q8_0(const float *src, void *dst, int64_t k) {
+  nntr_quantize_row_q8_0(src, dst, k);
 }
 
 void dequantize_row_q6_K(const void *x, float *y, int64_t k) {

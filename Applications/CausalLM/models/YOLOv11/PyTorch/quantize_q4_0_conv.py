@@ -304,7 +304,10 @@ def check_conv_filter_eligibility(name: str, shape: list,
 
     # Degenerate single-output channel
     if out_ch == 1:
-        return False, "out_ch=1"
+        if name.endswith("cv3_2/conv:filter"):
+            pass # We will pad out_ch to 32!
+        else:
+            return False, "out_ch=1"
 
     # Kernel-size gate: default mode only handles 1x1
     if kh != 1 or kw != 1:
@@ -317,6 +320,8 @@ def check_conv_filter_eligibility(name: str, shape: list,
     # Special handling for conv0 (3 input channels, 3x3 kernel -> CRS=27)
     if CRS == 27 and out_ch % QK4_0 == 0:
         pass # Will pad to 32 later
+    elif out_ch == 1 and name.endswith("cv3_2/conv:filter"):
+        pass # Will pad out_ch to 32 later
     else:
         # Q4_0 block alignment: both K and N dimensions must be divisible by 32
         reasons = []
@@ -338,7 +343,7 @@ def check_conv_filter_eligibility(name: str, shape: list,
 # Quantize a single conv filter tensor
 # ---------------------------------------------------------------------------
 
-def quantize_filter(raw: bytes, shape: list, interleave: int):
+def quantize_filter(raw: bytes, shape: list, interleave: int, name: str):
     """Quantize a single FP32 conv filter to Q4_0 + repack.
 
     shape: [out_ch, in_ch, kh, kw]
@@ -364,6 +369,9 @@ def quantize_filter(raw: bytes, shape: list, interleave: int):
     if CRS == 27 and out_ch % QK4_0 == 0:
         w2d = np.pad(w2d, ((0, 0), (0, 32 - 27)), mode='constant', constant_values=0)
         CRS = 32
+    elif out_ch == 1 and name.endswith("cv3_2/conv:filter"):
+        w2d = np.pad(w2d, ((0, 32 - 1), (0, 0)), mode='constant', constant_values=0)
+        out_ch = 32
 
     # Step 1: quantize to plain Q4_0 blocks
     # w2d is [out_ch, CRS]  (N x K)
@@ -500,7 +508,7 @@ def main():
                 n_quant_larger += 1
             continue
 
-        repacked, nntr_shape = quantize_filter(raw, shape, interleave)
+        repacked, nntr_shape = quantize_filter(raw, shape, interleave, name)
 
         out_tensors[name] = {
             "dtype": SAFETENSORS_DTYPE_Q4_0,   # "U8" (opaque blob)
