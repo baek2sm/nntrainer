@@ -74,6 +74,42 @@ static inline void convApplySwishInplace(T *data, size_t n) {
   });
 }
 
+#ifdef ENABLE_FP16
+static inline void quantize_row_q8_0_stride(const _FP16 *src, int stride, void *vy, int64_t k) {
+  struct local_block_q8_0 {
+    uint16_t d;
+    int8_t qs[32];
+  };
+
+  local_block_q8_0 *y = (local_block_q8_0 *)vy;
+  const int qk = 32;
+  const int nb = k / qk;
+
+  for (int i = 0; i < nb; i++) {
+    float amax = 0.0f;
+    for (int j = 0; j < qk; ++j) {
+      float val = std::abs(static_cast<float>(src[(i * qk + j) * stride]));
+      if (val > amax) {
+        amax = val;
+      }
+    }
+
+    const float d = amax / ((1 << 7) - 1);
+    const float id = d ? 1.0f / d : 0.0f;
+
+    _FP16 d_half = static_cast<_FP16>(d);
+    uint16_t d_u16;
+    std::memcpy(&d_u16, &d_half, 2);
+    y[i].d = d_u16;
+
+    for (int j = 0; j < qk; ++j) {
+      float x0 = static_cast<float>(src[(i * qk + j) * stride]) * id;
+      y[i].qs[j] = std::roundf(x0);
+    }
+  }
+}
+#endif
+
 static TensorDim calcCol2ImOutputDim(const TensorDim &out,
                                      const TensorDim &kdim) {
 
@@ -595,6 +631,12 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   auto &groups_prop = std::get<props::ConvGroups>(conv_props);
   unsigned int groups = groups_prop.empty() ? 1 : groups_prop.get();
 
+  const auto &disable_bias = std::get<props::DisableBias>(*layer_impl_props);
+  const bool has_bias = (disable_bias.empty() || disable_bias.get() == false);
+  const auto &act = std::get<props::FusedActivation>(conv_props);
+  const bool has_swish = (!act.empty() && act.get() == ActivationType::ACT_SWISH);
+  const bool out_is_q80 = (hidden_.getDataType() == nntrainer::Tdatatype::Q8_0);
+
   if (groups == 1) {
     // A quantized 1x1 conv stores its filter as a [in_ch, out_ch] matmul weight
     // (K, N). The quantized GEMM (dotQnK for Q4_0) takes the weight as the dot
@@ -655,8 +697,12 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
           // is a view into the context-owned scratch, so its storage outlives
           // the loop iteration regardless.
           Tensor tmp = qgemm_scratch->getBatchSlice(b, 1);
+          auto compute_type = in_sub.getTensorType();
+          if (compute_type.data_type == nntrainer::Tdatatype::Q8_0 || out_is_q80) {
+            compute_type.data_type = nntrainer::Tdatatype::FP16;
+          }
           tmp.reshape(
-            TensorDim(1, 1, owoh, filter_size, in_sub.getTensorType()));
+            TensorDim(1, 1, owoh, filter_size, compute_type));
           if (is_1x1_s1) {
             // 1x1 stride-1: im2col is an identity. The raw input is laid out as
             // [in_ch, OH*OW] (NCHW), so transpose to the act layout [OH*OW,
@@ -702,8 +748,30 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
           // [OH*OW, out_ch] -> [out_ch, OH*OW] written straight into the
           // (memory-planned) output. `tmp` is a separate scratch buffer and
           // `out` is a separate output view, so there is no aliasing.
-          out.reshape({filter_size, owoh});
-          tmp.transpose("0:2:1", out);
+          if (out_is_q80) {
+#ifdef ENABLE_FP16
+            _FP16 *tmp_data = tmp.getData<_FP16>();
+            if (has_bias) {
+              Tensor &bias_kernel = context.getWeight(wt_idx[ConvParams::bias]);
+              for (unsigned int c = 0; c < filter_size; ++c) {
+                _FP16 b_val = static_cast<_FP16>(bias_kernel.getValue<float>(0, c, 0, 0));
+                for (unsigned int i = 0; i < owoh; ++i) {
+                  tmp_data[i * filter_size + c] += b_val;
+                }
+              }
+            }
+            if (has_swish) {
+              convApplySwishInplace(tmp_data, owoh * filter_size);
+            }
+            // Transposed quantization directly into out (Q8_0)
+            for (unsigned int c = 0; c < filter_size; ++c) {
+              quantize_row_q8_0_stride(tmp_data + c, filter_size, (char *)out.getData() + c * (owoh / 32) * 34, owoh);
+            }
+#endif
+          } else {
+            out.reshape({filter_size, owoh});
+            tmp.transpose("0:2:1", out);
+          }
         } else {
           Tensor result = col_scratch->getBatchSlice(b, 1);
           Tensor tmp = qgemm_scratch->getBatchSlice(b, 1);
@@ -811,31 +879,33 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     }
   }
 
-  if (auto &disable_bias = std::get<props::DisableBias>(*layer_impl_props);
-      disable_bias.empty() || disable_bias.get() == false) {
-    Tensor &bias_kernel = context.getWeight(wt_idx[ConvParams::bias]);
-    status = hidden_.add_i(bias_kernel);
-    if (status != ML_ERROR_NONE) {
-      throw std::invalid_argument("[Conv2D] adding bias failed");
+  if (!out_is_q80) {
+    if (auto &disable_bias = std::get<props::DisableBias>(*layer_impl_props);
+        disable_bias.empty() || disable_bias.get() == false) {
+      Tensor &bias_kernel = context.getWeight(wt_idx[ConvParams::bias]);
+      status = hidden_.add_i(bias_kernel);
+      if (status != ML_ERROR_NONE) {
+        throw std::invalid_argument("[Conv2D] adding bias failed");
+      }
     }
-  }
 
-  // Fused activation epilogue. When the graph sets activation=swish on the
-  // conv, apply SiLU in-place on the freshly written output instead of
-  // materializing a separate Activation layer (which would read the conv
-  // output back from memory and write a second full tensor). Only SiLU is
-  // fused here (YOLOv11's conv activation); any other activation type is left
-  // to a dedicated Activation layer in the graph.
-  if (auto &act = std::get<props::FusedActivation>(conv_props);
-      !act.empty() && act.get() == ActivationType::ACT_SWISH) {
-    const size_t n = hidden_.size();
+    // Fused activation epilogue. When the graph sets activation=swish on the
+    // conv, apply SiLU in-place on the freshly written output instead of
+    // materializing a separate Activation layer (which would read the conv
+    // output back from memory and write a second full tensor). Only SiLU is
+    // fused here (YOLOv11's conv activation); any other activation type is left
+    // to a dedicated Activation layer in the graph.
+    if (auto &act = std::get<props::FusedActivation>(conv_props);
+        !act.empty() && act.get() == ActivationType::ACT_SWISH) {
+      const size_t n = hidden_.size();
 #ifdef ENABLE_FP16
-    if (hidden_.getDataType() == nntrainer::Tdatatype::FP16) {
-      convApplySwishInplace(hidden_.getData<_FP16>(), n);
-    } else
+      if (hidden_.getDataType() == nntrainer::Tdatatype::FP16) {
+        convApplySwishInplace(hidden_.getData<_FP16>(), n);
+      } else
 #endif
-    {
-      convApplySwishInplace(hidden_.getData<float>(), n);
+      {
+        convApplySwishInplace(hidden_.getData<float>(), n);
+      }
     }
   }
 }
