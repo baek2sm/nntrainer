@@ -107,4 +107,28 @@ void Q8_0_Tensor::initialize() {
 
 QScheme Q8_0_Tensor::q_scheme() const { return QScheme::Q8_0; }
 
+Tensor &Q8_0_Tensor::convQ4_0Indirect(Tensor const &weight, Tensor &output,
+                                     const ConvGatherParams &geom) const {
+#ifdef ENABLE_FP16
+  // `this` is the pre-quantized Q8_0 activation matrix of blocks, `weight` is
+  // the Q4_0 filter [CRS, out_ch], `output` is [OH*OW, out_ch] FP16. We call the
+  // direct Q8_0 backend op (Task B2), bypassing all FP16 dequantization and
+  // re-quantization steps.
+  const void *in = (const void *)getData();
+  uint8_t *wdata = weight.getData<uint8_t>();
+  _FP16 *rdata = output.getData<_FP16>();
+
+  unsigned int M = output.getDim().height();
+  unsigned int N = output.getDim().width();
+  unsigned int K =
+    (unsigned int)geom.in_ch * (unsigned int)geom.k_h * (unsigned int)geom.k_w;
+
+  getOps()->gemm_q4_0_indirect_conv_q8_0(M, N, K, in, geom, (void *)wdata, N,
+                                         rdata, N);
+  return output;
+#else
+  throw std::invalid_argument("Q8_0_Tensor::convQ4_0Indirect() is not supported on this platform.");
+#endif
+}
+
 } // namespace nntrainer

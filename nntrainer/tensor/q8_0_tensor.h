@@ -141,6 +141,9 @@ public:
 
   QScheme q_scheme() const override;
 
+  Tensor &convQ4_0Indirect(Tensor const &weight, Tensor &output,
+                           const ConvGatherParams &geom) const override;
+
 private:
   void copy_q80(const void *buf);
 

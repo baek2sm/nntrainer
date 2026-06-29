@@ -427,6 +427,13 @@ void ComputeOps::gemm_q4_0_indirect_conv_fp16(unsigned int, unsigned int,
                                               _FP16 *, unsigned int) {
   NI(gemm_q4_0_indirect_conv_fp16);
 }
+void ComputeOps::gemm_q4_0_indirect_conv_q8_0(unsigned int, unsigned int,
+                                              unsigned int, const void *,
+                                              const ConvGatherParams &,
+                                              const void *, unsigned int,
+                                              _FP16 *, unsigned int) {
+  NI(gemm_q4_0_indirect_conv_q8_0);
+}
 void ComputeOps::gemm_q6_K_fp16(unsigned int, unsigned int, unsigned int,
                                 const _FP16 *, unsigned int, const void *,
                                 unsigned int, _FP16 *, unsigned int) {
