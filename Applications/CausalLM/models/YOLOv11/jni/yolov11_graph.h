@@ -79,7 +79,7 @@ inline Tensor convBnSilu(const std::string &name, int in_ch, int out_ch, int k,
     // Fuse SiLU into the conv epilogue (no separate Activation layer => one
     // less full-tensor read+write pass per conv). See Conv2DLayer::forwarding.
     nntrainer::withKey("fused_activation", "swish")};
-  if (out_ch > 1 && out_ch % 32 == 0 && ((in_ch * k * k) % 32 == 0 || name == "conv0")) {
+  if (out_ch > 1 && out_ch % 32 == 0 && (in_ch * k * k) % 32 == 0) {
     if (conv_q40)
       conv_props.push_back(nntrainer::withKey("weight_dtype", "Q4_0"));
     if (quantConvSink() != nullptr)

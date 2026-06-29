@@ -24,7 +24,7 @@ Q4_0_Tensor::Q4_0_Tensor(const TensorDim &d, bool alloc_now, Initializer init,
   TensorBase(d, false, init, name) {
   NNTR_THROW_IF(d.batch() != 1 || d.channel() != 1 || d.width() % QK4_0 != 0,
                 std::invalid_argument)
-    << "Q4_0_Tensor must be 2 dimensional tensor with batch size 1 and "
+    << "Q4_0_Tensor (name: " << name << ", shape: " << d.batch() << "x" << d.channel() << "x" << d.height() << "x" << d.width() << ") must be 2 dimensional tensor with batch size 1 and "
        "width must be divisible by 32";
 
   if (alloc_now)

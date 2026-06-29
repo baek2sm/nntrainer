@@ -514,16 +514,23 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
     // handled by an input transpose) and, where the fused backend op exists,
     // the non-1x1 path (gather is fused into the q8_0 activation packing).
     if (!(quant_matmul_filter && (is_1x1_s1 || (CRS == CRS_padded && NNTR_HAS_Q4_0_INDIRECT_CONV)))) {
-      unsigned int CRS_padded = ((real_kernel_dim.getFeatureLen() - 1) / 32 + 1) * 32;
-      TensorDim col_dim(in_dim.batch(), 1, CRS_padded,
+      unsigned int h = quant_matmul_filter ? CRS_padded : real_kernel_dim.getFeatureLen();
+      TensorDim col_dim(in_dim.batch(), 1, h,
                         owoh, scratch_type);
       wt_idx[ConvParams::im2col_scratch] =
         context.requestTensor(col_dim, "im2col", Initializer::NONE, false,
                               TensorLifespan::FORWARD_FUNC_LIFESPAN);
     }
     // quantized GEMM output [batch, 1, OH*OW, out_ch] (quant path only).
-    if (quant_matmul_filter) {
-      TensorDim tmp_dim(in_dim.batch(), 1, owoh, filter_size, scratch_type);
+    if (quant_matmul_filter || groups == 1) {
+      auto tmp_type = scratch_type;
+      unsigned int h = owoh, w = filter_size;
+      if (groups == 1 && !quant_matmul_filter) {
+        tmp_type.data_type = Tdatatype::FP32;
+        h = filter_size;
+        w = owoh;
+      }
+      TensorDim tmp_dim(in_dim.batch(), 1, h, w, tmp_type);
       wt_idx[ConvParams::qgemm_scratch] =
         context.requestTensor(tmp_dim, "qgemm_out", Initializer::NONE, false,
                               TensorLifespan::FORWARD_FUNC_LIFESPAN);
@@ -629,8 +636,8 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
         ? &context.getTensor(wt_idx[ConvParams::im2col_scratch])
         : nullptr;
     Tensor *qgemm_scratch =
-      weight_is_quant ? &context.getTensor(wt_idx[ConvParams::qgemm_scratch])
-                      : nullptr;
+      (groups == 1) ? &context.getTensor(wt_idx[ConvParams::qgemm_scratch])
+                    : nullptr;
     if (col_scratch != nullptr) {
       col_scratch->setZero();
     }
@@ -699,10 +706,15 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
           tmp.transpose("0:2:1", out);
         } else {
           Tensor result = col_scratch->getBatchSlice(b, 1);
-          out.reshape({filter_size, owoh});
+          Tensor tmp = qgemm_scratch->getBatchSlice(b, 1);
+          TensorDim::TensorType fp32_type = in_sub.getTensorType();
+          fp32_type.data_type = nntrainer::Tdatatype::FP32;
+          tmp.reshape(
+            TensorDim(1, 1, filter_size, owoh, fp32_type));
           im2col(in_sub, filter_dim, padding, stride, dilation, result);
-          // filter kernel is (K, CRS), result is (CRS, OH*OW)
-          filter_kernel.dot(result, out, false, true);
+          filter_kernel.dot(result, tmp, false, true);
+          out.reshape({filter_size, owoh});
+          out.copyData(tmp);
         }
       }
     };
