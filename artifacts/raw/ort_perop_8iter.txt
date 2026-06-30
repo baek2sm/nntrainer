@@ -1,0 +1,37 @@
+# ORT per-op aggregation from device profiles (per-iter, ÷ model_run count) — 2026-06-29
+# coverage (node-sum / model_run) = 98.7% (INT8), 99.7% (FP32) -> no executed kernel missing
+
+=== INT8  (208ms, 423 executed kernels/iter, 16 op types) ===
+op                     count/iter   ms/iter       %
+QLinearConv                 113.0     156.7   75.7%
+QLinearMul                  103.0      15.0    7.2%
+QLinearSigmoid              102.0      13.6    6.5%
+QLinearConcat                26.0       8.9    4.3%
+Resize                        2.0       5.7    2.7%
+QLinearSoftmax                2.0       2.2    1.1%
+QLinearAdd                   21.0       1.6    0.8%
+QLinearMatMul                 2.0       1.0    0.5%
+Transpose                    15.0       0.9    0.4%
+Split                        11.0       0.7    0.3%
+QuantizeLinear                4.0       0.5    0.2%
+NhwcMaxPool                   3.0       0.2    0.1%
+Reshape                      11.0       0.1    0.0%
+DequantizeLinear              5.0       0.1    0.0%
+
+=== FP32  (844.8ms, 295 executed kernels/iter) ===
+op                     count/iter   ms/iter       %
+Conv                        110.0     765.1   90.6%
+QuickGelu                   101.0      55.6    6.6%
+Concat                       26.0      10.0    1.2%
+Softmax                       2.0       4.2    0.5%
+Split                        11.0       3.3    0.4%
+FusedMatMul                   2.0       2.4    0.3%
+FusedConv                     3.0       2.0    0.2%
+Add                          18.0       1.0    0.1%
+Resize                        2.0       0.8    0.1%
+MaxPool                       3.0       0.2    0.0%
+
+=== ONNX lowering: saved graph vs executed (INT8) ===
+saved nodes: 1461 (DequantizeLinear 643, QuantizeLinear 415, Conv 113, Mul 103, Sigmoid 102,
+                   Concat 26, Add 21, Reshape 11, Split 10, MaxPool 3, Resize 2, Slice 2, Sub 2, MatMul 2, Div 1)
+executed/iter: 423 kernels (Q/DQ 1058 -> 9 via QDQ fusion; Conv 113 -> QLinearConv 113; MaxPool -> NhwcMaxPool)

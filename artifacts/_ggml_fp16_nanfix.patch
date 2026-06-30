@@ -1,0 +1,82 @@
+diff --git a/nntrainer/tensor/cpu_backend/ggml_interface/ggml_interface_fp16.cpp b/nntrainer/tensor/cpu_backend/ggml_interface/ggml_interface_fp16.cpp
+index 2d8a5fef..cd731369 100644
+--- a/nntrainer/tensor/cpu_backend/ggml_interface/ggml_interface_fp16.cpp
++++ b/nntrainer/tensor/cpu_backend/ggml_interface/ggml_interface_fp16.cpp
+@@ -46,6 +46,27 @@ static inline void __copy_f16_from_f32(const float *src, _FP16 *dst,
+ #endif
+ }
+ 
++#if defined(__ARM_NEON)
++/**
++ * @brief Scale 8 FP16 activations by the q8_0 inverse-scale `id` and round to
++ * int8, doing the multiply in the FP32 domain.
++ *
++ * `id` is the inverse scale `1/d` and can be very large for a block whose amax
++ * is small (e.g. amax 1e-3 -> id ~1.3e5). Applying it with vmulq_n_f16 narrows
++ * `id` to FP16, where anything above 65504 becomes +inf; src*inf then yields
++ * inf/NaN in the quantized activation and poisons the GEMM (observed as
++ * widespread NaN in W4A16 inference). The FP32 GEMM path and the scalar
++ * fallback both multiply in float, so mirror them: widen src to FP32, multiply
++ * by the float `id`, then convert to int8.
++ */
++static inline int16x8_t __q8_0_scale_f16x8(float16x8_t src, float id) {
++  float32x4_t lo = vmulq_n_f32(vcvt_f32_f16(vget_low_f16(src)), id);
++  float32x4_t hi = vmulq_n_f32(vcvt_f32_f16(vget_high_f16(src)), id);
++  return vcombine_s16(vmovn_s32(vcvtnq_s32_f32(lo)),
++                      vmovn_s32(vcvtnq_s32_f32(hi)));
++}
++#endif
++
+ void __ggml_quantize_row_q8_0(const _FP16 *__restrict x, void *vy, int64_t k) {
+   assert(QK8_0 == 32);
+   assert(k % QK8_0 == 0);
+@@ -80,8 +101,7 @@ void __ggml_quantize_row_q8_0(const _FP16 *__restrict x, void *vy, int64_t k) {
+     y[i].d = nntr_compute_fp32_to_fp16(d);
+ 
+     for (int j = 0; j < 4; j++) {
+-      const float16x8_t v = vmulq_n_f16(srcv[j], id);
+-      const int16x8_t vi = vcvtnq_s16_f16(v);
++      const int16x8_t vi = __q8_0_scale_f16x8(srcv[j], id);
+ 
+       y[i].qs[8 * j + 0] = vgetq_lane_s16(vi, 0);
+       y[i].qs[8 * j + 1] = vgetq_lane_s16(vi, 1);
+@@ -179,8 +199,7 @@ static void __ggml_quantize_mat_q8_0_4x8(const _FP16 *__restrict x,
+     }
+ 
+     for (int j = 0; j < 4; j++) {
+-      float16x8_t v = vmulq_n_f16(srcv[0][j], id[0]);
+-      int16x8_t vi = vcvtnq_s16_f16(v);
++      int16x8_t vi = __q8_0_scale_f16x8(srcv[0][j], id[0]);
+       y[i].qs[32 * j + 0] = vgetq_lane_s16(vi, 0);
+       y[i].qs[32 * j + 1] = vgetq_lane_s16(vi, 1);
+       y[i].qs[32 * j + 2] = vgetq_lane_s16(vi, 2);
+@@ -190,8 +209,7 @@ static void __ggml_quantize_mat_q8_0_4x8(const _FP16 *__restrict x,
+       y[i].qs[32 * j + 6] = vgetq_lane_s16(vi, 6);
+       y[i].qs[32 * j + 7] = vgetq_lane_s16(vi, 7);
+ 
+-      v = vmulq_n_f16(srcv[1][j], id[1]);
+-      vi = vcvtnq_s16_f16(v);
++      vi = __q8_0_scale_f16x8(srcv[1][j], id[1]);
+       y[i].qs[32 * j + 8] = vgetq_lane_s16(vi, 0);
+       y[i].qs[32 * j + 9] = vgetq_lane_s16(vi, 1);
+       y[i].qs[32 * j + 10] = vgetq_lane_s16(vi, 2);
+@@ -201,8 +219,7 @@ static void __ggml_quantize_mat_q8_0_4x8(const _FP16 *__restrict x,
+       y[i].qs[32 * j + 14] = vgetq_lane_s16(vi, 6);
+       y[i].qs[32 * j + 15] = vgetq_lane_s16(vi, 7);
+ 
+-      v = vmulq_n_f16(srcv[2][j], id[2]);
+-      vi = vcvtnq_s16_f16(v);
++      vi = __q8_0_scale_f16x8(srcv[2][j], id[2]);
+       y[i].qs[32 * j + 16] = vgetq_lane_s16(vi, 0);
+       y[i].qs[32 * j + 17] = vgetq_lane_s16(vi, 1);
+       y[i].qs[32 * j + 18] = vgetq_lane_s16(vi, 2);
+@@ -212,8 +229,7 @@ static void __ggml_quantize_mat_q8_0_4x8(const _FP16 *__restrict x,
+       y[i].qs[32 * j + 22] = vgetq_lane_s16(vi, 6);
+       y[i].qs[32 * j + 23] = vgetq_lane_s16(vi, 7);
+ 
+-      v = vmulq_n_f16(srcv[3][j], id[3]);
+-      vi = vcvtnq_s16_f16(v);
++      vi = __q8_0_scale_f16x8(srcv[3][j], id[3]);
+       y[i].qs[32 * j + 24] = vgetq_lane_s16(vi, 0);
+       y[i].qs[32 * j + 25] = vgetq_lane_s16(vi, 1);
+       y[i].qs[32 * j + 26] = vgetq_lane_s16(vi, 2);
