@@ -14,7 +14,6 @@
 #include <cstring>
 #include <gtest/gtest.h>
 
-#include <compute_ops.h>
 #include <q8_0_tensor.h>
 #include <quantizer.h>
 #include <tensor.h>
@@ -188,7 +187,7 @@ TEST(Q8_0_Tensor, quantize_dequantize_round_trip) {
 
 TEST(Q8_0_Tensor, indirect_conv_q80_vs_fp16) {
 #ifdef ENABLE_FP16
-  auto *ops = nntrainer::getComputeOps();
+  auto *ops = nntrainer::getOps();
   if (!ops->supports_gemm_q4_0_indirect_conv_q8_0() ||
       !ops->supports_gemm_q4_0_indirect_conv_fp16()) {
     SUCCEED() << "Indirect quantized conv GEMM is not supported on this platform, skipping.";
@@ -207,33 +206,33 @@ TEST(Q8_0_Tensor, indirect_conv_q80_vs_fp16) {
   // Create a Q8_0 pre-quantized version of the input
   // Since the input has contiguous channel blocks of size 32 at each spatial pixel,
   // we first flatten it to [IH*IW, C] = [64, 32] layout and quantize it to Q8_0!
-  nntrainer::TensorDim flat_dim(1, 1, IH * IW, C, {nntrainer::Tformat::NCHW, nntrainer::TensorDim::DataType::FP32});
-  nntrainer::Tensor flat_fp32(flat_dim, true);
+  nntrainer::TensorDim flat_dim(1, 1, IH * IW, C, {nntrainer::Tformat::NCHW, nntrainer::TensorDim::DataType::FP16});
+  nntrainer::Tensor flat_fp16(flat_dim, true);
   // Reorder NCHW to [IH*IW, C] spatial-major layout
-  float *flat_data = flat_fp32.getData<float>();
+  _FP16 *flat_data = flat_fp16.getData<_FP16>();
   for (unsigned int h = 0; h < IH; ++h) {
     for (unsigned int w = 0; w < IW; ++w) {
       for (unsigned int c = 0; c < C; ++c) {
-        flat_data[(h * IW + w) * C + c] = static_cast<float>(in_data[(c * IH + h) * IW + w]);
+        flat_data[(h * IW + w) * C + c] = in_data[(c * IH + h) * IW + w];
       }
     }
   }
 
   nntrainer::GgmlQuantizer q80(nntrainer::QScheme::Q8_0);
-  nntrainer::Tensor in_q80 = q80.quantize(flat_fp32, nntrainer::TensorDim::DataType::Q8_0);
+  nntrainer::Tensor in_q80 = q80.quantize(flat_fp16, nntrainer::TensorDim::DataType::Q8_0);
 
   // Create a Q4_0 filter [CRS, out_ch] = [288, 32] for a 3x3 conv with 32 in_ch
   unsigned int out_ch = 32, k = 3;
   unsigned int CRS = C * k * k; // 32 * 9 = 288
-  nntrainer::TensorDim filter_dim(1, 1, CRS, out_ch, {nntrainer::Tformat::NCHW, nntrainer::TensorDim::DataType::FP32});
-  nntrainer::Tensor filter_fp32(filter_dim, true);
-  float *f_data = filter_fp32.getData<float>();
+  nntrainer::TensorDim filter_dim(1, 1, CRS, out_ch, {nntrainer::Tformat::NCHW, nntrainer::TensorDim::DataType::FP16});
+  nntrainer::Tensor filter_fp16(filter_dim, true);
+  _FP16 *f_data = filter_fp16.getData<_FP16>();
   for (unsigned int i = 0; i < filter_dim.getDataLen(); ++i) {
-    f_data[i] = static_cast<float>(i % 8) * 0.05f - 0.2f;
+    f_data[i] = static_cast<_FP16>(static_cast<float>(i % 8) * 0.05f - 0.2f);
   }
 
   nntrainer::GgmlQuantizer q40(nntrainer::QScheme::Q4_0);
-  nntrainer::Tensor filter_q40 = q40.quantize(filter_fp32, nntrainer::TensorDim::DataType::Q4_0);
+  nntrainer::Tensor filter_q40 = q40.quantize(filter_fp16, nntrainer::TensorDim::DataType::Q4_0);
 
   // Configure convolution geometry
   nntrainer::ConvGatherParams geom;
@@ -279,7 +278,7 @@ TEST(Q8_0_Tensor, indirect_conv_q80_vs_fp16) {
 
 TEST(Q8_0_Tensor, indirect_conv_nhwc_vs_nchw) {
 #ifdef ENABLE_FP16
-  auto *ops = nntrainer::getComputeOps();
+  auto *ops = nntrainer::getOps();
   if (!ops->supports_gemm_q4_0_indirect_conv_fp16()) {
     SUCCEED() << "Indirect quantized conv GEMM is not supported on this platform, skipping.";
     return;

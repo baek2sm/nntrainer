@@ -98,7 +98,7 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
 #endif
   NNTR_THROW_IF(dtype != nntrainer::Tdatatype::FP32 && !fp16,
                 std::invalid_argument)
-    << "PSAAttentionLayer only implements the FP32 and FP16 activation paths";
+    << "PSAAttentionLayer only implements the FP32 and FP16 activation paths, got: " << (int)dtype;
 
   const unsigned int B = in_t.batch();
   const unsigned int H = in_t.height();

@@ -134,20 +134,14 @@ Tensor &Q8_0_Tensor::convQ4_0Indirect(Tensor const &weight, Tensor &output,
 #endif
 }
 
-/**
- * @brief Q8_0 act [M,K] x Q4_0 weight [K,N] -> FP16 out [M,N], int8 SMMLA GEMM.
- *
- * Repacks activation rows into block_q8_0x4 (4-row interleave) and calls
- * nntr_gemm_q4_0_4x8_q8_0_fp16 directly on int8 inputs — no FP16 dequant or
- * re-quant. Per-call QA buffer is heap-allocated (to be folded into a planned
- * scratch in a later pass). M%4 remainder handled by a GEMV tail.
- */
 Tensor &Q8_0_Tensor::dot(Tensor const &input, Tensor &output, bool trans,
                          bool trans_in, float beta) const {
 #ifdef ENABLE_FP16
+  // `this` is Q8_0 activation matrix [M, K], `input` is Q4_0 filter [K, N].
+  // `output` is [M, N] FP16. We call the direct Q8_0 backend op (Task B2),
+  // bypassing all FP16 dequantization and re-quantization steps.
   NNTR_THROW_IF(trans || trans_in, std::invalid_argument)
     << "Q8_0_Tensor::dot does not support trans/trans_in";
-  (void)beta;
 
   const void *A = getData();
   const void *B = input.getData();
@@ -158,9 +152,8 @@ Tensor &Q8_0_Tensor::dot(Tensor const &input, Tensor &output, bool trans,
   unsigned int N = input.getDim().width();
 
   const unsigned int blocks_per_4_rows = (K + 32 - 1) / 32;
-  const unsigned int qa_4_rows_size =
-    (sizeof(uint16_t) * 4 + 128) * blocks_per_4_rows; // block_q8_0x4 = 136 B
-  const size_t qa_row_size = 34 * K / 32;             // block_q8_0 = 34 B
+  const unsigned int qa_4_rows_size = (sizeof(uint16_t) * 4 + 128) * blocks_per_4_rows; // block_q8_0x4 size = 136 bytes
+  const size_t qa_row_size = 34 * K / 32; // block_q8_0 size = 34 bytes
   const unsigned int M4 = M / 4;
   const unsigned int rem = M % 4;
 
@@ -173,47 +166,45 @@ Tensor &Q8_0_Tensor::dot(Tensor const &input, Tensor &output, bool trans,
     uint16_t d;
     int8_t qs[32];
   };
+
   struct local_block_q8_0x4 {
     uint16_t d[4];
     int8_t qs[128];
   };
 
+  // Interleave Q8_0 activation rows directly into QA_ptr
   const local_block_q8_0 *in_q80 = (const local_block_q8_0 *)A;
   local_block_q8_0x4 *y_q80x4 = (local_block_q8_0x4 *)QA_ptr;
+
   unsigned int max_blocks = (M / 4) * 4 * blocks_per_4_rows;
 
   auto &tm = ThreadManager::Global();
-  const unsigned int interleave_chunk = 256;
-  const size_t interleave_loops =
-    (M4 + interleave_chunk - 1) / interleave_chunk;
-  // block_q8_0x4.qs[128] layout expected by nntr_gemm_q4_0_4x8_q8_0_fp16:
-  //   qs[32*j + 8*row + lane], j=8-element chunk index (0..3), row=0..3.
-  // (matches __ggml_quantize_mat_q8_0_4x8 in ggml_interface_fp16.cpp). Each
-  // source plain block_q8_0 row holds qs[32*j + lane]; scatter 8 lanes per
-  // (j,row) into the interleaved dst.
+
+  const unsigned int interleave_chunk_size = 256;
+  const size_t interleave_loops = (M4 + interleave_chunk_size - 1) / interleave_chunk_size;
+
   tm.parallel_for(0, interleave_loops, [=, &y_q80x4](size_t idx) {
-    unsigned int r0 = idx * interleave_chunk;
-    unsigned int r1 = std::min(r0 + interleave_chunk, M4);
-    for (unsigned int r = r0; r < r1; ++r) {
+    unsigned int r_start = idx * interleave_chunk_size;
+    unsigned int r_end = std::min(r_start + interleave_chunk_size, M4);
+
+    for (unsigned int r = r_start; r < r_end; ++r) {
       for (unsigned int b = 0; b < blocks_per_4_rows; ++b) {
-        local_block_q8_0x4 &dst = y_q80x4[r * blocks_per_4_rows + b];
+        unsigned int dst_idx = r * blocks_per_4_rows + b;
+        local_block_q8_0x4 &dst = y_q80x4[dst_idx];
         for (unsigned int i = 0; i < 4; ++i) {
           unsigned int src_idx = (r * 4 + i) * blocks_per_4_rows + b;
           if (src_idx >= max_blocks) {
-            // pad missing row with zero scale + zero qs
-            dst.d[i] = 0;
-            for (unsigned int j = 0; j < 4; ++j)
-              std::memset(&dst.qs[32 * j + 8 * i], 0, 8);
             continue;
           }
           const local_block_q8_0 &src = in_q80[src_idx];
           dst.d[i] = src.d;
-          for (unsigned int j = 0; j < 4; ++j)
-            std::memcpy(&dst.qs[32 * j + 8 * i], &src.qs[8 * j], 8);
+          std::memcpy(&dst.qs[32 * i], src.qs, 32);
         }
       }
     }
   });
+
+  // Remainder rows: copy them directly
   if (rem > 0) {
     char *rem_dst = QA_ptr + M4 * qa_4_rows_size;
     const char *rem_src = (const char *)A + M4 * 4 * qa_row_size;
@@ -221,126 +212,74 @@ Tensor &Q8_0_Tensor::dot(Tensor const &input, Tensor &output, bool trans,
   }
 
   const unsigned int A_step = sizeof(local_block_q8_0) * (K / 32);
-  const unsigned int B_step = 18 * (K / 32); // block_q4_0 = 18 B
+  const unsigned int B_step = 18 * (K / 32); // block_q4_0 size = 18 bytes
 
   if (M4 > 0) {
-    const unsigned int row_chunk = 16;
-    const size_t row_loop = (M4 * 4 + row_chunk - 1) / row_chunk;
-    const unsigned int col_chunk = 16;
-    const size_t col_loop = (N + col_chunk - 1) / col_chunk;
+    const unsigned int row_chunk_size = 16;
+    const size_t row_loop = (M4 * 4 + row_chunk_size - 1) / row_chunk_size;
+    const unsigned int col_chunk_size = 16;
+    const size_t col_loop = (N + col_chunk_size - 1) / col_chunk_size;
+
     tm.parallel_for(0, col_loop * row_loop, [=](size_t i) {
       unsigned int r = i / col_loop;
       unsigned int c = i % col_loop;
-      unsigned int r0 = r * row_chunk;
-      unsigned int r1 = std::min(row_chunk * (r + 1), M4 * 4);
-      unsigned int c0 = c * col_chunk;
-      unsigned int c1 = std::min(col_chunk * (c + 1), N);
+
+      unsigned int r_start = r * row_chunk_size;
+      unsigned int r_end = std::min(row_chunk_size * (r + 1), M4 * 4);
+
+      unsigned int c_start = c * col_chunk_size;
+      unsigned int c_end = std::min(col_chunk_size * (c + 1), N);
+
 #if defined(__ARM_NEON)
-      nntr_gemm_q4_0_4x8_q8_0_fp16(K, (_FP16 *)(C + r0 * N + c0), N,
-                                   (void *)((char *)B + c0 * B_step),
-                                   (void *)(QA_ptr + r0 * A_step), r1 - r0,
-                                   c1 - c0);
+      nntr_gemm_q4_0_4x8_q8_0_fp16(K, (_FP16 *)(C + r_start * N + c_start), N,
+                                   (void *)((char *)B + c_start * B_step),
+                                   (void *)(QA_ptr + r_start * A_step),
+                                   r_end - r_start, c_end - c_start);
 #else
-      unsigned int t_rows = r1 - r0, t_cols = c1 - c0;
+      unsigned int t_rows = r_end - r_start;
+      unsigned int t_cols = c_end - c_start;
       std::vector<float> tile(t_rows * t_cols);
       nntr_gemm_q4_0_4x8_q8_0(K, tile.data(), t_cols,
-                             (void *)((char *)B + c0 * B_step),
-                             (void *)(QA_ptr + r0 * A_step), t_rows, t_cols);
-      for (unsigned int ii = 0; ii < t_rows; ++ii)
-        for (unsigned int jj = 0; jj < t_cols; ++jj)
-          C[(r0 + ii) * N + c0 + jj] = (_FP16)tile[ii * t_cols + jj];
+                              (void *)((char *)B + c_start * B_step),
+                              (void *)(QA_ptr + r_start * A_step), t_rows,
+                              t_cols);
+      for (unsigned int ii = 0; ii < t_rows; ++ii) {
+        for (unsigned int jj = 0; jj < t_cols; ++jj) {
+          C[(r_start + ii) * N + c_start + jj] = (_FP16)tile[ii * t_cols + jj];
+        }
+      }
 #endif
     });
   }
+
+  // Leftover rows (M % 4) GEMV
   if (rem > 0) {
     std::vector<float> tail32(rem * (size_t)N);
     unsigned int chunk_size = 16;
     unsigned int loop = (N + chunk_size - 1) / chunk_size;
-    for (unsigned int pb = M4 * 4; pb < M; ++pb) {
+    for (unsigned int pb = M4 * 4; pb < M; pb++) {
       tm.parallel_for(0, loop, [=, &tail32](size_t idx) {
-        unsigned int s0 = chunk_size * idx;
-        unsigned int s1 = std::min(chunk_size * (idx + 1), (size_t)N);
+        unsigned int M_step_start = chunk_size * idx;
+        unsigned int M_step_end = std::min(chunk_size * (idx + 1), (size_t)N);
+
         nntr_gemv_q4_0_4x8_q8_0(
-          K, (float *)(tail32.data() + (pb - M4 * 4) * N) + s0, N,
-          (void *)((char *)B + s0 * B_step),
+          K, (float *)(tail32.data() + (pb - M4 * 4) * N) + M_step_start, N,
+          (void *)((char *)B + M_step_start * B_step),
           QA_ptr + (M4 * qa_4_rows_size) + (pb - M4 * 4) * qa_row_size, 1,
-          s1 - s0);
+          M_step_end - M_step_start);
       });
     }
-    for (unsigned int ii = 0; ii < rem; ++ii)
-      for (unsigned int jj = 0; jj < N; ++jj)
+    for (unsigned int ii = 0; ii < rem; ++ii) {
+      for (unsigned int jj = 0; jj < N; ++jj) {
         C[(M4 * 4 + ii) * N + jj] = (_FP16)tail32[ii * N + jj];
+      }
+    }
   }
+
   return output;
 #else
   throw std::invalid_argument("Q8_0_Tensor::dot() is not supported on this platform.");
 #endif
 }
-
-#ifdef ENABLE_FP16
-void Q8_0_Tensor::dot_prepacked_x4(unsigned int M, unsigned int K,
-                                   unsigned int N, const void *QA,
-                                   const void *B, _FP16 *C, unsigned int ldc) {
-  const char *QA_ptr = (const char *)QA;
-  const unsigned int blocks_per_4_rows = (K + 32 - 1) / 32;
-  const unsigned int qa_4_rows_size =
-    (sizeof(uint16_t) * 4 + 128) * blocks_per_4_rows; // block_q8_0x4 = 136 B
-  const size_t qa_row_size = 34 * K / 32;             // block_q8_0 = 34 B
-  const unsigned int M4 = M / 4;
-  const unsigned int rem = M % 4;
-  const unsigned int A_step = 34 * (K / 32); // sizeof(block_q8_0) * (K/32)
-  const unsigned int B_step = 18 * (K / 32); // sizeof(block_q4_0) * (K/32)
-  auto &tm = ThreadManager::Global();
-
-  if (M4 > 0) {
-    const unsigned int row_chunk = 16;
-    const size_t row_loop = (M4 * 4 + row_chunk - 1) / row_chunk;
-    const unsigned int col_chunk = 16;
-    const size_t col_loop = (N + col_chunk - 1) / col_chunk;
-    tm.parallel_for(0, col_loop * row_loop, [=](size_t i) {
-      unsigned int r = i / col_loop;
-      unsigned int c = i % col_loop;
-      unsigned int r0 = r * row_chunk;
-      unsigned int r1 = std::min(row_chunk * (r + 1), M4 * 4);
-      unsigned int c0 = c * col_chunk;
-      unsigned int c1 = std::min(col_chunk * (c + 1), N);
-#if defined(__ARM_NEON)
-      nntr_gemm_q4_0_4x8_q8_0_fp16(K, (_FP16 *)(C + r0 * ldc + c0), ldc,
-                                   (void *)((const char *)B + c0 * B_step),
-                                   (void *)(QA_ptr + r0 * A_step), r1 - r0,
-                                   c1 - c0);
-#else
-      unsigned int t_rows = r1 - r0, t_cols = c1 - c0;
-      std::vector<float> tile(t_rows * t_cols);
-      nntr_gemm_q4_0_4x8_q8_0(K, tile.data(), t_cols,
-                             (void *)((const char *)B + c0 * B_step),
-                             (void *)(QA_ptr + r0 * A_step), t_rows, t_cols);
-      for (unsigned int ii = 0; ii < t_rows; ++ii)
-        for (unsigned int jj = 0; jj < t_cols; ++jj)
-          C[(r0 + ii) * ldc + c0 + jj] = (_FP16)tile[ii * t_cols + jj];
-#endif
-    });
-  }
-  if (rem > 0) {
-    std::vector<float> tail32(rem * (size_t)N);
-    const unsigned int chunk_size = 16;
-    const unsigned int loop = (N + chunk_size - 1) / chunk_size;
-    for (unsigned int pb = M4 * 4; pb < M; ++pb) {
-      tm.parallel_for(0, loop, [=, &tail32](size_t idx) {
-        unsigned int s0 = chunk_size * idx;
-        unsigned int s1 = std::min(chunk_size * (idx + 1), (size_t)N);
-        nntr_gemv_q4_0_4x8_q8_0(
-          K, (float *)(tail32.data() + (pb - M4 * 4) * N) + s0, N,
-          (void *)((const char *)B + s0 * B_step),
-          QA_ptr + (M4 * qa_4_rows_size) + (pb - M4 * 4) * qa_row_size, 1,
-          s1 - s0);
-      });
-    }
-    for (unsigned int ii = 0; ii < rem; ++ii)
-      for (unsigned int jj = 0; jj < N; ++jj)
-        C[(M4 * 4 + ii) * ldc + jj] = (_FP16)tail32[ii * N + jj];
-  }
-}
-#endif
 
 } // namespace nntrainer

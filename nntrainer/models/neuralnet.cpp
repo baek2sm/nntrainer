@@ -438,7 +438,7 @@ sharedConstTensors NeuralNetwork::forwarding(
                  forwarding of the first node.
 
          Step 3. Then check the look a head which says how many layer weights
-       need to be loaded before running to hide overehad due to FSU,
+        need to be loaded before running to hide overehad due to FSU,
 
          Step 4. Try to get the tesors by asking tensors for layers which is
        done by thread pool
