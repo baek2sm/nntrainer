@@ -39,6 +39,8 @@
 #include <utility>
 #include <vector>
 
+#include <profiler.h>
+
 #include "c2psa_layer.h"
 #include "yolov11_graph.h"
 #include <app_context.h>
@@ -443,6 +445,10 @@ inline void printPeakRSS() {
 
 int main(int argc, char *argv[]) {
   try {
+    std::shared_ptr<nntrainer::profile::GenericProfileListener> listener;
+    listener = std::make_shared<nntrainer::profile::GenericProfileListener>();
+    nntrainer::profile::Profiler::Global().subscribe(listener);
+
     if (argc > 1)
       RES_DIR = argv[1];
     const std::string input_path =
@@ -596,6 +602,10 @@ int main(int argc, char *argv[]) {
     std::cout << "Inference time: " << (total_ms / bench_iters)
               << " ms (avg over " << bench_iters << " iters)" << std::endl;
     printPeakRSS();
+
+    std::cout << "\n=== NNTRAINER DETAILED PROFILE REPORT ===" << std::endl;
+    listener->report(std::cout);
+    std::cout << "=========================================\n" << std::endl;
 
     // Post-process: DFL decode + dist2bbox + sigmoid -> [5, N] then NMS.
     std::vector<yolov11::ScaleInfo> scales = {
