@@ -83,6 +83,57 @@ static TensorDim calcCol2ImOutputDim(const TensorDim &out,
 }
 
 #ifdef ENABLE_FP16
+static inline void quantize_nhwc_q8_0_tensorwise_rows(const _FP16 *src, int n_spatial,
+                                            int in_ch,
+                                            ::nntrainer::block_q8_0 *dst) {
+  const int nb = in_ch / 32;
+  auto &tm = ThreadManager::Global();
+  const size_t total_elements = (size_t)n_spatial * in_ch;
+
+  const unsigned int chunk = 16384;
+  const size_t loops = (total_elements + chunk - 1) / chunk;
+  std::vector<float> local_max(loops, 0.0f);
+
+  tm.parallel_for(0, loops, [=, &local_max](size_t idx) {
+    size_t start = idx * chunk;
+    size_t end = std::min(start + chunk, total_elements);
+    float amax = 0.f;
+    for (size_t i = start; i < end; ++i) {
+      float v = std::abs(static_cast<float>(src[i]));
+      if (v > amax) amax = v;
+    }
+    local_max[idx] = amax;
+  });
+
+  float global_max = 0.f;
+  for (float m : local_max) {
+    if (m > global_max) global_max = m;
+  }
+
+  const float d = global_max / 127.f;
+  const float id = d ? 1.f / d : 0.f;
+  _FP16 d_h = static_cast<_FP16>(d);
+  uint16_t d_u16;
+  std::memcpy(&d_u16, &d_h, 2);
+
+  const unsigned int spatial_chunk = 512;
+  const size_t spatial_loops = ((size_t)n_spatial + spatial_chunk - 1) / spatial_chunk;
+  tm.parallel_for(0, spatial_loops, [=](size_t idx) {
+    unsigned r0 = (unsigned)idx * spatial_chunk;
+    unsigned r1 = std::min(r0 + spatial_chunk, (unsigned)n_spatial);
+    for (unsigned r = r0; r < r1; ++r) {
+      const _FP16 *row = src + (size_t)r * in_ch;
+      for (int b = 0; b < nb; ++b) {
+        const _FP16 *blk = row + b * 32;
+        ::nntrainer::block_q8_0 &out_blk = dst[(size_t)r * nb + b];
+        out_blk.d = d_u16;
+        for (int j = 0; j < 32; ++j)
+          out_blk.qs[j] = (int8_t)std::roundf(static_cast<float>(blk[j]) * id);
+      }
+    }
+  });
+}
+
 /**
  * @brief Quantize FP16 NHWC [n_spatial, in_ch] -> plain block_q8_0 [n_spatial][in_ch/32].
  *
@@ -147,28 +198,42 @@ static inline void transpose_quantize_q8_0_act(const _FP16 *src, int in_ch,
   block_q8_0 *y = static_cast<block_q8_0 *>(dst);
   const int qk = 32;
   const int nb = in_ch / qk;
+  const size_t total_elements = (size_t)owoh * in_ch;
 
   auto &tm = ThreadManager::Global();
+  const unsigned int chunk_max = 16384;
+  const size_t loops_max = (total_elements + chunk_max - 1) / chunk_max;
+  std::vector<float> local_max(loops_max, 0.0f);
+
+  tm.parallel_for(0, loops_max, [=, &local_max](size_t idx) {
+    size_t start = idx * chunk_max;
+    size_t end = std::min(start + chunk_max, total_elements);
+    float amax = 0.f;
+    for (size_t i = start; i < end; ++i) {
+      float v = std::abs(static_cast<float>(src[i]));
+      if (v > amax) amax = v;
+    }
+    local_max[idx] = amax;
+  });
+
+  float global_max = 0.f;
+  for (float m : local_max) {
+    if (m > global_max) global_max = m;
+  }
+
+  const float d = global_max / 127.f;
+  const float id = d ? 1.f / d : 0.f;
+  _FP16 d_h = static_cast<_FP16>(d);
+  uint16_t d_u16;
+  std::memcpy(&d_u16, &d_h, 2);
+
   const unsigned int chunk = 1024;
-  const size_t loops = (owoh + chunk - 1) / chunk;
+  const size_t loops = ((size_t)owoh + chunk - 1) / chunk;
   tm.parallel_for(0, loops, [=](size_t idx) {
     unsigned int r0 = idx * chunk;
     unsigned int r1 = std::min(r0 + chunk, (unsigned int)owoh);
     for (unsigned int r = r0; r < r1; ++r) {
       for (int b = 0; b < nb; ++b) {
-        float amax = 0.0f;
-        for (int j = 0; j < qk; ++j) {
-          int c = b * qk + j;
-          float val =
-            std::abs(static_cast<float>(src[c * owoh + r]));
-          if (val > amax)
-            amax = val;
-        }
-        const float d = amax / ((1 << 7) - 1);
-        const float id = d ? 1.0f / d : 0.0f;
-        _FP16 d_half = static_cast<_FP16>(d);
-        uint16_t d_u16;
-        std::memcpy(&d_u16, &d_half, 2);
         y[r * nb + b].d = d_u16;
         for (int j = 0; j < qk; ++j) {
           int c = b * qk + j;
@@ -209,8 +274,35 @@ transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch, int owoh,
   const int rem = owoh % 4;
   block_q8_0x4 *y4 = static_cast<block_q8_0x4 *>(dst);
   const size_t qa_4_rows_size = sizeof(block_q8_0x4) * nb;
+  const size_t total_elements = (size_t)owoh * in_ch;
 
   auto &tm = ThreadManager::Global();
+  const unsigned int chunk_max = 16384;
+  const size_t loops_max = (total_elements + chunk_max - 1) / chunk_max;
+  std::vector<float> local_max(loops_max, 0.0f);
+
+  tm.parallel_for(0, loops_max, [=, &local_max](size_t idx) {
+    size_t start = idx * chunk_max;
+    size_t end = std::min(start + chunk_max, total_elements);
+    float amax = 0.f;
+    for (size_t i = start; i < end; ++i) {
+      float v = std::abs(static_cast<float>(src[i]));
+      if (v > amax) amax = v;
+    }
+    local_max[idx] = amax;
+  });
+
+  float global_max = 0.f;
+  for (float m : local_max) {
+    if (m > global_max) global_max = m;
+  }
+
+  const float d = global_max / 127.f;
+  const float id = d ? 1.f / d : 0.f;
+  _FP16 d_h = static_cast<_FP16>(d);
+  uint16_t d_u16;
+  std::memcpy(&d_u16, &d_h, 2);
+
   const unsigned int chunk = 256; // groups of 4 rows per task
   const size_t loops = (M4 + chunk - 1) / chunk;
   tm.parallel_for(0, loops, [=](size_t idx) {
@@ -222,23 +314,10 @@ transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch, int owoh,
         block_q8_0x4 &dst_b = y4[g * nb + b];
         for (unsigned int row = 0; row < 4; ++row) {
           unsigned int r = r0 + row;
-          float amax = 0.0f;
-          for (int j = 0; j < qk; ++j) {
-            int c = b * qk + j;
-            float val = std::abs(static_cast<float>(src[c * owoh + r]));
-            if (val > amax)
-              amax = val;
-          }
-          const float d = amax / ((1 << 7) - 1);
-          const float id = d ? 1.0f / d : 0.0f;
-          _FP16 d_half = static_cast<_FP16>(d);
-          uint16_t d_u16;
-          std::memcpy(&d_u16, &d_half, 2);
           dst_b.d[row] = d_u16;
           for (int j = 0; j < qk; ++j) {
             int c = b * qk + j;
             float x0 = static_cast<float>(src[c * owoh + r]) * id;
-            // qs[32*chunk + 8*row + lane], chunk = j/8, lane = j%8
             dst_b.qs[32 * (j / 8) + 8 * row + (j % 8)] =
               static_cast<int8_t>(std::roundf(x0));
           }
@@ -247,7 +326,6 @@ transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch, int owoh,
     }
   });
 
-  // Remainder rows (owoh % 4): plain block_q8_0 for the GEMV tail.
   if (rem > 0) {
     block_q8_0 *yrem =
       reinterpret_cast<block_q8_0 *>(reinterpret_cast<char *>(dst) +
@@ -260,28 +338,16 @@ transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch, int owoh,
       for (unsigned int i = i0; i < i1; ++i) {
         unsigned int r = M4 * 4 + i;
         for (int b = 0; b < nb; ++b) {
-          float amax = 0.0f;
-          for (int j = 0; j < qk; ++j) {
-            int c = b * qk + j;
-            float val = std::abs(static_cast<float>(src[c * owoh + r]));
-            if (val > amax)
-              amax = val;
-          }
-          const float d = amax / ((1 << 7) - 1);
-          const float id = d ? 1.0f / d : 0.0f;
-          _FP16 d_half = static_cast<_FP16>(d);
-          uint16_t d_u16;
-          std::memcpy(&d_u16, &d_half, 2);
           yrem[i * nb + b].d = d_u16;
           for (int j = 0; j < qk; ++j) {
             int c = b * qk + j;
             float x0 = static_cast<float>(src[c * owoh + r]) * id;
-            yrem[i * nb + b].qs[j] = static_cast<int8_t>(std::roundf(x0));
+            yrem[i * nb + b].qs[j] = std::roundf(x0);
           }
         }
       }
-    });
-  }
+    }
+  });
 }
 #endif
 
@@ -911,10 +977,11 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                 context.getTensor(wt_idx[ConvParams::q8act_scratch])
                   .getData());
             }
+            (void)q8_buf;
             if (is_1x1_s1) {
 #ifdef ENABLE_FP16
               if (can_q8act && q8_buf) {
-                quantize_nhwc_q8_0_rows(in_sub.getData<_FP16>(), owoh,
+                quantize_nhwc_q8_0_tensorwise_rows(in_sub.getData<_FP16>(), owoh,
                                         in_ch_i, q8_buf);
                 TensorDim q8dim({1, 1, owoh, (unsigned)in_ch_i},
                                 {ml::train::TensorDim::Format::NCHW,
@@ -948,7 +1015,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
 #ifdef ENABLE_FP16
               if (can_q8act && q8_buf) {
                 const int n_sp = geom.in_h * geom.in_w;
-                quantize_nhwc_q8_0_rows(in_sub.getData<_FP16>(), n_sp,
+                quantize_nhwc_q8_0_tensorwise_rows(in_sub.getData<_FP16>(), n_sp,
                                         in_ch_i, q8_buf);
                 TensorDim q8dim({1, 1, (unsigned)n_sp, (unsigned)in_ch_i},
                                 {ml::train::TensorDim::Format::NCHW,
