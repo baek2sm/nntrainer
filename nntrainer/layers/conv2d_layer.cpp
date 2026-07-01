@@ -950,6 +950,8 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     const bool weight_is_quant = (weight_dtype == nntrainer::Tdatatype::Q4_0 ||
                                   weight_dtype == nntrainer::Tdatatype::QINT4);
     const unsigned int owoh = out_dim.width() * out_dim.height();
+    const bool output_is_q8 =
+      hidden_.getDataType() == nntrainer::Tdatatype::Q8_0;
 
     TensorDim filter_dim_squeezed{filter_kernel.batch(),
                                   filter_kernel.getDim().getFeatureLen()};
@@ -995,15 +997,25 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
         if (weight_is_quant) {
           if (in_sub.getFormat() == ml::train::TensorDim::Format::NHWC) {
             // NHWC channel-last quantized convolution:
-            // Since physical layout is [owoh, filter_size], we reshape `out` to flat
-            // NCHW [1, 1, owoh, filter_size] and write directly, completely bypassing
-            // qgemm_scratch and transposes!
-            Tensor out_flat = out;
-            out_flat.reshape(TensorDim(1, 1, owoh, filter_size, {ml::train::TensorDim::Format::NCHW, out.getDataType()}));
+            // Compute into the FP16 qgemm_scratch (always requested for quant
+            // convs), then bias+SiLU in FP16, and finally quantize to Q8_0 if
+            // the model activation dtype is Q8_0. For FP16-activation graphs
+            // the final quantize step is skipped and the scratch is copied back.
+            Tensor tmp_fp16 = qgemm_scratch->getBatchSlice(b, 1);
+            tmp_fp16.reshape(TensorDim(1, 1, owoh, filter_size,
+                                       {ml::train::TensorDim::Format::NCHW,
+                                        nntrainer::Tdatatype::FP16}));
+            Tensor out_flat = output_is_q8 ? tmp_fp16 : out;
+            if (!output_is_q8) {
+              out_flat.reshape(TensorDim(1, 1, owoh, filter_size,
+                                         {ml::train::TensorDim::Format::NCHW,
+                                          out.getDataType()}));
+            }
 
             const int in_ch_i = (int)in_dim.channel();
-            const bool can_q8act =
-              (in_ch_i % 32 == 0) && (std::getenv("NNTR_CONV_Q8ACT") != nullptr);
+            const bool can_q8act = (in_ch_i % 32 == 0) &&
+                                   (output_is_q8 ||
+                                    std::getenv("NNTR_CONV_Q8ACT") != nullptr);
             // Pre-allocated Q8_0 scratch (no per-forward malloc).
             ::nntrainer::block_q8_0 *q8_buf = nullptr;
             if (can_q8act &&
@@ -1022,6 +1034,14 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                   owoh, (unsigned)in_ch_i, filter_size, q8_buf,
                   filter_kernel.getData(), out_flat.getData<_FP16>(),
                   filter_size);
+              } else if (output_is_q8) {
+                // FP16 input but no NNTR Q8_0 path enabled: still need FP16
+                // intermediate so we can quantize to Q8_0 afterwards.
+                Tensor act = in_sub;
+                act.reshape(TensorDim(1, 1, owoh, in_dim.channel(),
+                                     {ml::train::TensorDim::Format::NCHW,
+                                      in_sub.getDataType()}));
+                act.dot(filter_kernel, out_flat, false, false);
               } else {
 #endif
                 Tensor act = in_sub;
@@ -1066,15 +1086,36 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             } else {
               throw std::runtime_error("Fallback quantized NHWC conv is not supported (requires indirect conv on ARM).");
             }
+
+            // If the model activation dtype is Q8_0, the GEMM wrote into an
+            // FP16 scratch (qgemm_scratch). Bias and SiLU are applied on the
+            // scratch below (shared with the FP16 path), then we quantize the
+            // result into the real Q8_0 output tensor here.
+            if (output_is_q8) {
+              Tensor q8_out = out;
+              q8_out.reshape(TensorDim(1, 1, owoh, filter_size,
+                                       {ml::train::TensorDim::Format::NCHW,
+                                        nntrainer::Tdatatype::Q8_0}));
+              const _FP16 *src = tmp_fp16.getData<_FP16>();
+              ::nntrainer::block_q8_0 *dst =
+                reinterpret_cast<::nntrainer::block_q8_0 *>(q8_out.getData());
+              quantize_nhwc_q8_0_rows(src, (int)owoh, (int)filter_size, dst);
+            }
           } else {
             // Quantized conv as matmul: act [OH*OW, CRS] . weight [CRS, out_ch]
             // -> [OH*OW, out_ch] -> out [out_ch, OH*OW]. CRS = in_ch*kh*kw.
             // NOTE: col must outlive `act` (act aliases col's storage); here col
             // is a view into the context-owned scratch, so its storage outlives
             // the loop iteration regardless.
+            //
+            // For a Q8_0-activation graph the scratch stays FP16 so that bias +
+            // SiLU can reuse the existing FP16 epilogue; we quantize to Q8_0
+            // after the transpose.
             Tensor tmp = qgemm_scratch->getBatchSlice(b, 1);
-            tmp.reshape(
-              TensorDim(1, 1, owoh, filter_size, in_sub.getTensorType()));
+            tmp.reshape(TensorDim(1, 1, owoh, filter_size,
+                                  {ml::train::TensorDim::Format::NCHW,
+                                   output_is_q8 ? nntrainer::Tdatatype::FP16
+                                                : in_sub.getDataType()}));
             if (is_1x1_s1) {
               // 1x1 stride-1: im2col is an identity. The raw input is laid out as
               // [in_ch, OH*OW] (NCHW), so transpose to the act layout [OH*OW,
@@ -1122,8 +1163,26 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             // [OH*OW, out_ch] -> [out_ch, OH*OW] written straight into the
             // (memory-planned) output. `tmp` is a separate scratch buffer and
             // `out` is a separate output view, so there is no aliasing.
-            out.reshape({filter_size, owoh});
-            tmp.transpose("0:2:1", out);
+            if (output_is_q8) {
+              // Transpose into a temporary FP16 channel-major view of `out`,
+              // then quantize that to Q8_0. We borrow qgemm_scratch storage
+              // for the transpose by reshaping it; it is no longer needed.
+              Tensor tmp_chw = tmp;
+              tmp_chw.reshape({filter_size, owoh});
+              Tensor chw_fp16(out.getDim(), true);
+              tmp_chw.transpose("0:2:1", chw_fp16);
+              Tensor q8_out = out;
+              q8_out.reshape(TensorDim(owoh, filter_size,
+                                       {ml::train::TensorDim::Format::NCHW,
+                                        nntrainer::Tdatatype::Q8_0}));
+              quantize_nhwc_q8_0_rows(chw_fp16.getData<_FP16>(), (int)owoh,
+                                      (int)filter_size,
+                                      reinterpret_cast<::nntrainer::block_q8_0 *>(
+                                        q8_out.getData()));
+            } else {
+              out.reshape({filter_size, owoh});
+              tmp.transpose("0:2:1", out);
+            }
           }
         } else {
           Tensor result = col_scratch->getBatchSlice(b, 1);
@@ -1261,57 +1320,61 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     }
   }
 
-  if (auto &disable_bias = std::get<props::DisableBias>(*layer_impl_props);
-      disable_bias.empty() || disable_bias.get() == false) {
-    Tensor &bias_kernel = context.getWeight(wt_idx[ConvParams::bias]);
-    if (hidden_.getFormat() == ml::train::TensorDim::Format::NCHW) {
-      status = hidden_.add_i(bias_kernel);
-      if (status != ML_ERROR_NONE) {
-        throw std::invalid_argument("[Conv2D] adding bias failed");
-      }
-    } else {
-      // NHWC: channel is innermost. bias [out_ch] must be added per (n,h,w,c).
-      // add_i assumes NCHW channel-major broadcast, so do it inline.
-      const unsigned int C = out_dim.channel();
-      const unsigned int HW = out_dim.height() * out_dim.width();
-      const unsigned int B = out_dim.batch();
-      if (hidden_.getDataType() == nntrainer::Tdatatype::FP32) {
-        float *d = hidden_.getData<float>();
-        const float *bias = bias_kernel.getData<float>();
-        for (unsigned int b = 0; b < B; ++b)
-          for (unsigned int p = 0; p < HW; ++p)
-            for (unsigned int c = 0; c < C; ++c)
-              d[((size_t)b * HW + p) * C + c] += bias[c];
-      }
+  // Bias and fused SiLU are applied on the FP16 qgemm_scratch when the output
+  // activation dtype is Q8_0, then quantized back to Q8_0 inside the loop.
+  if (hidden_.getDataType() != nntrainer::Tdatatype::Q8_0) {
+    if (auto &disable_bias = std::get<props::DisableBias>(*layer_impl_props);
+        disable_bias.empty() || disable_bias.get() == false) {
+      Tensor &bias_kernel = context.getWeight(wt_idx[ConvParams::bias]);
+      if (hidden_.getFormat() == ml::train::TensorDim::Format::NCHW) {
+        status = hidden_.add_i(bias_kernel);
+        if (status != ML_ERROR_NONE) {
+          throw std::invalid_argument("[Conv2D] adding bias failed");
+        }
+      } else {
+        // NHWC: channel is innermost. bias [out_ch] must be added per (n,h,w,c).
+        // add_i assumes NCHW channel-major broadcast, so do it inline.
+        const unsigned int C = out_dim.channel();
+        const unsigned int HW = out_dim.height() * out_dim.width();
+        const unsigned int B = out_dim.batch();
+        if (hidden_.getDataType() == nntrainer::Tdatatype::FP32) {
+          float *d = hidden_.getData<float>();
+          const float *bias = bias_kernel.getData<float>();
+          for (unsigned int b = 0; b < B; ++b)
+            for (unsigned int p = 0; p < HW; ++p)
+              for (unsigned int c = 0; c < C; ++c)
+                d[((size_t)b * HW + p) * C + c] += bias[c];
+        }
 #ifdef ENABLE_FP16
-      else if (hidden_.getDataType() == nntrainer::Tdatatype::FP16) {
-        _FP16 *d = hidden_.getData<_FP16>();
-        const _FP16 *bias = bias_kernel.getData<_FP16>();
-        for (unsigned int b = 0; b < B; ++b)
-          for (unsigned int p = 0; p < HW; ++p)
-            for (unsigned int c = 0; c < C; ++c)
-              d[((size_t)b * HW + p) * C + c] += bias[c];
-      }
+        else if (hidden_.getDataType() == nntrainer::Tdatatype::FP16) {
+          _FP16 *d = hidden_.getData<_FP16>();
+          const _FP16 *bias = bias_kernel.getData<_FP16>();
+          for (unsigned int b = 0; b < B; ++b)
+            for (unsigned int p = 0; p < HW; ++p)
+              for (unsigned int c = 0; c < C; ++c)
+                d[((size_t)b * HW + p) * C + c] += bias[c];
+        }
 #endif
+      }
     }
-  }
 
-  // Fused activation epilogue. When the graph sets activation=swish on the
-  // conv, apply SiLU in-place on the freshly written output instead of
-  // materializing a separate Activation layer (which would read the conv
-  // output back from memory and write a second full tensor). Only SiLU is
-  // fused here (YOLOv11's conv activation); any other activation type is left
-  // to a dedicated Activation layer in the graph.
-  if (auto &act = std::get<props::FusedActivation>(conv_props);
-      !act.empty() && act.get() == ActivationType::ACT_SWISH) {
-    const size_t n = hidden_.size();
+    // Fused activation epilogue. When the graph sets activation=swish on the
+    // conv, apply SiLU in-place on the freshly written output instead of
+    // materializing a separate Activation layer (which would read the conv
+    // output back from memory and write a second full tensor). Only SiLU is
+    // fused here (YOLOv11's conv activation); any other activation type is left
+    // to a dedicated Activation layer in the graph.
+    if (auto &act = std::get<props::FusedActivation>(conv_props);
+        !act.empty() && act.get() == ActivationType::ACT_SWISH) {
+      const size_t n = hidden_.size();
 #ifdef ENABLE_FP16
-    if (hidden_.getDataType() == nntrainer::Tdatatype::FP16) {
-      convApplySwishInplace(hidden_.getData<_FP16>(), n);
-    } else
+      if (hidden_.getDataType() == nntrainer::Tdatatype::FP16) {
+        convApplySwishInplace(hidden_.getData<_FP16>(), n);
+      } else
 #endif
-    {
-      convApplySwishInplace(hidden_.getData<float>(), n);
+      {
+        convApplySwishInplace(hidden_.getData<float>(), n);
+      }
     }
   }
 
