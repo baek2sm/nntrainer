@@ -16,6 +16,7 @@
 
 #include <common_properties.h>
 #include <layer_devel.h>
+#include <limits>
 #include <operation_layer.h>
 
 namespace nntrainer {
@@ -56,6 +57,11 @@ public:
    * @copydoc Layer::finalize(InitLayerContext &context)
    */
   void finalize(InitLayerContext &context) final;
+
+  /**
+   * @copydoc Layer::forwarding(RunLayerContext &context, bool training)
+   */
+  void forwarding(RunLayerContext &context, bool training) override;
 
   /**
    * @brief forwarding operation for slice
@@ -99,7 +105,12 @@ public:
   bool support_backwarding;
   unsigned int axis;
   unsigned int start;
-  // TensorDim starts;
+  unsigned int fp16_scratch_idx =
+    std::numeric_limits<unsigned int>::max(); /**< FP16 input scratch for Q8_0
+                                                 slice */
+  unsigned int fp16_out_scratch_idx =
+    std::numeric_limits<unsigned int>::max(); /**< FP16 output scratch for Q8_0
+                                                 slice */
 };
 
 } // namespace nntrainer

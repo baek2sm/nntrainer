@@ -12,6 +12,8 @@
 
 #include "common_properties.h"
 #include "tensor_base.h"
+#include <layer_context.h>
+#include <limits>
 #include <nntrainer_error.h>
 #include <nntrainer_log.h>
 #include <node_exporter.h>
@@ -19,11 +21,40 @@
 #include <stdexcept>
 #include <util_func.h>
 
+#include <cmath>
 #include <cstring>
 
-#include <layer_context.h>
-
 namespace nntrainer {
+
+#ifdef ENABLE_FP16
+/**
+ * @brief Quantize a contiguous FP16 tensor to tensor-wise Q8_0.
+ *
+ * Layout: uint16_t scale followed by int8_t qs[round_up(nelem,32)].
+ * Scale = amax/127 as FP16.
+ */
+static void quantize_tensor_wise_q8_0_fp16(const _FP16 *src, size_t nelem,
+                                           uint8_t *storage) {
+  float amax = 0.0f;
+  for (size_t i = 0; i < nelem; ++i) {
+    amax = std::max(amax, std::fabs(static_cast<float>(src[i])));
+  }
+  float scale = amax / 127.0f;
+  if (scale == 0.0f)
+    scale = 1.0f;
+  _FP16 d = static_cast<_FP16>(scale);
+  std::memcpy(storage, &d, sizeof(uint16_t));
+  int8_t *qs = reinterpret_cast<int8_t *>(storage + sizeof(uint16_t));
+  for (size_t i = 0; i < nelem; ++i) {
+    float v = static_cast<float>(src[i]) / scale;
+    v = std::max(-127.0f, std::min(127.0f, v));
+    qs[i] = static_cast<int8_t>(std::round(v));
+  }
+  const size_t padded = ((nelem + 31) / 32) * 32;
+  for (size_t i = nelem; i < padded; ++i)
+    qs[i] = 0;
+}
+#endif
 
 void SliceLayer::finalize(InitLayerContext &context) {
   axis = std::get<props::Axis>(slice_props).get();
@@ -42,6 +73,21 @@ void SliceLayer::finalize(InitLayerContext &context) {
   }
 
   context.setOutputDimensions({outputDim});
+
+#ifdef ENABLE_FP16
+  if (in_dim.getDataType() == ml::train::TensorDim::DataType::Q8_0) {
+    TensorDim in_fp16 = in_dim;
+    in_fp16.setDataType(ml::train::TensorDim::DataType::FP16);
+    TensorDim out_fp16 = outputDim;
+    out_fp16.setDataType(ml::train::TensorDim::DataType::FP16);
+    fp16_scratch_idx = context.requestTensor(
+      in_fp16, "slice_in_fp16", Initializer::NONE, false,
+      TensorLifespan::MAX_LIFESPAN);
+    fp16_out_scratch_idx = context.requestTensor(
+      out_fp16, "slice_out_fp16", Initializer::NONE, false,
+      TensorLifespan::MAX_LIFESPAN);
+  }
+#endif
 }
 
 /**
@@ -165,6 +211,40 @@ static void sliceForwardT(const Tensor &input, Tensor &output,
       }
     }
   }
+}
+
+void SliceLayer::forwarding(RunLayerContext &context, bool training) {
+  Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);
+  const Tensor input = context.getInput(0);
+
+  if (input.getDataType() == ml::train::TensorDim::DataType::Q8_0) {
+#ifdef ENABLE_FP16
+    Tensor &in_fp16 = context.getTensor(fp16_scratch_idx);
+    Tensor &out_fp16 = context.getTensor(fp16_out_scratch_idx);
+
+    const uint8_t *storage_in =
+      reinterpret_cast<const uint8_t *>(input.getData()) - sizeof(uint16_t);
+    uint16_t du;
+    std::memcpy(&du, storage_in, sizeof(uint16_t));
+    float scale = static_cast<float>(*reinterpret_cast<const _FP16 *>(&du));
+    const int8_t *qs = input.getData<int8_t>();
+    _FP16 *fp16_buf = in_fp16.getData<_FP16>();
+    const size_t in_nelem = input.getDim().getDataLen();
+    for (size_t i = 0; i < in_nelem; ++i)
+      fp16_buf[i] = static_cast<_FP16>(static_cast<float>(qs[i]) * scale);
+
+    sliceForwardT<_FP16>(in_fp16, out_fp16, axis, start);
+
+    quantize_tensor_wise_q8_0_fp16(
+      out_fp16.getData<_FP16>(), out_fp16.getDim().getDataLen(),
+      reinterpret_cast<uint8_t *>(hidden_.getData()) - sizeof(uint16_t));
+    return;
+#else
+    throw std::invalid_argument("Q8_0 slice requires FP16 support");
+#endif
+  }
+
+  forwarding_operation(input, hidden_);
 }
 
 void SliceLayer::forwarding_operation(const Tensor &input, Tensor &output) {

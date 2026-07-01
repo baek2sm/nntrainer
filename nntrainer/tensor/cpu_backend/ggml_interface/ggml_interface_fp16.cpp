@@ -753,6 +753,97 @@ void __ggml_q4_0_4x8_q8_0_indirect_GEMM_q8_0(
     __copy_f16_from_f32(tail32.data(), C + (size_t)M4 * 4 * N, (size_t)rem * N);
   }
 }
+
+void __ggml_q4_0_4x8_q8_0_indirect_GEMM_tq8_0(
+  const unsigned int M, const unsigned int N, const unsigned int K,
+  const void *in, const ConvGatherParams &geom, const void *B,
+  const unsigned int ldb, _FP16 *C, const unsigned int ldc,
+  const _FP16 a_scale_h) {
+  auto &tm = ThreadManager::Global();
+  (void)ldb;
+
+  uint16_t a_scale_u16;
+  static_assert(sizeof(a_scale_h) == sizeof(uint16_t),
+                "_FP16 must be 16-bit");
+  std::memcpy(&a_scale_u16, &a_scale_h, sizeof(uint16_t));
+
+  const unsigned int blocks_per_4_rows = (K + QK8_0 - 1) / QK8_0;
+  const unsigned int qa_4_rows_size =
+    sizeof(block_q8_0x4) * blocks_per_4_rows;
+  const unsigned int qa_row_size = sizeof(block_q8_0) * blocks_per_4_rows;
+  const unsigned int M4 = M / 4;
+  const unsigned int rem = M % 4;
+
+  const unsigned int qa_size = qa_4_rows_size * M4 + qa_row_size * rem;
+  std::vector<char> QA(qa_size);
+  char *QA_ptr = QA.data();
+
+  const unsigned int QCHUNK = 64;
+  if (M4 > 0) {
+    const unsigned int rows4 = M4 * 4;
+    const size_t qloops = (rows4 + QCHUNK - 1) / QCHUNK;
+    tm.parallel_for(0, qloops, [=](size_t q) {
+      const unsigned int r0 = static_cast<unsigned int>(q) * QCHUNK;
+      const unsigned int r1 = std::min(r0 + QCHUNK, rows4);
+      for (unsigned int r = r0; r < r1; r += 4) {
+        gather_conv_act_rows_tq8_0(
+          QA_ptr + (r / 4) * qa_4_rows_size, in, geom, (int)r, 4,
+          a_scale_u16);
+      }
+    });
+  }
+
+  for (unsigned int i = M4 * 4; i < M; ++i) {
+    gather_conv_act_rows_tq8_0_single(
+      QA_ptr + (M4 * qa_4_rows_size) + (i - M4 * 4) * qa_row_size, in, geom,
+      (int)i, a_scale_u16);
+  }
+
+  const unsigned int B_step = sizeof(block_q4_0) * (K / QK4_0);
+
+  if (M4 > 0) {
+    const unsigned int row_chunk_size = 16;
+    const size_t row_loop = (M4 * 4 + row_chunk_size - 1) / row_chunk_size;
+    const unsigned int col_chunk_size = 16;
+    const size_t col_loop = (N + col_chunk_size - 1) / col_chunk_size;
+
+    tm.parallel_for(0, col_loop * row_loop, [=](size_t i) {
+      unsigned int r = i / col_loop;
+      unsigned int c = i % col_loop;
+
+      unsigned int r_start = r * row_chunk_size;
+      unsigned int r_end = std::min(row_chunk_size * (r + 1), M4 * 4);
+
+      unsigned int c_start = c * col_chunk_size;
+      unsigned int c_end = std::min(col_chunk_size * (c + 1), N);
+
+      unsigned int t_rows = r_end - r_start;
+      unsigned int t_cols = c_end - c_start;
+      unsigned int t_rows4 = t_rows & ~3U;
+      if (t_rows4 > 0) {
+        nntr_gemm_q4_0_4x8_q8_0_fp16(
+          K, C + r_start * ldc + c_start, ldc,
+          (void *)((char *)B + c_start * B_step),
+          (void *)(QA_ptr + r_start / 4 * qa_4_rows_size), t_rows4, t_cols);
+      }
+      for (unsigned int rr = r_start + t_rows4; rr < r_end; ++rr) {
+        nntr_gemv_q4_0_4x8_q8_0_fp16(
+          K, C + rr * ldc + c_start, ldc,
+          (void *)((char *)B + c_start * B_step),
+          QA_ptr + M4 * qa_4_rows_size + (rr - M4 * 4) * qa_row_size, 1,
+          t_cols);
+      }
+    });
+  }
+
+  if (rem > 0) {
+    for (unsigned int pb = M4 * 4; pb < M; pb++) {
+      nntr_gemv_q4_0_4x8_q8_0_fp16(
+        K, C + pb * ldc, ldc, (void *)B,
+        QA_ptr + (M4 * qa_4_rows_size) + (pb - M4 * 4) * qa_row_size, 1, N);
+    }
+  }
+}
 #endif
 
 } // namespace nntrainer

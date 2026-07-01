@@ -296,6 +296,114 @@ void nntr_gemm_q4_0_4x8_q8_0(int n, float *__restrict s, size_t bs,
   }
 }
 
+void nntr_gemm_q4_0_4x8_tq8_0(int n, float *__restrict s, size_t bs,
+                              const void *__restrict vx,
+                              const void *__restrict vy, int nr, int nc,
+                              float a_scale) {
+  const int qk = Q8_0;
+  const int nb = n / qk;
+  const int ncols_interleaved = 4;
+  const int blocklen = 8;
+
+  assert(n % qk == 0);
+  assert(nr % 4 == 0);
+  assert(nc % ncols_interleaved == 0);
+
+  float sumf[4][4];
+  int sumi;
+
+  for (int y = 0; y < nr / 4; y++) {
+    const int8_t *a_base = (const int8_t *)vy + y * 4 * nb * qk;
+    for (int x = 0; x < nc / ncols_interleaved; x++) {
+      const block_q4_0x4 *b_ptr = (const block_q4_0x4 *)vx + (x * nb);
+      for (int m = 0; m < 4; m++) {
+        for (int j = 0; j < ncols_interleaved; j++)
+          sumf[m][j] = 0.0;
+      }
+      const int8_t *a_ptr = a_base;
+      for (int l = 0; l < nb; l++) {
+        for (int k = 0; k < (qk / (2 * blocklen)); k++) {
+          for (int m = 0; m < 4; m++) {
+            for (int j = 0; j < ncols_interleaved; j++) {
+              sumi = 0;
+              for (int i = 0; i < blocklen; ++i) {
+                const int v0 =
+                  (int8_t)(b_ptr[l].qs[k * ncols_interleaved * blocklen +
+                                       j * blocklen + i]
+                           << 4);
+                const int v1 =
+                  (int8_t)(b_ptr[l].qs[k * ncols_interleaved * blocklen +
+                                       j * blocklen + i] &
+                           0xF0);
+                sumi +=
+                  ((v0 * a_ptr[k * 4 * blocklen + m * blocklen + i]) +
+                   (v1 * a_ptr[k * 4 * blocklen + m * blocklen + i +
+                               qk / 2 * 4])) >>
+                  4;
+              }
+              sumf[m][j] +=
+                sumi * nntr_compute_fp16_to_fp32(b_ptr[l].d[j]) * a_scale;
+            }
+          }
+        }
+        a_ptr += qk * 4;
+      }
+      for (int m = 0; m < 4; m++) {
+        for (int j = 0; j < ncols_interleaved; j++)
+          s[(y * 4 + m) * bs + x * ncols_interleaved + j] = sumf[m][j];
+      }
+    }
+  }
+}
+
+void nntr_gemv_q4_0_4x8_tq8_0(int n, float *__restrict s, size_t bs,
+                              const void *__restrict vx,
+                              const void *__restrict vy, int nr, int nc,
+                              float a_scale) {
+  const int qk = Q8_0;
+  const int nb = n / qk;
+  const int ncols_interleaved = 4;
+  const int blocklen = 8;
+
+  (void)nr;
+  assert(n % qk == 0);
+  assert(nc % ncols_interleaved == 0);
+
+  float sumf[4];
+  int sumi;
+
+  const int8_t *a_ptr = (const int8_t *)vy;
+  for (int x = 0; x < nc / ncols_interleaved; x++) {
+    const block_q4_0x4 *b_ptr = (const block_q4_0x4 *)vx + (x * nb);
+
+    for (int j = 0; j < ncols_interleaved; j++)
+      sumf[j] = 0.0;
+    for (int l = 0; l < nb; l++) {
+      for (int k = 0; k < (qk / (2 * blocklen)); k++) {
+        for (int j = 0; j < ncols_interleaved; j++) {
+          sumi = 0;
+          for (int i = 0; i < blocklen; ++i) {
+            const int v0 =
+              (int8_t)(b_ptr[l].qs[k * ncols_interleaved * blocklen +
+                                   j * blocklen + i]
+                       << 4);
+            const int v1 =
+              (int8_t)(b_ptr[l].qs[k * ncols_interleaved * blocklen +
+                                   j * blocklen + i] &
+                       0xF0);
+            sumi += ((v0 * a_ptr[l * qk + k * blocklen + i]) +
+                     (v1 * a_ptr[l * qk + k * blocklen + i + qk / 2])) >>
+                    4;
+          }
+          sumf[j] += sumi * nntr_compute_fp16_to_fp32(b_ptr[l].d[j]) * a_scale;
+        }
+      }
+    }
+    for (int j = 0; j < ncols_interleaved; j++)
+      s[x * ncols_interleaved + j] = sumf[j];
+  }
+}
+
 //============================================================================
 // GEMM/GEMV - Q4_0 8x8 (NYI in fallback - requires SIMD for performance)
 //============================================================================

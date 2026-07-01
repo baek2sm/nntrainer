@@ -16,6 +16,7 @@
  *   Tensor m4, m6;
  *   auto m10 = yolov11::buildBackbone(input, m4, m6, q40);
  *   auto outputs = yolov11::buildHead(m4, m6, m10, q40);
+ *   // outputs = {box0, cls0, box1, cls1, box2, cls2}
  *
  * @author Seungbaek Hong <sb92.hong@samsung.com>
  */
@@ -279,15 +280,21 @@ inline Tensor dwConvBnOnly(const std::string &name, int ch, Tensor input) {
 }
 
 /**
- * @brief Build one Detect scale -> raw logits [1, 64+nc, H, W].
+ * @brief Build one Detect scale -> raw logits {box, cls}.
+ *
+ * Returns two separate tensors so box (64 ch) and cls (1 ch) keep their own
+ * tensor-wise Q8_0 scales. Concatenating them into one Q8_0 tensor would force
+ * a single scale across branches with very different magnitudes and collapse
+ * the tiny class logit.
  *
  * @param s       name prefix (e.g. "det0")
  * @param pi_ch   input feature channels (256 for P3, 512 for P4/P5)
  * @param in      input feature map
  * @param conv_q40  If true, eligible convs use Q4_0.
+ * @return        {box, cls} tensors; box is [1,64,H,W], cls is [1,nc,H,W]
  */
-inline Tensor detectScale(const std::string &s, int pi_ch, Tensor in,
-                          bool conv_q40 = false) {
+inline std::vector<Tensor> detectScale(const std::string &s, int pi_ch, Tensor in,
+                                       bool conv_q40 = false) {
   // box branch (cv2): pi_ch->64->64->64 (1x1 output)
   auto x = convBnSilu(s + "/cv2_0", pi_ch, 64, 3, 1, 1, in, conv_q40);
   x = convBnSilu(s + "/cv2_1", 64, 64, 3, 1, 1, x, conv_q40);
@@ -300,9 +307,7 @@ inline Tensor detectScale(const std::string &s, int pi_ch, Tensor in,
   c = convBnSilu(s + "/cv3_1_pw", 256, 256, 1, 1, 0, c, conv_q40);
   auto cls = convBias1x1(s + "/cv3_2", 1, 256, c, conv_q40); // out_ch=1: FP32
 
-  LayerHandle cat(createLayer("concat", {nntrainer::withKey("name", s + "/out"),
-                                         nntrainer::withKey("axis", chAxis())}));
-  return cat({box, cls});
+  return {box, cls};
 }
 
 // ===== Utility builders used by C2PSA and head =====
@@ -417,7 +422,8 @@ inline Tensor buildBackbone(Tensor xIn, Tensor &m4_out, Tensor &m6_out,
  * @param m6       C3k2 block 6 output (P4 skip from backbone)
  * @param m10      C2PSA output (P5 feature from backbone)
  * @param conv_q40 If true, eligible convs use Q4_0.
- * @return {P3, P4, P5} raw detection logits [1, 65, H, W] each
+ * @return {box0, cls0, box1, cls1, box2, cls2} raw detection logits.
+ *         Each box is [1,64,H,W] and each cls is [1,nc,H,W].
  */
 inline std::vector<Tensor> buildHead(Tensor m4, Tensor m6, Tensor m10,
                                      bool conv_q40 = false) {
@@ -437,9 +443,10 @@ inline std::vector<Tensor> buildHead(Tensor m4, Tensor m6, Tensor m10,
   auto m21 = concatCh("m21", {m20, m10});
   auto m22 = yolov11::c3k2Block("m22", 1024, 512, 256, m21, conv_q40);
 
-  return {detectScale("det0", 256, m16, conv_q40),
-          detectScale("det1", 512, m19, conv_q40),
-          detectScale("det2", 512, m22, conv_q40)};
+  auto d0 = detectScale("det0", 256, m16, conv_q40);
+  auto d1 = detectScale("det1", 512, m19, conv_q40);
+  auto d2 = detectScale("det2", 512, m22, conv_q40);
+  return {d0[0], d0[1], d1[0], d1[1], d2[0], d2[1]};
 }
 
 } // namespace yolov11

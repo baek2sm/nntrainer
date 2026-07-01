@@ -139,7 +139,7 @@ private:
              props::FusedActivation>
     conv_props;
 
-  std::array<unsigned int, 5> wt_idx; /**< indices of the weights and tensors */
+  std::array<unsigned int, 7> wt_idx; /**< indices of the weights and tensors */
 };
 
 } // namespace nntrainer

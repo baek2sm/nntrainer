@@ -96,9 +96,10 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
 #else
   const bool fp16 = false;
 #endif
-  NNTR_THROW_IF(dtype != nntrainer::Tdatatype::FP32 && !fp16,
+  NNTR_THROW_IF(dtype != nntrainer::Tdatatype::FP32 && !fp16 &&
+                  dtype != nntrainer::Tdatatype::Q8_0,
                 std::invalid_argument)
-    << "PSAAttentionLayer only implements the FP32 and FP16 activation paths";
+    << "PSAAttentionLayer only implements the FP32, FP16, and Q8_0 activation paths";
 
   const unsigned int B = in_t.batch();
   const unsigned int H = in_t.height();
@@ -113,13 +114,29 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
   std::vector<float> in_f32, out_f32;
   const float *in;
   float *out;
+  const size_t in_nelem = in_t.getDim().getDataLen();
+  const size_t out_nelem = out_t.getDim().getDataLen();
+
 #ifdef ENABLE_FP16
   if (fp16) {
-    in_f32.resize(in_t.size());
+    in_f32.resize(in_nelem);
     const _FP16 *src = in_t.getData<_FP16>();
     for (size_t i = 0; i < in_f32.size(); ++i)
       in_f32[i] = static_cast<float>(src[i]);
-    out_f32.resize(out_t.size());
+    out_f32.resize(out_nelem);
+    in = in_f32.data();
+    out = out_f32.data();
+  } else if (dtype == nntrainer::Tdatatype::Q8_0) {
+    in_f32.resize(in_nelem);
+    out_f32.resize(out_nelem);
+    const uint8_t *storage =
+      reinterpret_cast<const uint8_t *>(in_t.getData<void>()) - sizeof(uint16_t);
+    uint16_t d_u16;
+    std::memcpy(&d_u16, storage, sizeof(uint16_t));
+    float scale = static_cast<float>(*reinterpret_cast<_FP16 *>(&d_u16));
+    const int8_t *qs = reinterpret_cast<const int8_t *>(in_t.getData<void>());
+    for (size_t i = 0; i < in_f32.size(); ++i)
+      in_f32[i] = static_cast<float>(qs[i]) * scale;
     in = in_f32.data();
     out = out_f32.data();
   } else
@@ -160,6 +177,31 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
     _FP16 *dst = out_t.getData<_FP16>();
     for (size_t i = 0; i < out_f32.size(); ++i)
       dst[i] = static_cast<_FP16>(out_f32[i]);
+  } else if (dtype == nntrainer::Tdatatype::Q8_0) {
+    float amax = 0.0f;
+    for (size_t i = 0; i < out_f32.size(); ++i)
+      amax = std::max(amax, std::abs(out_f32[i]));
+    float d = (amax == 0.0f) ? 1.0f : (amax / 127.0f);
+    _FP16 d_h = static_cast<_FP16>(d);
+    uint16_t d_u16;
+    std::memcpy(&d_u16, &d_h, sizeof(uint16_t));
+    uint8_t *storage = reinterpret_cast<uint8_t *>(out_t.getData<void>()) -
+                       sizeof(uint16_t);
+    std::memcpy(storage, &d_u16, sizeof(uint16_t));
+    int8_t *qs = reinterpret_cast<int8_t *>(out_t.getData<void>());
+    float id = 1.0f / d;
+    for (size_t i = 0; i < out_f32.size(); ++i) {
+      float v = std::round(out_f32[i] * id);
+      if (v > 127.0f)
+        v = 127.0f;
+      if (v < -127.0f)
+        v = -127.0f;
+      qs[i] = static_cast<int8_t>(v);
+    }
+    // tail padding is already zero from tensor allocation; ensure it.
+    size_t padded = ((out_nelem + 31) / 32) * 32;
+    for (size_t i = out_nelem; i < padded; ++i)
+      qs[i] = 0;
   }
 #endif
 }

@@ -218,7 +218,11 @@ void TensorBase::getSharedDataTensor(const TensorDim dim_, size_t offset,
                                      const std::string &name_,
                                      TensorBase *ret) {
   if (dim_.getFormat() != ret->dim.getFormat())
-    throw std::invalid_argument("Tensor format does not match");
+    throw std::invalid_argument("Tensor format does not match: requested fmt=" +
+                                std::to_string(static_cast<int>(dim_.getFormat())) +
+                                " on fmt=" +
+                                std::to_string(static_cast<int>(ret->dim.getFormat())) +
+                                " tensor name=" + name_ + "/" + name);
 
   ret->dim = dim_;
   if (!name_.empty())

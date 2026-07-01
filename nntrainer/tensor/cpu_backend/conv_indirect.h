@@ -289,6 +289,111 @@ inline void gather_conv_act_rows_q8_0_single(void *vy, const void *vx,
   }
 }
 
+/**
+ * @brief Tensor-wise Q8_0 gather for indirect conv (4-row interleave).
+ *
+ * Source @a vx is the qs[] base of a tensor-wise Q8_0 activation in NHWC layout.
+ * Destination @a vy is a block_q8_0x4 compute buffer containing qs only (128
+ * bytes per block, no scales). The single tensor scale is applied later by the
+ * tensor-wise GEMM kernel.
+ */
+inline void gather_conv_act_rows_tq8_0(void *vy, const void *vx,
+                                       const ConvGatherParams &p, int m0,
+                                       int nrows, uint16_t a_scale) {
+  struct local_block_q8_0x4 {
+    uint16_t d[4];
+    int8_t qs[128];
+  };
+
+  const int8_t *in = (const int8_t *)vx;
+  local_block_q8_0x4 *y = (local_block_q8_0x4 *)vy;
+
+  const int ch_blocks = p.in_ch / 32;
+  const int blocks_per_row = p.k_h * p.k_w * ch_blocks;
+
+  const int hstride = p.stride_h;
+  const int wstride = p.stride_w;
+
+  for (int b_idx = 0; b_idx < blocks_per_row; ++b_idx) {
+    int khkw_idx = b_idx / ch_blocks;
+    int cb = b_idx % ch_blocks;
+    int kh = khkw_idx / p.k_w;
+    int kw = khkw_idx % p.k_w;
+
+    local_block_q8_0x4 &dst_block = y[b_idx];
+
+    // qs[32*j + 8*row + lane], j=0..3, row=0..3, lane=0..7.
+    for (int r = 0; r < 4; ++r) {
+      if (r >= nrows) {
+        dst_block.d[r] = 0;
+        for (int j = 0; j < 4; ++j)
+          std::memset(&dst_block.qs[32 * j + 8 * r], 0, 8);
+        continue;
+      }
+
+      const int m = m0 + r;
+      const int oh = m / p.out_w;
+      const int ow = m % p.out_w;
+
+      const int h = oh * hstride - p.pad_t + kh * p.dil_h;
+      const int w = ow * wstride - p.pad_l + kw * p.dil_w;
+
+      dst_block.d[r] = a_scale;
+      if (h >= 0 && h < p.in_h && w >= 0 && w < p.in_w) {
+        const int8_t *src = in + (long)(h * p.in_w + w) * p.in_ch + cb * 32;
+        for (int j = 0; j < 4; ++j)
+          for (int lane = 0; lane < 8; ++lane)
+            dst_block.qs[32 * j + 8 * r + lane] = src[j * 8 + lane];
+      } else {
+        for (int j = 0; j < 4; ++j)
+          std::memset(&dst_block.qs[32 * j + 8 * r], 0, 8);
+      }
+    }
+  }
+}
+
+/**
+ * @brief Tensor-wise Q8_0 gather for a single remainder row.
+ */
+inline void gather_conv_act_rows_tq8_0_single(void *vy, const void *vx,
+                                              const ConvGatherParams &p, int m,
+                                              uint16_t a_scale) {
+  struct local_block_q8_0 {
+    uint16_t d;
+    int8_t qs[32];
+  };
+
+  const int8_t *in = (const int8_t *)vx;
+  local_block_q8_0 *y = (local_block_q8_0 *)vy;
+
+  const int ch_blocks = p.in_ch / 32;
+  const int blocks_per_row = p.k_h * p.k_w * ch_blocks;
+
+  const int oh = m / p.out_w;
+  const int ow = m % p.out_w;
+  const int h0 = oh * p.stride_h - p.pad_t;
+  const int w0 = ow * p.stride_w - p.pad_l;
+
+  for (int b_idx = 0; b_idx < blocks_per_row; ++b_idx) {
+    int khkw_idx = b_idx / ch_blocks;
+    int cb = b_idx % ch_blocks;
+    int kh = khkw_idx / p.k_w;
+    int kw = khkw_idx % p.k_w;
+
+    const int h = h0 + kh * p.dil_h;
+    const int w = w0 + kw * p.dil_w;
+
+    if (h >= 0 && h < p.in_h && w >= 0 && w < p.in_w) {
+      y[b_idx].d = a_scale;
+      const int8_t *src = in + (long)(h * p.in_w + w) * p.in_ch + cb * 32;
+      std::memcpy(y[b_idx].qs, src, 32);
+    } else {
+      y[b_idx].d = 0;
+      std::memset(y[b_idx].qs, 0, 32);
+    }
+  }
+}
+
 } // namespace nntrainer
 
 #endif /* __NNTR_CONV_INDIRECT_H__ */

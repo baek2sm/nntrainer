@@ -108,6 +108,7 @@ void Pooling2DLayer::finalize(InitLayerContext &context) {
   out_dim.height((eff_in_height - pool_size[0]) / stride[0] + 1);
   out_dim.width((eff_in_width - pool_size[1]) / stride[1] + 1);
   out_dim.setDataType(in_dim.getDataType());
+  out_dim.setFormat(in_dim.getFormat());
   context.setOutputDimensions({out_dim});
 
   /**
@@ -397,6 +398,18 @@ void Pooling2DLayer::pooling2d(Tensor &in, bool training, Tensor &output,
         return;
       }
 #endif
+      else if (in.getDataType() == ml::train::TensorDim::DataType::Q8_0) {
+        // Tensor-wise Q8_0: all values share one fp16 scale, so the true max
+        // corresponds to the max int8 value. Copy the input scale to the output
+        // scale (output is a separate memory-planned tensor, not a sub-tensor).
+        const uint8_t *src_scale =
+          reinterpret_cast<const uint8_t *>(in.getData<void>()) - sizeof(uint16_t);
+        uint8_t *dst_scale =
+          reinterpret_cast<uint8_t *>(output.getData<void>()) - sizeof(uint16_t);
+        std::memcpy(dst_scale, src_scale, sizeof(uint16_t));
+        run_nhwc.template operator()<int8_t>();
+        return;
+      }
     }
   }
 
@@ -566,7 +579,28 @@ void Pooling2DLayer::pooling2d(Tensor &in, bool training, Tensor &output,
   }
 #endif
   else {
-    throw std::runtime_error("Not supported datatype");
+    std::string pt;
+    switch (pooling_type) {
+    case props::PoolingTypeInfo::Enum::max:
+      pt = "max";
+      break;
+    case props::PoolingTypeInfo::Enum::average:
+      pt = "average";
+      break;
+    case props::PoolingTypeInfo::Enum::global_max:
+      pt = "global_max";
+      break;
+    case props::PoolingTypeInfo::Enum::global_average:
+      pt = "global_average";
+      break;
+    default:
+      pt = "unknown";
+      break;
+    }
+    throw std::runtime_error("Pooling2D: Not supported datatype/space: type=" +
+                             pt + " nhwc=" + (is_nhwc ? "1" : "0") +
+                             " dtype=" +
+                             std::to_string(static_cast<int>(in.getDataType())));
   }
 }
 

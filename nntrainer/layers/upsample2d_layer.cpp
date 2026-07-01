@@ -99,48 +99,76 @@ static void upsampleForwardT(
               T *out_row = out_bc + (size_t)(ih * kh + ry) * oW;
               std::memcpy(out_row, e, oW * sizeof(T));
             }
-            }
-            }
-            }
-            return;
-            }
+          }
+        }
+      }
+      return;
+    }
 
-            const bool can_fast_nhwc =
-            in.getContiguous() && out.getContiguous() &&
-            in.getFormat() == Tformat::NHWC && out.getFormat() == Tformat::NHWC;
-            if (can_fast_nhwc) {
-            const T *in_d = in.getData<T>();
-            T *out_d = out.getData<T>();
-            const unsigned int B = out.batch();
-            const unsigned int Co = out.channel();
-            const unsigned int iH = in.height();
-            const unsigned int iW = in.width();
-            const unsigned int oH = out.height();
-            const unsigned int oW = out.width();
-            const size_t in_hwc = (size_t)iH * iW * Co;
-            const size_t out_hwc = (size_t)oH * oW * Co;
+    const bool can_fast_nhwc =
+      in.getContiguous() && out.getContiguous() &&
+      in.getFormat() == Tformat::NHWC && out.getFormat() == Tformat::NHWC;
+    if (can_fast_nhwc) {
+      const T *in_d = in.getData<T>();
+      T *out_d = out.getData<T>();
+      const unsigned int B = out.batch();
+      const unsigned int Co = out.channel();
+      const unsigned int iH = in.height();
+      const unsigned int iW = in.width();
+      const unsigned int oH = out.height();
+      const unsigned int oW = out.width();
+      const size_t in_hwc = (size_t)iH * iW * Co;
+      const size_t out_hwc = (size_t)oH * oW * Co;
 
-            std::vector<T> expanded(oW * Co);
-            for (unsigned int b = 0; b < B; ++b) {
-            const T *in_b = in_d + b * in_hwc;
-            T *out_b = out_d + b * out_hwc;
-            for (unsigned int ih = 0; ih < iH; ++ih) {
-            const T *in_row = in_b + (size_t)ih * iW * Co;
-            T *e = expanded.data();
-            for (unsigned int iw = 0; iw < iW; ++iw) {
+      std::vector<T> expanded(oW * Co);
+      for (unsigned int b = 0; b < B; ++b) {
+        const T *in_b = in_d + b * in_hwc;
+        T *out_b = out_d + b * out_hwc;
+        for (unsigned int ih = 0; ih < iH; ++ih) {
+          const T *in_row = in_b + (size_t)ih * iW * Co;
+          T *e = expanded.data();
+          for (unsigned int iw = 0; iw < iW; ++iw) {
             const T *v = in_row + iw * Co;
             for (unsigned int rx = 0; rx < kw; ++rx) {
               std::memcpy(e + (iw * kw + rx) * Co, v, Co * sizeof(T));
             }
-            }
-            for (unsigned int ry = 0; ry < kh; ++ry) {
+          }
+          for (unsigned int ry = 0; ry < kh; ++ry) {
             T *out_row = out_b + (size_t)(ih * kh + ry) * oW * Co;
             std::memcpy(out_row, e, oW * Co * sizeof(T));
-            }
-            }
-            }
-            return;
-            }
+          }
+        }
+      }
+      return;
+    }
+    // Direct NHWC scalar fallback: avoids getValue<T> on NHWC, whose index
+    // path may use NCHW assumptions and crash. NHWC physical layout is dense
+    // [B,H,W,C]; contiguous flag can be unset after reshape, so skip it.
+    if (in.getFormat() == Tformat::NHWC && out.getFormat() == Tformat::NHWC) {
+      const unsigned int B = out.batch();
+      const unsigned int C = out.channel();
+      const unsigned int iH = in.height();
+      const unsigned int iW = in.width();
+      const unsigned int oH = out.height();
+      const unsigned int oW = out.width();
+      const T *src = in.getData<T>();
+      T *dst = out.getData<T>();
+      for (unsigned int b = 0; b < B; ++b) {
+        for (unsigned int oh = 0; oh < oH; ++oh) {
+          unsigned int ih = oh / kh;
+          for (unsigned int ow = 0; ow < oW; ++ow) {
+            unsigned int iw = ow / kw;
+            size_t in_off = (((size_t)b * iH + ih) * iW + iw) * C;
+            size_t out_off = (((size_t)b * oH + oh) * oW + ow) * C;
+            const T *s = src + in_off;
+            T *d = dst + out_off;
+            for (unsigned int c = 0; c < C; ++c)
+              d[c] = s[c];
+          }
+        }
+      }
+      return;
+    }
     for (int b = 0; b < (int)out.batch(); b++) {
       for (int c = 0; c < (int)out.channel(); c++) {
         for (int h = 0; h < (int)out.height(); h++) {
@@ -196,6 +224,78 @@ static void upsampleForwardT(
   }
 }
 
+/**
+ * @brief Nearest-neighbor upsample for tensor-wise Q8_0 tensors.
+ *
+ * Nearest replication preserves the exact value range, so the output can share
+ * the input's single FP16 scale and simply replicate the int8 qs values.
+ */
+static void upsampleNearestQ8_0(
+  const Tensor &in, Tensor &out,
+  const std::array<props::KernelSize, UPSAMPLE2D_DIM> &kernel_size) {
+  const unsigned int kh = kernel_size[0].get();
+  const unsigned int kw = kernel_size[1].get();
+
+  // Copy the single tensor-wise scale (2 bytes at offset -2).
+  const uint8_t *in_storage =
+    static_cast<const uint8_t *>(in.getData<void>()) - sizeof(uint16_t);
+  uint8_t *out_storage =
+    static_cast<uint8_t *>(out.getData<void>()) - sizeof(uint16_t);
+  std::memcpy(out_storage, in_storage, sizeof(uint16_t));
+
+  const int8_t *src = in.getData<int8_t>();
+  int8_t *dst = out.getData<int8_t>();
+
+  const unsigned int B = in.batch();
+  const unsigned int C = in.channel();
+  const unsigned int iH = in.height();
+  const unsigned int iW = in.width();
+  const unsigned int oH = out.height();
+  const unsigned int oW = out.width();
+
+  if (in.getFormat() == Tformat::NHWC && out.getFormat() == Tformat::NHWC) {
+    for (unsigned int b = 0; b < B; ++b) {
+      const size_t in_batch_offset = (size_t)b * iH * iW * C;
+      const size_t out_batch_offset = (size_t)b * oH * oW * C;
+      for (unsigned int ih = 0; ih < iH; ++ih) {
+        for (unsigned int iw = 0; iw < iW; ++iw) {
+          const size_t in_off = in_batch_offset + ((size_t)ih * iW + iw) * C;
+          for (unsigned int ry = 0; ry < kh; ++ry) {
+            const size_t out_off =
+              out_batch_offset +
+              ((size_t)(ih * kh + ry) * oW + (size_t)iw * kw) * C;
+            for (unsigned int rx = 0; rx < kw; ++rx) {
+              std::memcpy(dst + out_off + rx * C, src + in_off, C * sizeof(int8_t));
+            }
+          }
+        }
+      }
+    }
+    return;
+  }
+
+  // NCHW fallback: channels are planar.
+  const size_t in_plane = (size_t)iH * iW;
+  const size_t out_plane = (size_t)oH * oW;
+  for (unsigned int b = 0; b < B; ++b) {
+    for (unsigned int c = 0; c < C; ++c) {
+      const int8_t *in_bc = src + ((size_t)b * C + c) * in_plane;
+      int8_t *out_bc = dst + ((size_t)b * C + c) * out_plane;
+      for (unsigned int ih = 0; ih < iH; ++ih) {
+        for (unsigned int iw = 0; iw < iW; ++iw) {
+          int8_t v = in_bc[ih * iW + iw];
+          for (unsigned int ry = 0; ry < kh; ++ry) {
+            size_t out_row = ((size_t)(ih * kh + ry) * oW + (size_t)iw * kw);
+            for (unsigned int rx = 0; rx < kw; ++rx) {
+              out_bc[out_row + rx] = v;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 void Upsample2dLayer::forwarding(nntrainer::RunLayerContext &context,
                                  bool training) {
   nntrainer::Tensor &in = context.getInput(SINGLE_INOUT_IDX);
@@ -205,6 +305,14 @@ void Upsample2dLayer::forwarding(nntrainer::RunLayerContext &context,
     std::get<props::UpsampleMode>(upsample2d_props).get();
   const auto &kernel_size =
     std::get<std::array<props::KernelSize, UPSAMPLE2D_DIM>>(upsample2d_props);
+
+  if (out.getDataType() == ml::train::TensorDim::DataType::Q8_0) {
+    NNTR_THROW_IF(upsampling_type != props::UpsampleModeInfo::Interpolation::nearest,
+                  std::invalid_argument)
+      << "Q8_0 upsample only supports nearest mode";
+    upsampleNearestQ8_0(in, out, kernel_size);
+    return;
+  }
 
 #ifdef ENABLE_FP16
   if (out.getDataType() == ml::train::TensorDim::DataType::FP16) {

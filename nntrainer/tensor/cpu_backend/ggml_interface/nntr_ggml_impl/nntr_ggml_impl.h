@@ -29,6 +29,11 @@ void nntr_gemm_q4_0_4x8_q8_0(int n, float *__restrict s, size_t bs,
                              const void *__restrict vx,
                              const void *__restrict vy, int nr, int nc);
 
+void nntr_gemm_q4_0_4x8_tq8_0(int n, float *__restrict s, size_t bs,
+                              const void *__restrict vx,
+                              const void *__restrict vy, int nr, int nc,
+                              float a_scale);
+
 #ifdef ENABLE_FP16
 // Pick the half type the same way tensor_dim.h does, so this header stays
 // self-contained even if a caller pulls it in without tensor_dim.h. On
@@ -42,10 +47,35 @@ void nntr_gemm_q4_0_4x8_q8_0_fp16(int n, NNTR_GGML_FP16 *__restrict s,
                                   size_t bs, const void *__restrict vx,
                                   const void *__restrict vy, int nr, int nc);
 
+/**
+ * @brief Tensor-wise Q8_0 activations (single scale) x Q4_0 weights.
+ *
+ * @a vy is flat int8 values in block_q8_0x4 row-major order (no per-block
+ * scales). @a a_scale is the single fp16 scale applied to every activation.
+ * Weights remain standard block_q4_0 with block-level scales.
+ */
+void nntr_gemm_q4_0_4x8_tq8_0_fp16(int n, NNTR_GGML_FP16 *__restrict s,
+                                   size_t bs, const void *__restrict vx,
+                                   const void *__restrict vy, int nr, int nc,
+                                   NNTR_GGML_FP16 a_scale);
+
 void nntr_gemv_q4_0_4x8_q8_0_fp16(int n, NNTR_GGML_FP16 *__restrict s,
                                   size_t bs, const void *__restrict vx,
                                   const void *__restrict vy, int nr, int nc);
+
+void nntr_gemv_q4_0_4x8_tq8_0_fp16(int n, NNTR_GGML_FP16 *__restrict s,
+                                   size_t bs, const void *__restrict vx,
+                                   const void *__restrict vy, int nr, int nc,
+                                   NNTR_GGML_FP16 a_scale);
 #endif
+
+/**
+ * @brief Compute Q4_0 4x8 weights by tensor-wise Q8_0 activations GEMV.
+ */
+void nntr_gemv_q4_0_4x8_tq8_0(int n, float *__restrict s, size_t bs,
+                              const void *__restrict vx,
+                              const void *__restrict vy, int nr, int nc,
+                              float a_scale);
 
 /**
  * @brief Compute Q4_0 8x8 weights by Q8_0 activations GEMM

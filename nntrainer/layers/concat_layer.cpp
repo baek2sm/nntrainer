@@ -13,7 +13,9 @@
  * @todo merge concat and split layer to a common implementation
  */
 
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include <concat_layer.h>
@@ -26,6 +28,39 @@
 #include <util_func.h>
 
 namespace nntrainer {
+
+#ifdef ENABLE_FP16
+/**
+ * @brief Quantize a contiguous FP16 NHWC tensor to tensor-wise Q8_0.
+ *
+ * Layout: uint16_t scale followed by int8_t qs[round_up(nelem,32)], with qs
+ * innermost (NHWC physical order). Scale = amax/127 as FP16.
+ */
+static void quantize_nhwc_q8_0_tensor_fp16(const _FP16 *src, int rows,
+                                           int cols, uint8_t *storage) {
+  const size_t nelem = (size_t)rows * cols;
+  float amax = 0.0f;
+  for (size_t i = 0; i < nelem; ++i) {
+    amax = std::max(amax, std::fabs(static_cast<float>(src[i])));
+  }
+  float scale = amax / 127.0f;
+  if (scale == 0.0f)
+    scale = 1.0f;
+  _FP16 d = static_cast<_FP16>(scale);
+  std::memcpy(storage, &d, sizeof(uint16_t));
+  int8_t *qs = reinterpret_cast<int8_t *>(storage + sizeof(uint16_t));
+  for (size_t i = 0; i < nelem; ++i) {
+    float v = static_cast<float>(src[i]) / scale;
+    v = std::max(-127.0f, std::min(127.0f, v));
+    qs[i] = static_cast<int8_t>(std::round(v));
+  }
+  // zero padding to keep the signed range symmetric and avoid accidental -128
+  const size_t padded = ((nelem + 31) / 32) * 32;
+  for (size_t i = nelem; i < padded; ++i)
+    qs[i] = 0;
+}
+#endif
+
 ConcatLayer::ConcatLayer() : Layer(), leading_helper_dim(1) {}
 
 static constexpr size_t SINGLE_INOUT_IDX = 0;
@@ -126,6 +161,24 @@ void ConcatLayer::finalize(InitLayerContext &context) {
   }
 
   setBatch(input_dims[SINGLE_INOUT_IDX].batch());
+
+  // If any input is Q8_0 in NHWC mode, we need a contiguous FP16 staging buffer
+  // to dequantize each input, concat channel-wise, and requantize to tensor-wise
+  // Q8_0. Only channel-axis concat is supported for Q8_0 (matching graph usage).
+  if (output_dim.getFormat() == ml::train::TensorDim::Format::NHWC &&
+      concat_dimension_cache == 1) {
+    for (unsigned int idx = 0; idx < input_dims.size(); ++idx) {
+      if (input_dims[idx].getDataType() ==
+          ml::train::TensorDim::DataType::Q8_0) {
+        TensorDim scratch_dim = output_dim;
+        scratch_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+        fp16_scratch_idx = context.requestTensor(
+          scratch_dim, "fp16_concat_scratch", Initializer::NONE, false,
+          TensorLifespan::MAX_LIFESPAN);
+        break;
+      }
+    }
+  }
 }
 
 void ConcatLayer::forwarding(RunLayerContext &context, bool training) {
@@ -156,6 +209,85 @@ void ConcatLayer::forwarding(RunLayerContext &context, bool training) {
   // channel axis (logical 1) is supported here, matching the graph usage.
   if (out_dim.getFormat() == ml::train::TensorDim::Format::NHWC &&
       concat_dimension_cache == 1) {
+    const bool any_q8 = [&]() {
+      for (unsigned int idx = 0; idx < context.getNumInputs(); ++idx)
+        if (context.getInput(idx).getDataType() ==
+            TensorDim::DataType::Q8_0)
+          return true;
+      return false;
+    }();
+
+    if (any_q8) {
+#ifdef ENABLE_FP16
+      // Q8_0 channel concat: dequantize each input to the planned FP16
+      // scratch, write its channel slice, then quantize the whole output.
+      Tensor &scratch = context.getTensor(fp16_scratch_idx);
+      _FP16 *dst = scratch.getData<_FP16>();
+      const unsigned int B = out_dim.batch();
+      const unsigned int H = out_dim.height();
+      const unsigned int W = out_dim.width();
+      const size_t HW = (size_t)H * W;
+      const unsigned int Co = out_dim.channel();
+      unsigned int c_offset = 0;
+      for (unsigned int idx = 0; idx < context.getNumInputs(); idx++) {
+        Tensor &input = context.getInput(idx);
+        const unsigned int Ci = input.channel();
+        if (input.getDataType() == TensorDim::DataType::FP16) {
+          const _FP16 *src = input.getData<_FP16>();
+          for (unsigned int b = 0; b < B; ++b) {
+            const size_t base = (size_t)b * HW;
+            for (size_t p = 0; p < HW; ++p) {
+              std::memcpy(dst + (base + p) * Co + c_offset,
+                          src + (base + p) * Ci, (size_t)Ci * sizeof(_FP16));
+            }
+          }
+        } else if (input.getDataType() == TensorDim::DataType::Q8_0) {
+          const uint8_t *storage = reinterpret_cast<const uint8_t *>(
+                                     input.getData()) -
+                                   sizeof(uint16_t);
+          uint16_t du;
+          std::memcpy(&du, storage, sizeof(uint16_t));
+          float scale = static_cast<float>(
+            *reinterpret_cast<const _FP16 *>(&du));
+          const int8_t *src = input.getData<int8_t>();
+          for (unsigned int b = 0; b < B; ++b) {
+            const size_t base = (size_t)b * HW;
+            for (size_t p = 0; p < HW; ++p) {
+              _FP16 *d = dst + (base + p) * Co + c_offset;
+              const int8_t *s = src + (base + p) * Ci;
+              for (unsigned int c = 0; c < Ci; ++c)
+                d[c] = static_cast<_FP16>(static_cast<float>(s[c]) * scale);
+            }
+          }
+        } else if (input.getDataType() == TensorDim::DataType::FP32) {
+          // Detect-head class logit is intentionally kept FP32 for accuracy;
+          // stage it into the FP16 concat buffer so the final output can still
+          // be tensor-wise Q8_0.
+          const float *src = input.getData<float>();
+          for (unsigned int b = 0; b < B; ++b) {
+            const size_t base = (size_t)b * HW;
+            for (size_t p = 0; p < HW; ++p) {
+              _FP16 *d = dst + (base + p) * Co + c_offset;
+              const float *s = src + (base + p) * Ci;
+              for (unsigned int c = 0; c < Ci; ++c)
+                d[c] = static_cast<_FP16>(s[c]);
+            }
+          }
+        } else {
+          throw std::invalid_argument(
+            "ConcatLayer: unsupported input dtype for Q8_0 concat");
+        }
+        c_offset += Ci;
+      }
+      quantize_nhwc_q8_0_tensor_fp16(
+        dst, (int)(B * HW), (int)Co,
+        reinterpret_cast<uint8_t *>(output.getData()) - sizeof(uint16_t));
+      return;
+#else
+      throw std::invalid_argument("Error: enable-fp16 is not enabled");
+#endif
+    }
+
     const unsigned int B = out_dim.batch();
     const unsigned int H = out_dim.height();
     const unsigned int W = out_dim.width();
@@ -167,11 +299,12 @@ void ConcatLayer::forwarding(RunLayerContext &context, bool training) {
       if (input.getDataType() == TensorDim::DataType::FP32) {
         const float *src = input.getData<float>();
         float *dst = output.getData<float>();
+        const unsigned int Co = out_dim.channel();
         for (unsigned int b = 0; b < B; ++b) {
           const size_t base = (size_t)b * HW;
           for (size_t p = 0; p < HW; ++p) {
-            const float *s = src + (base + p) * out_dim.channel() + 0;
-            float *d = dst + (base + p) * out_dim.channel() + c_offset;
+            const float *s = src + (base + p) * Ci;
+            float *d = dst + (base + p) * Co + c_offset;
             std::memcpy(d, s, (size_t)Ci * sizeof(float));
           }
         }
@@ -179,11 +312,12 @@ void ConcatLayer::forwarding(RunLayerContext &context, bool training) {
 #ifdef ENABLE_FP16
         const _FP16 *src = input.getData<_FP16>();
         _FP16 *dst = output.getData<_FP16>();
+        const unsigned int Co = out_dim.channel();
         for (unsigned int b = 0; b < B; ++b) {
           const size_t base = (size_t)b * HW;
           for (size_t p = 0; p < HW; ++p) {
-            const _FP16 *s = src + (base + p) * out_dim.channel() + 0;
-            _FP16 *d = dst + (base + p) * out_dim.channel() + c_offset;
+            const _FP16 *s = src + (base + p) * Ci;
+            _FP16 *d = dst + (base + p) * Co + c_offset;
             std::memcpy(d, s, (size_t)Ci * sizeof(_FP16));
           }
         }

@@ -31,8 +31,9 @@ namespace nntrainer {
 #define QK8_0 32
 
 /**
- * @brief Q8_0 block. Mirrors GGML's block_q8_0.
- * @note  This struct is reference-only; the tensor buffer is a flat byte array.
+ * @brief Q8_0 per-block layout (GGML-compatible). Reference/legacy; tensor-wise
+ *        Q8_0_Tensor stores one scale for the whole tensor.
+ * @note  This struct is reference-only; kernels still consume block_q8_0x4.
  */
 struct block_q8_0 {
   uint16_t d;       // fp16 scale
@@ -40,14 +41,28 @@ struct block_q8_0 {
 };
 
 /// @note Fully qualified so Q8_0_SIZE expands correctly even when used from
-/// a different namespace (e.g. causallm). An unqualified `struct block_q8_0`
-/// would declare a *new* incomplete type in that namespace and fail sizeof.
+/// a different namespace (e.g. causallm).
 #define Q8_0_SIZE sizeof(::nntrainer::block_q8_0)
 
 /**
+ * @brief Tensor-wise Q8_0 layout used by Q8_0_Tensor activations.
+ *
+ *   uint16_t d;            // fp16 scale for the entire tensor
+ *   int8_t   qs[round_up(nelem,32)]; // one int8 quant per element, tail padded
+ *
+ * There is no per-block scale. All dot products are computed int8, then the
+ * single activation scale is applied once per output element together with the
+ * per-block weight scales accumulated inside the kernel.
+ */
+struct tensor_q8_0 {
+  uint16_t d;
+  int8_t qs[QK8_0];
+};
+
+/**
  * @class Q8_0_Tensor
- * @brief Holder for a tensor whose data is laid out as packed block_q8_0
- *        records. Width must be a multiple of QK8_0.
+ * @brief Holder for a tensor whose data is laid out as tensor-wise Q8_0:
+ *        one fp16 scale followed by all int8 quants, 32-aligned with padding.
  */
 class Q8_0_Tensor : public TensorBase {
 
@@ -116,13 +131,9 @@ public:
     throw std::invalid_argument("Q8_0_Tensor::print() is not supported.");
   }
 
-  void copy(const Tensor &from) override {
-    throw std::invalid_argument("Q8_0_Tensor::copy() is not supported.");
-  }
+  void copy(const Tensor &from) override { copyData(from); }
 
-  void copyData(const Tensor &from) override {
-    throw std::invalid_argument("Q8_0_Tensor::copyData() is not supported.");
-  }
+  void copyData(const Tensor &from) override;
 
   void copy_with_stride(const Tensor &input, Tensor &output) override {
     throw std::invalid_argument(
@@ -170,8 +181,8 @@ public:
    */
 #ifdef ENABLE_FP16
   static void dot_prepacked_x4(unsigned int M, unsigned int K, unsigned int N,
-                               const void *QA, const void *B, _FP16 *C,
-                               unsigned int ldc);
+                               const void *QA, float a_scale, const void *B,
+                               _FP16 *C, unsigned int ldc);
 #endif
 private:
   void copy_q80(const void *buf);

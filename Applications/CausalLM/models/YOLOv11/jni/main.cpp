@@ -221,6 +221,42 @@ inline void decodeOneScale(const float *raw, int H, int W, float stride,
   }
 }
 
+// Overload that accepts separate box/cls outputs (needed when the head emits
+// box and cls as separate tensors to preserve their distinct Q8_0 scales).
+inline void decodeOneScale(const float *raw_box, const float *raw_cls, int H,
+                           int W, float stride,
+                           const std::vector<float> &anchors,
+                           const std::vector<float> &strides_vec,
+                           int anchor_off, int N_total,
+                           std::vector<float> &decoded) {
+  const int N = H * W;
+  const int reg_max = 16;
+
+  std::vector<float> dist;
+  dfl(raw_box, reg_max, N, dist);
+
+  std::vector<float> scale_anchors(N * 2);
+  std::vector<float> scale_strides(N);
+  for (int a = 0; a < N; ++a) {
+    scale_anchors[a * 2 + 0] = anchors[(anchor_off + a) * 2 + 0];
+    scale_anchors[a * 2 + 1] = anchors[(anchor_off + a) * 2 + 1];
+    scale_strides[a] = strides_vec[anchor_off + a];
+  }
+
+  std::vector<float> decoded_box;
+  dist2bbox(dist, N, scale_anchors, scale_strides, decoded_box);
+
+  for (int c = 0; c < 4; ++c) {
+    for (int a = 0; a < N; ++a) {
+      decoded[c * N_total + anchor_off + a] = decoded_box[c * N + a];
+    }
+  }
+  for (int a = 0; a < N; ++a) {
+    decoded[4 * N_total + anchor_off + a] =
+      1.0f / (1.0f + std::exp(-raw_cls[a]));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // NMS
 // ---------------------------------------------------------------------------
@@ -484,7 +520,12 @@ int main(int argc, char *argv[]) {
         std::cout << "[YOLO] preset = w4a8 (Q4_0 weights + Q8_0 act + NHWC)"
                   << std::endl;
       } else if (tts == "w4q8" || tts == "W4Q8") {
-        model->setProperty({nntrainer::withKey("model_tensor_type", "Q4_0-Q8_0")});
+        // Weight dtype stays FP32 at the model level; the per-layer conv_q40
+        // override (same as w4a16) turns eligible conv filters into Q4_0.
+        // Grouped/depthwise convs therefore keep FP32 weights and avoid the
+        // Q4_0_Tensor 2-D-only layout restriction.
+        model->setProperty(
+          {nntrainer::withKey("model_tensor_type", "Q4_0-Q8_0")});
         q8_act = true;
         preset_q40 = true;
         preset_nhwc = true;
@@ -540,7 +581,8 @@ int main(int argc, char *argv[]) {
                : Tensor({1, 3, 832, 832}, "input0");
     Tensor m4, m6;
     auto m10 = yolov11::buildBackbone(x, m4, m6, conv_q40);
-    auto outputs = yolov11::buildHead(m4, m6, m10, conv_q40); // {P3, P4, P5}
+    auto outputs = yolov11::buildHead(
+      m4, m6, m10, conv_q40); // {box0, cls0, box1, cls1, box2, cls2}
     yolov11::quantConvSink() = nullptr;
 
     if (int ret =
@@ -634,13 +676,16 @@ int main(int argc, char *argv[]) {
       auto t1 = std::chrono::steady_clock::now();
       total_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
     }
-    std::cout << "Inference done (" << outs.size() << " scale outputs)."
+    std::cout << "Inference done (" << outs.size() << " outputs)."
               << std::endl;
     std::cout << "Inference time: " << (total_ms / bench_iters)
               << " ms (avg over " << bench_iters << " iters)" << std::endl;
     printPeakRSS();
 
+
     // Post-process: DFL decode + dist2bbox + sigmoid -> [5, N] then NMS.
+    // The head now emits separate box/cls tensors per scale (6 outputs total),
+    // so box is outs[2*i] and cls is outs[2*i+1].
     std::vector<yolov11::ScaleInfo> scales = {
       {104, 104, 8.0f}, {52, 52, 16.0f}, {26, 26, 32.0f}};
     const int N_total = 104 * 104 + 52 * 52 + 26 * 26; // 14196
@@ -650,10 +695,26 @@ int main(int argc, char *argv[]) {
     std::vector<float> decoded(5 * N_total, 0.0f);
     int off = 0;
     for (size_t i = 0; i < scales.size(); ++i) {
-      yolov11::decodeOneScale(outs[i], scales[i].H, scales[i].W,
-                              scales[i].stride, anchors, strides, off, N_total,
-                              decoded);
+      yolov11::decodeOneScale(outs[2 * i], outs[2 * i + 1], scales[i].H,
+                              scales[i].W, scales[i].stride, anchors, strides,
+                              off, N_total, decoded);
       off += scales[i].H * scales[i].W;
+    }
+
+    if (std::getenv("NNTR_OUT_PROBE")) {
+      std::cout << "[OUT_PROBE] output statistics:" << std::endl;
+      for (size_t i = 0; i < outs.size(); ++i) {
+        const float *p = outs[i];
+        size_t n = (i % 2 == 0) ? (64UL * scales[i / 2].H * scales[i / 2].W)
+                                : (1UL * scales[i / 2].H * scales[i / 2].W);
+        float mn = p[0], mx = p[0];
+        for (size_t j = 1; j < n; ++j) {
+          mn = std::min(mn, p[j]);
+          mx = std::max(mx, p[j]);
+        }
+        std::cout << "[OUT_PROBE] outs[" << i << "] n=" << n << " min=" << mn
+                  << " max=" << mx << std::endl;
+      }
     }
 
     const float conf_thres =
@@ -676,10 +737,16 @@ int main(int argc, char *argv[]) {
 
     if (verify) {
       std::cout << "\nVerification vs PyTorch references:" << std::endl;
-      const size_t ns[3] = {65UL * 104 * 104, 65UL * 52 * 52, 65UL * 26 * 26};
-      const char *names[3] = {"ref_p3.bin", "ref_p4.bin", "ref_p5.bin"};
-      for (int i = 0; i < 3; ++i)
-        verifyAgainst(names[i], outs[i], ns[i]);
+      const size_t box_ns[3] = {64UL * 104 * 104, 64UL * 52 * 52, 64UL * 26 * 26};
+      const size_t cls_ns[3] = {1UL * 104 * 104, 1UL * 52 * 52, 1UL * 26 * 26};
+      const char *box_names[3] = {"ref_box_p3.bin", "ref_box_p4.bin",
+                                  "ref_box_p5.bin"};
+      const char *cls_names[3] = {"ref_cls_p3.bin", "ref_cls_p4.bin",
+                                  "ref_cls_p5.bin"};
+      for (int i = 0; i < 3; ++i) {
+        verifyAgainst(box_names[i], outs[2 * i], box_ns[i]);
+        verifyAgainst(cls_names[i], outs[2 * i + 1], cls_ns[i]);
+      }
       verifyAgainst("ref_decoded.bin", decoded.data(), decoded.size());
     }
 

@@ -111,6 +111,9 @@ private:
   std::tuple<props::ConcatDimension> concat_props;
   unsigned int concat_dimension_cache = 1; /**< resolved in finalize for
                                           forwarding (NHWC channel-concat path) */
+  unsigned int fp16_scratch_idx =
+    std::numeric_limits<unsigned int>::max(); /**< FP32/FP16 scratch for Q8_0
+                                                 mixed-scale concat */
 
   /**
    * @brief set batch for the internal variables

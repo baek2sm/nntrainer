@@ -232,6 +232,19 @@ void __ggml_q4_0_4x8_q8_0_indirect_GEMM_q8_0(
   const unsigned int M, const unsigned int N, const unsigned int K,
   const void *in, const ConvGatherParams &geom, const void *B,
   const unsigned int ldb, _FP16 *C, const unsigned int ldc);
+
+/**
+ * @brief Tensor-wise Q8_0 activation indirect Q4_0 conv GEMM.
+ *
+ * Same as __ggml_q4_0_4x8_q8_0_indirect_GEMM_q8_0 but `in` is tensor-wise Q8_0
+ * storage (one fp16 scale + qs[]). The activation scale is passed explicitly;
+ * only the int8 qs[] values are gathered and interleaved on the fly.
+ */
+void __ggml_q4_0_4x8_q8_0_indirect_GEMM_tq8_0(
+  const unsigned int M, const unsigned int N, const unsigned int K,
+  const void *in, const ConvGatherParams &geom, const void *B,
+  const unsigned int ldb, _FP16 *C, const unsigned int ldc,
+  const _FP16 a_scale);
 #endif
 
 /**

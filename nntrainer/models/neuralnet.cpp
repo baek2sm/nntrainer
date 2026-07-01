@@ -55,6 +55,7 @@
 #include <recurrent_realizer.h>
 #include <remap_realizer.h>
 #include <safetensors_util.h>
+#include <q8_0_tensor.h>
 #include <slice_realizer.h>
 #include <util_func.h>
 
@@ -1578,6 +1579,27 @@ NeuralNetwork::inference(unsigned int batch_size,
     const Tensor &out_t = *out.get();
     if (out_t.getDataType() == TensorDim::DataType::FP32) {
       output.push_back(out_t.getData());
+#ifdef ENABLE_FP16
+    } else if (out_t.getDataType() == TensorDim::DataType::Q8_0) {
+      // Tensor-wise Q8_0 output; dequantize to FP32 for the float* contract.
+      TensorDim fp32_dim = out_t.getDim();
+      fp32_dim.setDataType(TensorDim::DataType::FP32);
+      Tensor fp32_out(fp32_dim, true);
+      const size_t nelem = out_t.getDim().getDataLen();
+      const uint8_t *storage = reinterpret_cast<const uint8_t *>(
+                                 out_t.getData()) -
+                               sizeof(uint16_t);
+      uint16_t d_u16;
+      std::memcpy(&d_u16, storage, sizeof(uint16_t));
+      float scale = static_cast<float>(
+        *reinterpret_cast<const _FP16 *>(&d_u16));
+      const int8_t *qs = reinterpret_cast<const int8_t *>(out_t.getData());
+      float *dst = fp32_out.getData<float>();
+      for (size_t i = 0; i < nelem; ++i)
+        dst[i] = static_cast<float>(qs[i]) * scale;
+      fp32_output_cache.push_back(std::move(fp32_out));
+      output.push_back(fp32_output_cache.back().getData());
+#endif
     } else {
       fp32_output_cache.emplace_back(out_t.clone(TensorDim::DataType::FP32));
       output.push_back(fp32_output_cache.back().getData());
