@@ -346,8 +346,8 @@ transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch, int owoh,
           }
         }
       }
-    }
-  });
+    });
+  }
 }
 #endif
 
