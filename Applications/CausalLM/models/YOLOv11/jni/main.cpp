@@ -463,8 +463,9 @@ int main(int argc, char *argv[]) {
     // Default (unset) is FP32-FP32.  YOLOv11's input is a float image; for an
     // FP16-activation model the InputLayer must be declared FP16 (PR#4000).
     bool fp16_act = false;
-    bool preset_q40 = false;  // implied by w4a16/w4a8 presets
-    bool preset_nhwc = false; // implied by w4a16/w4a8 presets
+    bool q8_act = false;
+    bool preset_q40 = false;  // implied by w4a16/w4a8/w4q8 presets
+    bool preset_nhwc = false; // implied by w4a16/w4a8/w4q8 presets
     if (const char *tt = std::getenv("YOLO_TENSOR_TYPE")) {
       std::string tts = tt;
       if (tts == "w4a16" || tts == "W4A16") {
@@ -482,14 +483,23 @@ int main(int argc, char *argv[]) {
         setenv("NNTR_CONV_Q8ACT", "1", 1);
         std::cout << "[YOLO] preset = w4a8 (Q4_0 weights + Q8_0 act + NHWC)"
                   << std::endl;
+      } else if (tts == "w4q8" || tts == "W4Q8") {
+        model->setProperty({nntrainer::withKey("model_tensor_type", "Q4_0-Q8_0")});
+        q8_act = true;
+        preset_q40 = true;
+        preset_nhwc = true;
+        std::cout << "[YOLO] preset = w4q8 (Q4_0 weights + Q8_0 act + NHWC)"
+                  << std::endl;
       } else {
         model->setProperty({nntrainer::withKey("model_tensor_type", tt)});
         auto dash = tts.find('-');
         std::string act =
           (dash == std::string::npos) ? tts : tts.substr(dash + 1);
         fp16_act = (act == "FP16");
+        q8_act = (act == "Q8_0");
         std::cout << "[YOLO] model_tensor_type = " << tt
-                  << " (fp16_act=" << (fp16_act ? "1" : "0") << ")"
+                  << " (fp16_act=" << (fp16_act ? "1" : "0")
+                  << ", q8_act=" << (q8_act ? "1" : "0") << ")"
                   << std::endl;
       }
     }
@@ -520,7 +530,9 @@ int main(int argc, char *argv[]) {
 
     // Declare the input tensor's dtype to match the activation dtype so the
     // synthesized InputLayer emits FP16 output for an FP16-activation model.
-    auto x = fp16_act
+    // Q8_0 activation models still read the float image directly; the first
+    // conv quantizes it on-the-fly.
+    auto x = (fp16_act || q8_act)
                ? Tensor(ml::train::TensorDim(
                           1, 3, 832, 832, ml::train::TensorDim::Format::NCHW,
                           ml::train::TensorDim::DataType::FP16),

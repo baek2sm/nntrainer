@@ -125,6 +125,100 @@ static inline void quantize_nhwc_q8_0_rows(const _FP16 *src, int n_spatial,
 }
 
 /**
+ * @brief Quantize FP16 NHWC [n_spatial, in_ch] directly into the
+ *        block_q8_0x4 (4-row interleaved) layout Q8_0_Tensor::dot_prepacked_x4
+ *        consumes, with NO intermediate plain block_q8_0 pass and NO separate
+ *        interleave copy (fuses what used to be quantize + Q8_0_Tensor::dot's
+ *        internal repack into a single write).
+ *
+ * NHWC input is row-major (channel innermost): src[r * in_ch + c]. Output
+ * layout matches transpose_quantize_q8_0x4_act / Q8_0_Tensor::dot's QA buffer:
+ * M4 = n_spatial/4 groups of block_q8_0x4, followed by (n_spatial%4) plain
+ * block_q8_0 rows for the GEMV tail. dst must hold the same total bytes as
+ * n_spatial * (in_ch/32) plain block_q8_0 (136B per 4-row group == 4*34B).
+ */
+static inline void quantize_nhwc_q8_0x4_rows(const _FP16 *src, int n_spatial,
+                                              int in_ch, void *dst) {
+  struct block_q8_0 {
+    uint16_t d;
+    int8_t qs[32];
+  };
+  struct block_q8_0x4 {
+    uint16_t d[4];
+    int8_t qs[128];
+  };
+  const int qk = 32;
+  const int nb = in_ch / qk;
+  const int M4 = n_spatial / 4;
+  const int rem = n_spatial % 4;
+  block_q8_0x4 *y4 = static_cast<block_q8_0x4 *>(dst);
+  const size_t qa_4_rows_size = sizeof(block_q8_0x4) * nb;
+
+  auto &tm = ThreadManager::Global();
+  const unsigned int chunk = 256; // groups of 4 rows per task
+  const size_t loops = (M4 + chunk - 1) / chunk;
+  tm.parallel_for(0, loops, [=](size_t idx) {
+    unsigned int g0 = idx * chunk;
+    unsigned int g1 = std::min(g0 + chunk, (unsigned int)M4);
+    for (unsigned int g = g0; g < g1; ++g) {
+      unsigned int r0 = g * 4;
+      for (int b = 0; b < nb; ++b) {
+        block_q8_0x4 &dst_b = y4[g * nb + b];
+        for (unsigned int row = 0; row < 4; ++row) {
+          unsigned int r = r0 + row;
+          const _FP16 *rowp = src + (size_t)r * in_ch + b * qk;
+          float amax = 0.0f;
+          for (int j = 0; j < qk; ++j) {
+            float val = std::abs(static_cast<float>(rowp[j]));
+            if (val > amax)
+              amax = val;
+          }
+          const float d = amax / ((1 << 7) - 1);
+          const float id = d ? 1.0f / d : 0.0f;
+          _FP16 d_half = static_cast<_FP16>(d);
+          uint16_t d_u16;
+          std::memcpy(&d_u16, &d_half, 2);
+          dst_b.d[row] = d_u16;
+          for (int j = 0; j < qk; ++j) {
+            float x0 = static_cast<float>(rowp[j]) * id;
+            // qs[32*chunk + 8*row + lane], chunk = j/8, lane = j%8
+            dst_b.qs[32 * (j / 8) + 8 * row + (j % 8)] =
+              static_cast<int8_t>(std::roundf(x0));
+          }
+        }
+      }
+    }
+  });
+
+  if (rem > 0) {
+    block_q8_0 *yrem = reinterpret_cast<block_q8_0 *>(
+      reinterpret_cast<char *>(dst) + (size_t)M4 * qa_4_rows_size);
+    for (int i = 0; i < rem; ++i) {
+      unsigned int r = M4 * 4 + i;
+      const _FP16 *rowp = src + (size_t)r * in_ch;
+      for (int b = 0; b < nb; ++b) {
+        const _FP16 *blk = rowp + b * qk;
+        float amax = 0.0f;
+        for (int j = 0; j < qk; ++j) {
+          float val = std::abs(static_cast<float>(blk[j]));
+          if (val > amax)
+            amax = val;
+        }
+        const float d = amax / ((1 << 7) - 1);
+        const float id = d ? 1.0f / d : 0.0f;
+        _FP16 d_half = static_cast<_FP16>(d);
+        uint16_t d_u16;
+        std::memcpy(&d_u16, &d_half, 2);
+        yrem[i * nb + b].d = d_u16;
+        for (int j = 0; j < qk; ++j)
+          yrem[i * nb + b].qs[j] =
+            static_cast<int8_t>(std::roundf(static_cast<float>(blk[j]) * id));
+      }
+    }
+  }
+}
+
+/**
  * @brief Transpose-and-quantize FP16 NCHW [in_ch, owoh] -> Q8_0 [owoh, in_ch]
  *        in a single fused pass (no intermediate transpose copy).
  *
@@ -698,7 +792,12 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
   out_dim.height((eff_in_height - eff_k_height) / stride[0] + 1);
   out_dim.width((eff_in_width - eff_k_width) / stride[1] + 1);
 
-  out_dim.setTensorType(in_dim.getTensorType());
+  // Output activation dtype follows the model activation dtype, not the input
+  // dtype. For FP16 activation graphs this is identical to the input; for a
+  // first-class Q8_0 activation graph it makes the conv emit a real Q8_0 tensor.
+  auto out_t_type = in_dim.getTensorType();
+  out_t_type.data_type = context.getActivationDataType();
+  out_dim.setTensorType(out_t_type);
 
   context.setOutputDimensions({out_dim});
 
@@ -756,11 +855,14 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
     // Q8_0 activation scratch for NHWC W4A8 path: pre-allocated once so
     // forwarding never calls malloc. Size = max(owoh, in_h*in_w) * nb blocks,
     // stored as a plain float buffer and reinterpret-cast to block_q8_0*.
-    // FORWARD_INFER_LIFESPAN (LongTerm) is used instead of FORWARD_FUNC_LIFESPAN
-    // (ShortTerm) because ShortTerm scratch shares memory with activation tensors
-    // in the pool. Writing Q8_0 bytes there corrupts skip-connection activations
-    // that are still live when this layer's forward runs. LongTerm gives this
-    // scratch its own allocation that never overlaps with activation memory.
+    // MAX_LIFESPAN (LongTerm) is required: FORWARD_FUNC_LIFESPAN (ShortTerm)
+    // shares memory with activation tensors in the pool, so writing Q8_0 bytes
+    // there corrupts skip-connection activations still live when this layer's
+    // forward runs (see FORWARD_INFER_LIFESPAN note below). LongTerm gives
+    // this scratch its own allocation that never overlaps with activation
+    // memory. Note: FORWARD_INFER_LIFESPAN (also LongTerm) was tried first but
+    // yields a null getData() here at forward time for this scratch — cause
+    // not fully root-caused, MAX_LIFESPAN is the confirmed-working choice.
     const bool nhwc_layout =
       (in_dim.getFormat() == ml::train::TensorDim::Format::NHWC);
     if (quant_matmul_filter && nhwc_layout &&
@@ -776,7 +878,7 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
         TensorDim q8dim(1, 1, 1, n_elems, scratch_type);
         wt_idx[ConvParams::q8act_scratch] =
           context.requestTensor(q8dim, "q8act", Initializer::NONE, false,
-                                TensorLifespan::FORWARD_INFER_LIFESPAN);
+                                TensorLifespan::MAX_LIFESPAN);
       }
     }
   }
@@ -914,13 +1016,12 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             if (is_1x1_s1) {
 #ifdef ENABLE_FP16
               if (can_q8act && q8_buf) {
-                quantize_nhwc_q8_0_rows(in_sub.getData<_FP16>(), owoh,
-                                        in_ch_i, q8_buf);
-                TensorDim q8dim({1, 1, owoh, (unsigned)in_ch_i},
-                                {ml::train::TensorDim::Format::NCHW,
-                                 nntrainer::Tdatatype::Q8_0});
-                Q8_0_Tensor q8act(q8dim, q8_buf);
-                q8act.dot(filter_kernel, out_flat, false, false);
+                quantize_nhwc_q8_0x4_rows(in_sub.getData<_FP16>(), owoh,
+                                         in_ch_i, q8_buf);
+                Q8_0_Tensor::dot_prepacked_x4(
+                  owoh, (unsigned)in_ch_i, filter_size, q8_buf,
+                  filter_kernel.getData(), out_flat.getData<_FP16>(),
+                  filter_size);
               } else {
 #endif
                 Tensor act = in_sub;
