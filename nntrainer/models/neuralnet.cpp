@@ -34,7 +34,7 @@
 #include <future>
 #include <iomanip>
 #include <sstream>
-
+#include <unordered_set>
 #include <activation_realizer.h>
 #include <adamw.h>
 #include <common_properties.h>
@@ -441,6 +441,25 @@ void dumpCalibAmax(const std::string &key, const Tensor &t, const char *path) {
   if (ofs)
     ofs << key << '\t' << amax << '\n';
 }
+
+/**
+ * @brief Env-gated (NNTR_CALIB_TOPO=<file>) graph topology dumper for the W4A8
+ * static-calibration converter (spec U2b).
+ * @details Appends one "<name>\t<type>\t<in0,in1,...>" line per node so the
+ * offline converter can build the scale-group union-find (concat/add/slice/
+ * upsample/maxpool edges, spec §4.3) that the amax log alone cannot express.
+ * Emitted once per node (one-shot guard in the caller). Offline tool only.
+ */
+void dumpCalibTopo(const LayerNode &node, const char *path) {
+  std::ofstream ofs(path, std::ios::app);
+  if (!ofs)
+    return;
+  ofs << node.getName() << '\t' << node.getType() << '\t';
+  const auto &conns = node.getInputConnections();
+  for (size_t i = 0; i < conns.size(); ++i)
+    ofs << (i ? "," : "") << conns[i];
+  ofs << '\n';
+}
 } // namespace
 
 /**
@@ -511,6 +530,14 @@ sharedConstTensors NeuralNetwork::forwarding(
             : node->getName();
         dumpCalibAmax(key, node->getOutput(oi), calib);
       }
+    }
+
+    // W4A8 static-calibration graph topology dump (spec U2b). Env-gated; one
+    // line per node emitted once (guarded across bench iters). Offline only.
+    if (const char *topo = std::getenv("NNTR_CALIB_TOPO")) {
+      static std::unordered_set<std::string> topo_seen;
+      if (topo_seen.insert(node->getName()).second)
+        dumpCalibTopo(*node, topo);
     }
   };
 
