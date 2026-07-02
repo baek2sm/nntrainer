@@ -1054,7 +1054,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     // was injected for this conv's input edge, the Q8_0 activation quantization
     // uses it directly instead of scanning per-block amax. <= 0 keeps dynamic
     // amax.
-    float act_in_scale = -1.0f;
+    [[maybe_unused]] float act_in_scale = -1.0f;
     {
       auto &ais = std::get<props::InputActivationScale>(conv_props);
       if (!ais.empty() && ais.get() > 0.0f)
@@ -1111,7 +1111,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             const bool can_q8act =
               (in_ch_i % 32 == 0) && (std::getenv("NNTR_CONV_Q8ACT") != nullptr);
             // Pre-allocated Q8_0 scratch (no per-forward malloc).
-            ::nntrainer::block_q8_0 *q8_buf = nullptr;
+            [[maybe_unused]] ::nntrainer::block_q8_0 *q8_buf = nullptr;
             if (can_q8act &&
                 wt_idx[ConvParams::q8act_scratch] !=
                   std::numeric_limits<unsigned int>::max()) {
