@@ -115,16 +115,20 @@ public:
 
   /**
    * @copydoc Layer::supportInt8ActInput()
-   * @note W4A8 skeleton: capability is declared but kept OFF until the conv
-   * int8 input path (U5) is wired; returns false so no int8 edge is formed.
+   * @note W4A8 (U5b): conv2d can consume an int8 (Q8_0_TW) activation edge via
+   * the §5.1 boundary dequant / int8 input fast-path. The edge is still only
+   * promoted to int8 when the producer is int8-out-capable and the static scale
+   * is registered (§5.7 conditions 1&3); capability alone forms no int8 edge.
    */
-  bool supportInt8ActInput() const override { return false; }
+  bool supportInt8ActInput() const override { return true; }
 
   /**
    * @copydoc Layer::supportInt8ActOutput()
-   * @note W4A8 skeleton: see supportInt8ActInput(); kept OFF for now.
+   * @note W4A8 (U5b): conv2d can emit an int8 (Q8_0_TW) activation edge via the
+   * §5.2 output requant epilogue. See supportInt8ActInput() for the promotion
+   * conditions (a registered scale is still required, §5.7 condition 3).
    */
-  bool supportInt8ActOutput() const override { return false; }
+  bool supportInt8ActOutput() const override { return true; }
 
   using Layer::setProperty;
 
