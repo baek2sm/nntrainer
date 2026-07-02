@@ -438,6 +438,13 @@ public:
   }
 
   /**
+   * @brief   Whether the underlying layer has a registered static activation
+   *          scale for its output edge (W4A8 §5.7 condition 3).
+   * @return  boolean true if a positive output activation scale is registered
+   */
+  bool hasActivationScale() const { return getLayer()->hasActivationScale(); }
+
+  /**
    * Support interfaces for the properties intercepted from layer
    */
 

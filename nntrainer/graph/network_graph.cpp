@@ -159,12 +159,12 @@ void NetworkGraph::propagateActivationDataTypes() {
 
 bool NetworkGraph::hasActivationScale(const std::string &node_name) const {
   /**
-   * U4d scaffold: the calibration scale table is bound to the graph in U5.
-   * Until then no edge has a registered scale, so §5.7 condition 3 is not yet
-   * satisfiable and no capable edge is promoted.
+   * §5.7 condition 3 (U5b): the producer's output-edge scale is a per-layer
+   * property injected by the calibration loader. Delegate to the node so an
+   * uncalibrated graph (no scales injected) reports no scale and every edge
+   * stays FP16 (bit-identical), while a calibrated run promotes capable edges.
    */
-  (void)node_name;
-  return false;
+  return getLayerNode(node_name)->hasActivationScale();
 }
 
 bool NetworkGraph::isInt8ActivationOutput(const std::string &node_name) const {
@@ -962,6 +962,20 @@ NetworkGraph::finalizeContext(const std::shared_ptr<LayerNode> &lnode,
     });
   }
 
+  /**
+   * W4A8 int8 output persistence (spec §5.2/§5.7, U5b-3): when this node's
+   * output edge was selected as int8 by propagateActivationDataTypes(), request
+   * its output activation tensor as Q8_0_TW (flat int8 payload) instead of
+   * FP16/FP32. The producer layer requants its FP16 result into this buffer and
+   * every (int8-capable) consumer dequants it back on read (§5.1). Only reached
+   * for calibrated + capable conv→conv edges; all other edges stay FP.
+   */
+  if (isInt8ActivationOutput(lnode->getName())) {
+    for (auto &spec : out_specs)
+      spec.variable_spec.dim.setDataType(
+        ml::train::TensorDim::DataType::Q8_0_TW);
+  }
+
   const std::vector<Var_Grad *> &outputs = tensor_manager->requestTensors(
     out_specs, Manager::TensorGroupType::OUTPUT, lnode->getExecutionOrder(),
     lnode->getName());
@@ -1128,6 +1142,20 @@ NetworkGraph::refinalizeContext(const std::shared_ptr<LayerNode> &lnode,
     std::for_each(out_specs.begin(), out_specs.end(), [](VarGradSpecV2 &spec) {
       spec.variable_spec.ls = TensorLifespan::FORWARD_GRAD_LIFESPAN;
     });
+  }
+
+  /**
+   * W4A8 int8 output persistence (spec §5.2/§5.7, U5b-3): when this node's
+   * output edge was selected as int8 by propagateActivationDataTypes(), request
+   * its output activation tensor as Q8_0_TW (flat int8 payload) instead of
+   * FP16/FP32. The producer layer requants its FP16 result into this buffer and
+   * every (int8-capable) consumer dequants it back on read (§5.1). Only reached
+   * for calibrated + capable conv→conv edges; all other edges stay FP.
+   */
+  if (isInt8ActivationOutput(lnode->getName())) {
+    for (auto &spec : out_specs)
+      spec.variable_spec.dim.setDataType(
+        ml::train::TensorDim::DataType::Q8_0_TW);
   }
 
   const std::vector<Var_Grad *> &outputs = tensor_manager->requestTensors(

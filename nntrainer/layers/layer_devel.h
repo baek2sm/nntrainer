@@ -362,6 +362,16 @@ public:
   virtual bool supportInt8ActOutput() const { return false; }
 
   /**
+   * @brief  check if this layer has a registered static activation scale for
+   * its output edge (spec §5.7 condition 3)
+   * @note   default false; a layer overrides this to report that a calibrated
+   * per-tensor scale was injected for its output edge, which is required before
+   * that edge can be carried as int8 (Q8_0_TW).
+   * @return true if a positive output activation scale is registered
+   */
+  virtual bool hasActivationScale() const { return false; }
+
+  /**
    * @brief     save layer Weight & Bias data from file
    * @param file output file stream
    * @param run_context run context for the layer
