@@ -110,17 +110,28 @@ static TensorDim calcCol2ImOutputDim(const TensorDim &out,
 
 #ifdef ENABLE_FP16
 /**
- * @brief Quantize FP16 NHWC [n_spatial, in_ch] -> plain block_q8_0 [n_spatial][in_ch/32].
+ * @brief Quantize FP16 NHWC [n_spatial, in_ch] -> plain block_q8_0
+ * [n_spatial][in_ch/32].
  *
  * NHWC input is already row-major (channel innermost): src[r * in_ch + c].
  * No transpose needed — each row r has in_ch contiguous FP16 channels.
  * Q8_0 requires in_ch % 32 == 0 (caller must check).
  * dst must hold n_spatial * (in_ch/32) * sizeof(block_q8_0) bytes.
+ *
+ * static_scale (W4A8 static-calibration, spec U3/§5.1): when > 0, the per-block
+ * amax scan is skipped and every block uses d = static_scale (the tensor-wise
+ * calibrated scale). Quantized values are saturated to [-127, 127] (sat8) since
+ * a runtime activation may exceed the calibration amax. When <= 0 the legacy
+ * per-block dynamic amax path is used (bit-identical to before).
  */
 static inline void quantize_nhwc_q8_0_rows(const _FP16 *src, int n_spatial,
-                                            int in_ch,
-                                            ::nntrainer::block_q8_0 *dst) {
+                                           int in_ch,
+                                           ::nntrainer::block_q8_0 *dst,
+                                           float static_scale = -1.0f) {
   const int nb = in_ch / 32;
+  const bool use_static = static_scale > 0.0f;
+  const float s_d = static_scale;
+  const float s_id = use_static ? 1.0f / static_scale : 0.0f;
   auto &tm = ThreadManager::Global();
   const unsigned int chunk = 512;
   const size_t loops = ((size_t)n_spatial + chunk - 1) / chunk;
@@ -131,20 +142,30 @@ static inline void quantize_nhwc_q8_0_rows(const _FP16 *src, int n_spatial,
       const _FP16 *row = src + (size_t)r * in_ch;
       for (int b = 0; b < nb; ++b) {
         const _FP16 *blk = row + b * 32;
-        float amax = 0.f;
-        for (int j = 0; j < 32; ++j) {
-          float v = std::abs(static_cast<float>(blk[j]));
-          if (v > amax) amax = v;
+        float d, id;
+        if (use_static) {
+          d = s_d;
+          id = s_id;
+        } else {
+          float amax = 0.f;
+          for (int j = 0; j < 32; ++j) {
+            float v = std::abs(static_cast<float>(blk[j]));
+            if (v > amax)
+              amax = v;
+          }
+          d = amax / 127.f;
+          id = d ? 1.f / d : 0.f;
         }
-        const float d = amax / 127.f;
-        const float id = d ? 1.f / d : 0.f;
         _FP16 d_h = static_cast<_FP16>(d);
         uint16_t d_u16;
         std::memcpy(&d_u16, &d_h, 2);
         ::nntrainer::block_q8_0 &out_blk = dst[(size_t)r * nb + b];
         out_blk.d = d_u16;
-        for (int j = 0; j < 32; ++j)
-          out_blk.qs[j] = (int8_t)std::roundf(static_cast<float>(blk[j]) * id);
+        for (int j = 0; j < 32; ++j) {
+          int q = (int)std::lroundf(static_cast<float>(blk[j]) * id);
+          q = q > 127 ? 127 : (q < -127 ? -127 : q);
+          out_blk.qs[j] = (int8_t)q;
+        }
       }
     }
   });
@@ -166,7 +187,8 @@ static inline void quantize_nhwc_q8_0_rows(const _FP16 *src, int n_spatial,
  * buffer (136 B per 4 rows == 4 * 34 B). Q8_0 requires in_ch % 32 == 0.
  */
 static inline void quantize_nhwc_q8_0x4_rows(const _FP16 *src, int in_ch,
-                                             int owoh, void *dst) {
+                                             int owoh, void *dst,
+                                             float static_scale = -1.0f) {
   struct block_q8_0 {
     uint16_t d;
     int8_t qs[32];
@@ -181,6 +203,13 @@ static inline void quantize_nhwc_q8_0x4_rows(const _FP16 *src, int in_ch,
   const int rem = owoh % 4;
   block_q8_0x4 *y4 = static_cast<block_q8_0x4 *>(dst);
   const size_t qa_4_rows_size = sizeof(block_q8_0x4) * nb;
+  // W4A8 static calibration (spec U3/§5.1): when static_scale > 0 skip the
+  // per-block amax scan and use d = static_scale for every block, saturating
+  // quantized values to [-127, 127] (sat8). static_scale <= 0 keeps the legacy
+  // dynamic per-block amax path (bit-identical).
+  const bool use_static = static_scale > 0.0f;
+  const float s_d = static_scale;
+  const float s_id = use_static ? 1.0f / static_scale : 0.0f;
 
   auto &tm = ThreadManager::Global();
   const unsigned int chunk = 256; // groups of 4 rows per task
@@ -194,22 +223,29 @@ static inline void quantize_nhwc_q8_0x4_rows(const _FP16 *src, int in_ch,
         block_q8_0x4 &dst_b = y4[g * nb + b];
         for (unsigned int row = 0; row < 4; ++row) {
           const _FP16 *blk = src + (size_t)(r0 + row) * in_ch + b * qk;
-          float amax = 0.0f;
-          for (int j = 0; j < qk; ++j) {
-            float val = std::abs(static_cast<float>(blk[j]));
-            if (val > amax)
-              amax = val;
+          float d, id;
+          if (use_static) {
+            d = s_d;
+            id = s_id;
+          } else {
+            float amax = 0.0f;
+            for (int j = 0; j < qk; ++j) {
+              float val = std::abs(static_cast<float>(blk[j]));
+              if (val > amax)
+                amax = val;
+            }
+            d = amax / ((1 << 7) - 1);
+            id = d ? 1.0f / d : 0.0f;
           }
-          const float d = amax / ((1 << 7) - 1);
-          const float id = d ? 1.0f / d : 0.0f;
           _FP16 d_half = static_cast<_FP16>(d);
           uint16_t d_u16;
           std::memcpy(&d_u16, &d_half, 2);
           dst_b.d[row] = d_u16;
           for (int j = 0; j < qk; ++j) {
+            int q = (int)std::lroundf(static_cast<float>(blk[j]) * id);
+            q = q > 127 ? 127 : (q < -127 ? -127 : q);
             // qs[32*(j/8) + 8*row + (j%8)] — matches the SMMLA x4 layout.
-            dst_b.qs[32 * (j / 8) + 8 * row + (j % 8)] =
-              static_cast<int8_t>(std::roundf(static_cast<float>(blk[j]) * id));
+            dst_b.qs[32 * (j / 8) + 8 * row + (j % 8)] = (int8_t)q;
           }
         }
       }
@@ -225,21 +261,29 @@ static inline void quantize_nhwc_q8_0x4_rows(const _FP16 *src, int in_ch,
       unsigned int r = M4 * 4 + i;
       for (int b = 0; b < nb; ++b) {
         const _FP16 *blk = src + (size_t)r * in_ch + b * qk;
-        float amax = 0.0f;
-        for (int j = 0; j < qk; ++j) {
-          float val = std::abs(static_cast<float>(blk[j]));
-          if (val > amax)
-            amax = val;
+        float d, id;
+        if (use_static) {
+          d = s_d;
+          id = s_id;
+        } else {
+          float amax = 0.0f;
+          for (int j = 0; j < qk; ++j) {
+            float val = std::abs(static_cast<float>(blk[j]));
+            if (val > amax)
+              amax = val;
+          }
+          d = amax / ((1 << 7) - 1);
+          id = d ? 1.0f / d : 0.0f;
         }
-        const float d = amax / ((1 << 7) - 1);
-        const float id = d ? 1.0f / d : 0.0f;
         _FP16 d_half = static_cast<_FP16>(d);
         uint16_t d_u16;
         std::memcpy(&d_u16, &d_half, 2);
         yrem[i * nb + b].d = d_u16;
-        for (int j = 0; j < qk; ++j)
-          yrem[i * nb + b].qs[j] =
-            static_cast<int8_t>(std::roundf(static_cast<float>(blk[j]) * id));
+        for (int j = 0; j < qk; ++j) {
+          int q = (int)std::lroundf(static_cast<float>(blk[j]) * id);
+          q = q > 127 ? 127 : (q < -127 ? -127 : q);
+          yrem[i * nb + b].qs[j] = (int8_t)q;
+        }
       }
     }
   }
@@ -1006,11 +1050,53 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       col_scratch->setZero();
     }
 
+    // W4A8 static-calibration input scale (spec U3): when a calibrated scale
+    // was injected for this conv's input edge, the Q8_0 activation quantization
+    // uses it directly instead of scanning per-block amax. <= 0 keeps dynamic
+    // amax.
+    float act_in_scale = -1.0f;
+    {
+      auto &ais = std::get<props::InputActivationScale>(conv_props);
+      if (!ais.empty() && ais.get() > 0.0f)
+        act_in_scale = ais.get();
+    }
+
     auto forwarding_job = [&](unsigned int s, unsigned int e, unsigned int pid,
                               void *user_data) {
       for (unsigned int b = s; b < e; ++b) {
         Tensor out = hidden_.getBatchSlice(b, 1);
         Tensor in_sub = input_.getBatchSlice(b, 1);
+
+        // W4A8 static-calibration accuracy probe (spec U3): when a calibrated
+        // input scale is present, round-trip the FP16 activation through a
+        // static per-tensor int8 quantization (q = sat8(round(x/s)); x' = q*s)
+        // and feed the dequantized copy into the existing FP16 GEMM. Dataflow
+        // and graph dtype are unchanged; this isolates the accuracy impact of
+        // the static per-tensor scale before committing to a persistent int8
+        // edge (U5). Only active when act_in_scale > 0.
+#ifdef ENABLE_FP16
+        Tensor in_rt;
+        if (act_in_scale > 0.0f &&
+            in_sub.getDataType() == ml::train::TensorDim::DataType::FP16) {
+          in_rt = in_sub.clone();
+          _FP16 *p = in_rt.getData<_FP16>();
+          const size_t n = in_rt.size();
+          const float s = act_in_scale;
+          const float id = 1.0f / s;
+          for (size_t i = 0; i < n; ++i) {
+            int q = (int)std::lroundf(static_cast<float>(p[i]) * id);
+            q = q > 127 ? 127 : (q < -127 ? -127 : q);
+            p[i] = static_cast<_FP16>(static_cast<float>(q) * s);
+          }
+        }
+        Tensor &in_sub_ref =
+          (act_in_scale > 0.0f &&
+           in_sub.getDataType() == ml::train::TensorDim::DataType::FP16)
+            ? in_rt
+            : in_sub;
+#else
+        Tensor &in_sub_ref = in_sub;
+#endif
 
         if (weight_is_quant) {
           if (in_sub.getFormat() == ml::train::TensorDim::Format::NHWC) {
@@ -1040,15 +1126,15 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                 // SMMLA layout and run the prepacked GEMM. This replaces the two
                 // passes (quantize -> block_q8_0, then dot() repacks to x4 with a
                 // per-call malloc) with one; output is bit-identical.
-                quantize_nhwc_q8_0x4_rows(in_sub.getData<_FP16>(), in_ch_i, owoh,
-                                          q8_buf);
+                quantize_nhwc_q8_0x4_rows(in_sub.getData<_FP16>(), in_ch_i,
+                                          owoh, q8_buf, act_in_scale);
                 Q8_0_Tensor::dot_prepacked_x4(
                   (unsigned)owoh, (unsigned)in_ch_i, filter_size, q8_buf,
                   filter_kernel.getData(), out_flat.getData<_FP16>(),
                   filter_size);
               } else {
 #endif
-                Tensor act = in_sub;
+                Tensor act = in_sub_ref;
                 act.reshape(TensorDim(1, 1, owoh, in_dim.channel(),
                                      {ml::train::TensorDim::Format::NCHW,
                                       in_sub.getDataType()}));
@@ -1073,8 +1159,8 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
 #ifdef ENABLE_FP16
               if (can_q8act && q8_buf) {
                 const int n_sp = geom.in_h * geom.in_w;
-                quantize_nhwc_q8_0_rows(in_sub.getData<_FP16>(), n_sp,
-                                        in_ch_i, q8_buf);
+                quantize_nhwc_q8_0_rows(in_sub.getData<_FP16>(), n_sp, in_ch_i,
+                                        q8_buf, act_in_scale);
                 TensorDim q8dim({1, 1, (unsigned)n_sp, (unsigned)in_ch_i},
                                 {ml::train::TensorDim::Format::NCHW,
                                  nntrainer::Tdatatype::Q8_0});
@@ -1083,7 +1169,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
               } else {
 #endif
                 geom.is_nhwc = true;
-                in_sub.convQ4_0Indirect(filter_kernel, out_flat, geom);
+                in_sub_ref.convQ4_0Indirect(filter_kernel, out_flat, geom);
 #ifdef ENABLE_FP16
               }
 #endif
