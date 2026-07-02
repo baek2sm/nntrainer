@@ -23,6 +23,7 @@
 #ifndef __YOLOV11_GRAPH_H__
 #define __YOLOV11_GRAPH_H__
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,37 @@ namespace yolov11 {
 inline std::vector<std::string> *&quantConvSink() {
   static std::vector<std::string> *sink = nullptr;
   return sink;
+}
+
+// W4A8 static-calibration scale table (spec U2b/U5b). Populated by main.cpp
+// from YOLO_ACT_SCALES *before* the graph is built, and consulted by every
+// conv builder below to inject the scales as layer properties at createLayer
+// time. This is the ONLY correct injection point: the functional tensor API
+// materializes the Layer objects during model->compile() (which also runs
+// NetworkGraph::propagateActivationDataTypes() to pick int8 conv->conv edges),
+// so the scales MUST already be on the props at construction. A post-build
+// model->getLayer() finds nothing (no layers exist until compile).
+// Keys: "<name>/conv" (post-act output edge scale), "<name>/conv:preact"
+// (fused pre-activation), "<name>/conv:in" (consumed input edge).
+inline std::map<std::string, float> &actScaleTable() {
+  static std::map<std::string, float> tbl;
+  return tbl;
+}
+
+// Append activation_scale / preact_scale / input_activation_scale props for
+// the conv named `conv_name` (already suffixed with "/conv" or "/dw") from the
+// calibration table, when present and positive (0 = uncalibrated => skip).
+inline void appendActScales(std::vector<std::string> &props,
+                            const std::string &conv_name) {
+  const auto &tbl = actScaleTable();
+  auto add = [&](const std::string &key, const char *prop) {
+    auto it = tbl.find(key);
+    if (it != tbl.end() && it->second > 0.0f)
+      props.push_back(nntrainer::withKey(prop, std::to_string(it->second)));
+  };
+  add(conv_name, "activation_scale");
+  add(conv_name + ":preact", "preact_scale");
+  add(conv_name + ":in", "input_activation_scale");
 }
 
 // Channel axis for concat/slice is ALWAYS logical axis 1 (channel), regardless
@@ -91,6 +123,7 @@ inline Tensor convBnSilu(const std::string &name, int in_ch, int out_ch, int k,
     if (quantConvSink() != nullptr)
       quantConvSink()->push_back(name + "/conv");
   }
+  appendActScales(conv_props, name + "/conv");
   LayerHandle conv(createLayer("conv2d", conv_props));
   return conv(input);
 }
@@ -180,6 +213,7 @@ inline Tensor convBnOnly(const std::string &name, int in_ch, int out_ch, int k,
     if (quantConvSink() != nullptr)
       quantConvSink()->push_back(name + "/conv");
   }
+  appendActScales(conv_props, name + "/conv");
   LayerHandle conv(createLayer("conv2d", conv_props));
   return conv(input);
 }
@@ -245,6 +279,7 @@ inline Tensor convBias1x1(const std::string &name, int out_ch, int in_ch,
     if (quantConvSink() != nullptr)
       quantConvSink()->push_back(name + "/conv");
   }
+  appendActScales(conv_props, name + "/conv");
   LayerHandle conv(createLayer("conv2d", conv_props));
   return conv(input);
 }
@@ -253,15 +288,16 @@ inline Tensor convBias1x1(const std::string &name, int out_ch, int in_ch,
  * @brief Depthwise 3x3 (pad 1) + SiLU, BN folded. Always FP32 (never Q4_0).
  */
 inline Tensor dwConvBnSilu(const std::string &name, int ch, Tensor input) {
-  LayerHandle dw(createLayer(
-    "conv2d",
-    {nntrainer::withKey("name", name + "/dw"),
-     nntrainer::withKey("kernel_size", {3, 3}),
-     nntrainer::withKey("filters", ch), nntrainer::withKey("groups", ch),
-     nntrainer::withKey("stride", {1, 1}), nntrainer::withKey("padding", 1),
-     // Fuse SiLU into the depthwise conv epilogue (no separate Activation
-     // layer). See Conv2DLayer::forwarding.
-     nntrainer::withKey("fused_activation", "swish")}));
+  std::vector<std::string> dw_props = {
+    nntrainer::withKey("name", name + "/dw"),
+    nntrainer::withKey("kernel_size", {3, 3}),
+    nntrainer::withKey("filters", ch), nntrainer::withKey("groups", ch),
+    nntrainer::withKey("stride", {1, 1}), nntrainer::withKey("padding", 1),
+    // Fuse SiLU into the depthwise conv epilogue (no separate Activation
+    // layer). See Conv2DLayer::forwarding.
+    nntrainer::withKey("fused_activation", "swish")};
+  appendActScales(dw_props, name + "/dw");
+  LayerHandle dw(createLayer("conv2d", dw_props));
   return dw(input);
 }
 
@@ -269,12 +305,15 @@ inline Tensor dwConvBnSilu(const std::string &name, int ch, Tensor input) {
  * @brief Depthwise 3x3 (pad 1), NO activation. Always FP32 (never Q4_0).
  */
 inline Tensor dwConvBnOnly(const std::string &name, int ch, Tensor input) {
-  LayerHandle dw(createLayer(
-    "conv2d",
-    {nntrainer::withKey("name", name + "/dw"),
-     nntrainer::withKey("kernel_size", {3, 3}),
-     nntrainer::withKey("filters", ch), nntrainer::withKey("groups", ch),
-     nntrainer::withKey("stride", {1, 1}), nntrainer::withKey("padding", 1)}));
+  std::vector<std::string> dw_props = {
+    nntrainer::withKey("name", name + "/dw"),
+    nntrainer::withKey("kernel_size", {3, 3}),
+    nntrainer::withKey("filters", ch),
+    nntrainer::withKey("groups", ch),
+    nntrainer::withKey("stride", {1, 1}),
+    nntrainer::withKey("padding", 1)};
+  appendActScales(dw_props, name + "/dw");
+  LayerHandle dw(createLayer("conv2d", dw_props));
   return dw(input);
 }
 

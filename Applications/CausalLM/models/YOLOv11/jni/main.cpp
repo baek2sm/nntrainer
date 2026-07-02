@@ -494,9 +494,19 @@ int main(int argc, char *argv[]) {
         fp16_act = true;
         preset_q40 = true;
         preset_nhwc = true;
-        setenv("NNTR_CONV_Q8ACT", "1", 1);
-        std::cout << "[YOLO] preset = w4a8 (Q4_0 weights + Q8_0 act + NHWC)"
-                  << std::endl;
+        // NOTE: do NOT force the legacy per-block dynamic Q8_0 path here
+        // (NNTR_CONV_Q8ACT). The w4a8 preset drives the *static-calibration*
+        // int8 path: convs whose output edge has a registered scale
+        // (YOLO_ACT_SCALES) and whose producer/consumers are int8-capable are
+        // promoted to persistent Q8_0_TW edges by propagateActivationDataTypes,
+        // and Conv2DLayer::forwarding takes the int8-native GEMM branch gated
+        // on input_is_int8 (independent of NNTR_CONV_Q8ACT). Force-enabling the
+        // dynamic path here routed *every* FP16 conv through it and corrupted
+        // the output (empty detections). Leave NNTR_CONV_Q8ACT to explicit
+        // opt-in.
+        std::cout
+          << "[YOLO] preset = w4a8 (Q4_0 weights + static Q8_0 act + NHWC)"
+          << std::endl;
       } else {
         model->setProperty({nntrainer::withKey("model_tensor_type", tt)});
         auto dash = tts.find('-');
@@ -550,6 +560,41 @@ int main(int argc, char *argv[]) {
                : Tensor(ml::train::TensorDim(1, 3, 832, 832, in_fmt,
                                              ml::train::TensorDim::DataType::FP32),
                         "input0");
+    // W4A8 static-calibration scale injection (spec U2b/U5b loader). When
+    // YOLO_ACT_SCALES points at an <model>.act_scales.json (produced by
+    // PyTorch/build_act_scales.py), load every conv scale into the graph
+    // builder's table BEFORE building the graph. Keys: "<name>/conv" (post-act
+    // output edge), "<name>/conv:preact" (fused pre-activation),
+    // "<name>/conv:in" (consumed input edge). Each conv builder consults the
+    // table and appends the scales as layer properties at createLayer time.
+    //
+    // This MUST happen before buildBackbone/buildHead: the functional tensor
+    // API only materializes the Layer objects inside model->compile(), which is
+    // also where NetworkGraph::propagateActivationDataTypes() reads the scales
+    // (via hasActivationScale()) to decide which conv->conv edges become
+    // persistent int8 (Q8_0_TW) and types/allocates the output tensors. A
+    // post-build getLayer()/setProperty() finds nothing (no layers exist until
+    // compile), so the scales must ride on the props from construction.
+    if (const char *scale_path = std::getenv("YOLO_ACT_SCALES")) {
+      std::ifstream sf(scale_path);
+      if (!sf)
+        throw std::runtime_error(std::string("cannot open YOLO_ACT_SCALES=") +
+                                 scale_path);
+      nlohmann::json sj;
+      sf >> sj;
+      auto &tbl = yolov11::actScaleTable();
+      size_t loaded = 0;
+      for (auto it = sj.begin(); it != sj.end(); ++it) {
+        const float s = it.value().get<float>();
+        if (s <= 0.0f) // 0 = uncalibrated node; nothing to inject
+          continue;
+        tbl[it.key()] = s;
+        ++loaded;
+      }
+      std::cout << "[YOLO] loaded " << loaded << " activation scales from "
+                << scale_path << std::endl;
+    }
+
     Tensor m4, m6;
     auto m10 = yolov11::buildBackbone(x, m4, m6, conv_q40);
     auto outputs = yolov11::buildHead(m4, m6, m10, conv_q40); // {P3, P4, P5}
@@ -570,51 +615,6 @@ int main(int argc, char *argv[]) {
     model->load(weights_path, ml::train::ModelFormat::MODEL_FORMAT_SAFETENSORS);
     std::cout << "Model built and weights loaded (" << weights_path << ")."
               << std::endl;
-
-    // W4A8 static-calibration scale injection (spec U2b loader). When
-    // YOLO_ACT_SCALES points at an <model>.act_scales.json produced by
-    // PyTorch/build_act_scales.py, inject each conv2d's activation/pre-act/input
-    // scale as graph metadata. Keys: "<name>" (post-act edge), "<name>:preact"
-    // (fused pre-activation), "<name>:in" (consumed input edge). Scales are
-    // hold-only metadata at this stage (U2b) — dataflow is unchanged, so
-    // detections must stay bit-identical (gate B). Env-gated / offline artifact.
-    if (const char *scale_path = std::getenv("YOLO_ACT_SCALES")) {
-      std::ifstream sf(scale_path);
-      if (!sf)
-        throw std::runtime_error(std::string("cannot open YOLO_ACT_SCALES=") +
-                                 scale_path);
-      nlohmann::json sj;
-      sf >> sj;
-      size_t injected = 0, skipped = 0;
-      for (auto it = sj.begin(); it != sj.end(); ++it) {
-        const std::string key = it.key();
-        const float s = it.value().get<float>();
-        if (s <= 0.0f) // 0 = uncalibrated node; nothing to inject
-          continue;
-        // Resolve the property from the key suffix, and the owning node name.
-        std::string node = key, prop = "activation_scale";
-        if (key.size() > 7 && key.compare(key.size() - 7, 7, ":preact") == 0) {
-          node = key.substr(0, key.size() - 7);
-          prop = "preact_scale";
-        } else if (key.size() > 3 && key.compare(key.size() - 3, 3, ":in") == 0) {
-          node = key.substr(0, key.size() - 3);
-          prop = "input_activation_scale";
-        }
-        std::shared_ptr<ml::train::Layer> layer;
-        if (model->getLayer(node.c_str(), &layer) != 0 || !layer) {
-          ++skipped; // node not in graph (e.g. multiout copy) — ignore
-          continue;
-        }
-        if (layer->getType() != "conv2d") // props exist only on conv2d
-          continue;
-        std::ostringstream v;
-        v << prop << "=" << s;
-        layer->setProperty({v.str()});
-        ++injected;
-      }
-      std::cout << "[YOLO] injected " << injected << " activation scales (skipped "
-                << skipped << " non-graph keys) from " << scale_path << std::endl;
-    }
 
     // Offline quantization: re-save with the framework's general per-layer
     // quantizer. dtype=Q4_0 + empty layer map => every layer is targeted, and
