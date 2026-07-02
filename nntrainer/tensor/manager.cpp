@@ -536,7 +536,15 @@ std::vector<Var_Grad *> Manager::requestTensors(
     std::vector<unsigned int> grad_exec_order;
 
     /** usage for tensors */
-    if (enum_class_logical_and(tspan, TensorLifespan::FORWARD_FUNC_LIFESPAN))
+    // A tensor used during the forward pass needs the forwarding order in its
+    // exec order so TensorPool::finalize plans backing memory for it (an empty
+    // exec order is skipped outright). FORWARD_FUNC covers the common
+    // short-term case; FORWARD_INFER_LIFESPAN is a long-term inference-only
+    // scratch (e.g. the W4A8 q8act buffer) that is likewise live at forward
+    // time but does not share the FORWARD_FUNC bit, so it must be included
+    // explicitly or it would never be allocated.
+    if (enum_class_logical_and(tspan, TensorLifespan::FORWARD_FUNC_LIFESPAN) ||
+        enum_class_logical_and(tspan, TensorLifespan::FORWARD_INFER_LIFESPAN))
       var_exec_order.push_back(forwarding_order);
 
     /** usage for tensors gradient in backwarding */
