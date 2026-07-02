@@ -46,6 +46,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -155,6 +156,50 @@ void NetworkGraph::propagateActivationDataTypes() {
 
   ml_logd("[W4A8] int8 activation edges selected: %zu",
           int8_output_nodes_.size());
+
+  // Edge census (temporary instrument, NNTR_EDGE_CENSUS=1): walk every
+  // producer->consumer activation edge, classify int8 vs FP16, and for each
+  // FP16 edge report the exact blocker. This is the ground-truth gate for the
+  // "unify all activation edges to int8" goal: the target is FP16 edges == 0.
+  // Remove before PR.
+  if (std::getenv("NNTR_EDGE_CENSUS")) {
+    size_t total = 0, int8_edges = 0, fp16_edges = 0;
+    size_t blk_no_emit = 0, blk_no_scale = 0, blk_consumer = 0;
+    for (auto iter = cbegin(); iter != cend(); ++iter) {
+      const auto &producer = *iter;
+      const auto consumer_names = producer->getOutputConnections();
+      const bool emit = producer->supportInt8ActOutput();
+      const bool scale = hasActivationScale(producer->getName());
+      for (const auto &cname : consumer_names) {
+        if (cname.empty())
+          continue;
+        ++total;
+        const bool cons_ok = getLayerNode(cname)->supportInt8ActInput();
+        if (emit && scale && cons_ok) {
+          ++int8_edges;
+          continue;
+        }
+        ++fp16_edges;
+        const char *why = !emit      ? "producer-no-int8-out"
+                          : !scale   ? "no-activation-scale"
+                          : !cons_ok ? "consumer-no-int8-in"
+                                     : "?";
+        if (!emit)
+          ++blk_no_emit;
+        else if (!scale)
+          ++blk_no_scale;
+        else
+          ++blk_consumer;
+        fprintf(stderr, "[EDGECENSUS] FP16 %s -> %s : %s\n",
+                producer->getName().c_str(), cname.c_str(), why);
+      }
+    }
+    fprintf(stderr,
+            "[EDGECENSUS] total=%zu int8=%zu fp16=%zu | blockers: "
+            "no-emit=%zu no-scale=%zu consumer=%zu\n",
+            total, int8_edges, fp16_edges, blk_no_emit, blk_no_scale,
+            blk_consumer);
+  }
 }
 
 bool NetworkGraph::hasActivationScale(const std::string &node_name) const {

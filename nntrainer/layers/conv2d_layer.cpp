@@ -1079,17 +1079,45 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
 #endif
   Tensor &hidden_ = output_is_int8 ? hidden_fp16 : out_raw;
 
-  // W4A8 persistent int8 input (spec §5.1/§5.7, U5b-3, "1x1 first"): when the
-  // §5.7 propagation carries this conv's input edge as int8 (Q8_0_TW), the flat
-  // int8 payload is consumed *directly* by the 1x1 int8 GEMM below (repacked
-  // into block_q8_0x4 via pack_int8_nhwc_q8_0x4_rows) — no FP16 dequant. The
-  // §5.7/supportInt8ActInput() restriction guarantees an int8 input only ever
-  // reaches the 1x1 stride-1 quantized NHWC path, so `input_` can bind straight
-  // to the raw int8 tensor here. When the edge stays FP16/FP32, input_is_int8
-  // is false and every path below is unchanged.
+  // W4A8 persistent int8 input (spec §5.1/§5.7, U5b-3): when the §5.7
+  // propagation carries this conv's input edge as int8 (Q8_0_TW), consume the
+  // flat int8 payload directly via the int8-native GEMM branches below. For
+  // 1x1 stride-1 this means repacking into block_q8_0x4; for 3x3/strided it
+  // means gathering block_q8_0 from the int8 tensor into the indirect GEMM.
+  // When the edge stays FP16/FP32, input_is_int8 is false and every path below
+  // is unchanged.
   const bool input_is_int8 =
     (input_raw.getDataType() == nntrainer::Tdatatype::Q8_0_TW);
-  Tensor &input_ = input_raw;
+  Tensor input_dequant;
+#ifdef ENABLE_FP16
+  // Temporary boundary dequant for 3x3/strided convs until the native int8
+  // indirect path is wired: if THIS conv is not 1x1 stride-1, the existing FP16
+  // indirect GEMM cannot consume Q8_0_TW, so reconstruct FP16 first.
+  if (input_is_int8) {
+    const auto &kernel_size =
+      std::get<std::array<props::KernelSize, CONV2D_DIM>>(conv_props);
+    const auto &stride =
+      std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
+    const bool is_1x1_s1 = kernel_size[0].get() == 1 &&
+                           kernel_size[1].get() == 1 &&
+                           stride[0].get() == 1 && stride[1].get() == 1;
+    if (!is_1x1_s1) {
+      float s_in = -1.0f;
+      auto &ais = std::get<props::InputActivationScale>(conv_props);
+      if (!ais.empty() && ais.get() > 0.0f)
+        s_in = ais.get();
+      TensorDim fp16_dim = input_raw.getDim();
+      fp16_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+      input_dequant = Tensor(fp16_dim);
+      // NHWC input edge: flat int8 payload of size feature_len() per batch.
+      const size_t n = input_raw.getDim().getFeatureLen();
+      nntrainer::act_int8::dequant_fp16_from_q8_0_tw(
+        reinterpret_cast<const int8_t *>(input_raw.getData()), n, s_in,
+        input_dequant.getData<_FP16>());
+    }
+  }
+#endif
+  Tensor &input_ = input_dequant.empty() ? input_raw : input_dequant;
 
   Tensor &filter_kernel = context.getWeight(wt_idx[ConvParams::weight]);
 
@@ -1275,8 +1303,10 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
               geom.dil_w = dilation[1].get();
               geom.out_w = out_dim.width();
 #ifdef ENABLE_FP16
-              if (can_q8act && q8_buf) {
+              if (can_q8act) {
                 const int n_sp = geom.in_h * geom.in_w;
+                // Dynamic Q8_0: quantize the FP16 NHWC input into plain
+                // block_q8_0 [n_sp, in_ch/32] and run the indirect GEMM.
                 quantize_nhwc_q8_0_rows(in_sub.getData<_FP16>(), n_sp, in_ch_i,
                                         q8_buf, act_in_scale);
                 TensorDim q8dim({1, 1, (unsigned)n_sp, (unsigned)in_ch_i},
@@ -1697,46 +1727,55 @@ bool Conv2DLayer::hasActivationScale() const {
 }
 
 bool Conv2DLayer::supportInt8ActInput() const {
-  // W4A8 "1x1 first" scope: only the 1x1 stride-1 quantized GEMM path consumes
-  // an int8 (Q8_0_TW) activation directly (repack flat int8 -> block_q8_0x4,
-  // no FP16 round trip). 3x3 / depthwise convs have no int8-native kernel yet,
-  // so they decline int8 input and their incoming edge stays FP16. Props are
-  // set at construction (before compile()/propagateActivationDataTypes()), so
-  // kernel/stride are known here.
-  //
-  // The int8-native path only runs when THIS conv's own filter is Q4_0
-  // (quant_matmul_filter): otherwise forwarding falls back to the FP im2col
-  // GEMM, which cannot consume a Q8_0_TW input. A conv's filter is quantized
-  // only when out_ch (filter_size) is 32-aligned (the save-time quantization
-  // gate); in_ch alignment is already guaranteed for any int8 edge by the
-  // producer's supportInt8ActOutput() %32 constraint. So a conv whose
-  // filter_size is not %32==0 (e.g. the 80-class detection head cv3_2) keeps FP
-  // weights and must decline int8 input, or its incoming edge would arrive as
-  // Q8_0_TW with no int8 kernel to consume it.
+  // W4A8 (spec §5.7 / U5b): this conv declares it can consume a Q8_0_TW int8
+  // activation edge. The forwarding() path handles this by dequantizing at the
+  // boundary into the FP16 working buffer for non-1x1 kernels, and by repacking
+  // directly into block_q8_0x4 for 1x1 stride-1. In both cases this is only safe
+  // when THIS conv's own filter is quantized (Q4_0/QINT4) and groups==1, because
+  // the forwarding machinery assumes a quant_matmul_filter path. The graph
+  // propagation gate additionally requires a registered InputActivationScale for
+  // the edge; capability alone does not create int8 edges.
   const auto &kernel_size =
     std::get<std::array<props::KernelSize, CONV2D_DIM>>(conv_props);
   const auto &stride =
     std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
+  const auto &groups_prop = std::get<props::ConvGroups>(conv_props);
   const unsigned int filter_size = std::get<props::FilterSize>(conv_props);
-  return kernel_size[0].get() == 1 && kernel_size[1].get() == 1 &&
-         stride[0].get() == 1 && stride[1].get() == 1 &&
-         (filter_size % 32 == 0);
+  const unsigned int groups = groups_prop.empty() ? 1 : groups_prop.get();
+
+  // Weight quantization state is not directly visible from a const accessor at
+  // this point in the layer lifecycle, but THIS conv's filter is only quantized
+  // when the app injects weight_dtype=Q4_0/QINT4 and finalize() stored a
+  // Q4_0/QINT4 weight. We approximate this by recreating the same conditions
+  // forwarding() already uses: groups==1, filter_size % 32 == 0 (save-time
+  // quantization gate), and the kernel/stride belong to a path reachable by the
+  // quantized GEMM (1x1, or any kernel on platforms with indirect conv). This
+  // overestimates capability in the sense that it does not inspect the actual
+  // weight tensor dtype, but if the app did not quantize this layer, its output
+  // edge simply will not be promoted because no ActivationScale will be
+  // registered.
+  const bool kernel_ok =
+    (kernel_size[0].get() == 1 && kernel_size[1].get() == 1) ||
+    NNTR_HAS_Q4_0_INDIRECT_CONV;
+
+  return (filter_size % 32 == 0) && (groups == 1) && kernel_ok;
 }
 
 bool Conv2DLayer::supportInt8ActOutput() const {
-  // W4A8 "1x1 first" scope: emit int8 only from a 1x1 stride-1 kernel whose
-  // output-channel count is a multiple of 32. The edge channel count equals
-  // both this producer's out_ch and the consumer's in_ch, so constraining it
-  // here guarantees every int8 edge is %32==0 -> the consumer's block_q8_0x4
-  // GEMM is always applicable (no unpackable int8 edge can be selected).
-  const auto &kernel_size =
-    std::get<std::array<props::KernelSize, CONV2D_DIM>>(conv_props);
-  const auto &stride =
-    std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
+  // W4A8 (spec §5.7 / U5b): this conv declares it can emit a Q8_0_TW int8
+  // activation edge from its output requant epilogue. The edge channel count
+  // equals this producer's filter_size (out_ch) and the consumer's in_ch, so
+  // filter_size must be 32-aligned to match the consumer's block_q8_0x4 / i8mm
+  // granularity. The actual weight dtype is not directly checked here; an
+  // unquantized conv with a registered scale would still be promoted by the
+  // graph propagator if this returned true, but unquantized convs in the W4A8
+  // model do not have scales registered. We keep groups==1 and filter_size %32==0
+  // as a conservative mirror of supportInt8ActInput().
+  const auto &groups_prop = std::get<props::ConvGroups>(conv_props);
+  const unsigned int groups = groups_prop.empty() ? 1 : groups_prop.get();
   const unsigned int filter_size = std::get<props::FilterSize>(conv_props);
-  return kernel_size[0].get() == 1 && kernel_size[1].get() == 1 &&
-         stride[0].get() == 1 && stride[1].get() == 1 &&
-         (filter_size % 32 == 0);
+
+  return (filter_size % 32 == 0) && (groups == 1);
 }
 
 void Conv2DLayer::calcDerivative(RunLayerContext &context) {

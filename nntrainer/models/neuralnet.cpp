@@ -24,7 +24,10 @@
 #include "layer_context.h"
 #include "model.h"
 #include "model_common_properties.h"
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <map>
 #include <compute_ops.h>
 #include <cstdint>
 #include <cstdio>
@@ -73,6 +76,59 @@
 namespace nntrainer {
 
 namespace {
+
+/* [OPPROF] temporary per-op profiler (env NNTR_PROFILE_OPS). Records per-layer
+ * steady-state (min across iters) forward time and prints a per-type rollup on
+ * process exit. Measurement-only; remove before PR. */
+struct OpProf {
+  std::map<std::string, double> min_ns; // layer name -> min forward ns
+  std::map<std::string, std::string> type;
+  std::map<std::string, unsigned> cnt;
+  void record(const std::string &name, const std::string &t, double ns) {
+    auto it = min_ns.find(name);
+    if (it == min_ns.end() || ns < it->second)
+      min_ns[name] = ns;
+    type[name] = t;
+    cnt[name]++;
+  }
+  ~OpProf() {
+    if (min_ns.empty())
+      return;
+    std::map<std::string, double> by_type_ms;
+    std::map<std::string, unsigned> by_type_n;
+    double total_ms = 0.0;
+    std::vector<std::pair<std::string, double>> layers;
+    for (auto &kv : min_ns) {
+      double ms = kv.second / 1e6;
+      total_ms += ms;
+      by_type_ms[type[kv.first]] += ms;
+      by_type_n[type[kv.first]]++;
+      layers.emplace_back(kv.first, ms);
+    }
+    std::vector<std::pair<std::string, double>> types(by_type_ms.begin(),
+                                                      by_type_ms.end());
+    std::sort(types.begin(), types.end(),
+              [](auto &a, auto &b) { return a.second > b.second; });
+    std::sort(layers.begin(), layers.end(),
+              [](auto &a, auto &b) { return a.second > b.second; });
+    fprintf(stderr, "\n[OPPROF] steady-state (min/iter) per-op forward time\n");
+    fprintf(stderr, "[OPPROF] total = %.2f ms over %zu layers\n", total_ms,
+            min_ns.size());
+    fprintf(stderr, "[OPPROF] --- by layer type ---\n");
+    for (auto &t : types)
+      fprintf(stderr, "[OPPROF] %-28s %8.2f ms  %6.1f%%  (%u layers)\n",
+              t.first.c_str(), t.second, 100.0 * t.second / total_ms,
+              by_type_n[t.first]);
+    fprintf(stderr, "[OPPROF] --- top 20 layers ---\n");
+    for (size_t i = 0; i < layers.size() && i < 20; ++i)
+      fprintf(stderr, "[OPPROF] %-40s %8.3f ms  (%s)\n", layers[i].first.c_str(),
+              layers[i].second, type[layers[i].first].c_str());
+  }
+};
+OpProf &opProf() {
+  static OpProf p;
+  return p;
+}
 
 Tensor mapExternalTensor(float *buf, const TensorDim &dim) {
   const unsigned int bytes = static_cast<unsigned int>(
@@ -485,7 +541,17 @@ sharedConstTensors NeuralNetwork::forwarding(
     if (exec_mode == ExecutionMode::TRAIN or
         (exec_mode == ExecutionMode::INFERENCE and !fsu_mode)) {
       model_graph.flushCacheExcept(f);
-      node->forwarding(training);
+      if (std::getenv("NNTR_PROFILE_OPS")) {
+        auto _t0 = std::chrono::high_resolution_clock::now();
+        node->forwarding(training);
+        auto _t1 = std::chrono::high_resolution_clock::now();
+        opProf().record(
+          node->getName(), node->getType(),
+          std::chrono::duration_cast<std::chrono::nanoseconds>(_t1 - _t0)
+            .count());
+      } else {
+        node->forwarding(training);
+      }
     } else {
       /**
          currently, it supports FSU asynch mode for inference. The prcedure of

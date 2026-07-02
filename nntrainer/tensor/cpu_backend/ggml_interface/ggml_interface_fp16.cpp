@@ -30,7 +30,48 @@
 #include <arm_neon.h>
 #endif
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+
 namespace nntrainer {
+
+// [CONVPROF] temporary kernel-internal profiler (env NNTR_PROFILE_CONV).
+// Splits Q4_0 conv GEMM wall-time into requant (FP16->Q8_0) vs int8 GEMM,
+// separately for the BSTP (1x1 act.dot) and indirect (3x3) paths. Each phase
+// is bounded by a parallel_for barrier so timing the call on the driving
+// thread yields that phase's wall-clock. REMOVE before PR.
+namespace {
+struct ConvKernelProf {
+  std::atomic<uint64_t> bstp_q{0}, bstp_g{0}, ind_q{0}, ind_g{0};
+  std::atomic<uint64_t> bstp_c{0}, ind_c{0};
+  bool on = (std::getenv("NNTR_PROFILE_CONV") != nullptr);
+  ~ConvKernelProf() {
+    if (!on)
+      return;
+    double bq = bstp_q.load() / 1e6, bg = bstp_g.load() / 1e6;
+    double iq = ind_q.load() / 1e6, ig = ind_g.load() / 1e6;
+    double q = bq + iq, g = bg + ig, t = q + g;
+    fprintf(stderr,
+            "[CONVPROF] === Q4_0 conv kernel split (sum over all iters) ===\n"
+            "[CONVPROF] 1x1(BSTP)  requant=%8.2f ms  gemm=%8.2f ms  (calls %llu)\n"
+            "[CONVPROF] 3x3(indir) requant=%8.2f ms  gemm=%8.2f ms  (calls %llu)\n"
+            "[CONVPROF] TOTAL      requant=%8.2f ms  gemm=%8.2f ms  total=%8.2f ms\n"
+            "[CONVPROF] requant share = %.1f%%   gemm share = %.1f%%\n",
+            bq, bg, (unsigned long long)bstp_c.load(), iq, ig,
+            (unsigned long long)ind_c.load(), q, g, t, 100.0 * q / (t + 1e-9),
+            100.0 * g / (t + 1e-9));
+  }
+};
+inline ConvKernelProf &convProf() {
+  static ConvKernelProf p;
+  return p;
+}
+using prof_clk = std::chrono::high_resolution_clock;
+inline uint64_t prof_ns(prof_clk::time_point a, prof_clk::time_point b) {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count();
+}
+} // namespace
 
 static inline void __copy_f16_from_f32(const float *src, _FP16 *dst,
                                        int64_t k) {
@@ -420,6 +461,8 @@ static inline void __ggml_q4_0_4x8_q8_0_GEMM_BSTP(
   unsigned int qa_size = qa_4_rows_size * (((M >> 2) << 2) / 4 + 1);
   std::vector<char> QA = std::vector<char>(qa_size);
 
+  const bool _prof = convProf().on;
+  auto _t0 = _prof ? prof_clk::now() : prof_clk::time_point{};
   tm.parallel_for(0, static_cast<size_t>(M4), [=, &QA](size_t i) {
     __ggml_quantize_mat_q8_0_4x8(A + 4 * i * K, QA.data() + i * qa_4_rows_size,
                                  K);
@@ -429,6 +472,7 @@ static inline void __ggml_q4_0_4x8_q8_0_GEMM_BSTP(
       (_FP16 *)A + i * K,
       (QA.data() + (M4 * qa_4_rows_size) + (i - M4 * 4) * qa_row_size), K);
   }
+  auto _t1 = _prof ? prof_clk::now() : prof_clk::time_point{};
 
   unsigned int row_chunk_size = 16;
   size_t row_loop = (M4 * 4 + row_chunk_size - 1) / row_chunk_size;
@@ -487,6 +531,12 @@ static inline void __ggml_q4_0_4x8_q8_0_GEMM_BSTP(
     }
     __copy_f16_from_f32(tail32.data(), C16 + (size_t)M4 * 4 * N,
                         (size_t)leftover_rows * N);
+  }
+  if (_prof) {
+    auto _t2 = prof_clk::now();
+    convProf().bstp_q += prof_ns(_t0, _t1);
+    convProf().bstp_g += prof_ns(_t1, _t2);
+    convProf().bstp_c += 1;
   }
 }
 
@@ -570,6 +620,8 @@ void __ggml_q4_0_4x8_q8_0_indirect_GEMM_fp16(
   /// FP16-input quantizer __ggml_quantize_mat_q8_0_4x8(const _FP16*) one
   /// 4-row tile at a time through a small L1/L2-resident _FP16 buffer (no FP32
   /// staging). Byte-identical QA layout to the materialized FP16 path.
+  const bool _prof = convProf().on;
+  auto _t0 = _prof ? prof_clk::now() : prof_clk::time_point{};
   const unsigned int QCHUNK = 64; // multiple of 4
   if (M4 > 0) {
     const unsigned int rows4 = M4 * 4;
@@ -593,6 +645,7 @@ void __ggml_q4_0_4x8_q8_0_indirect_GEMM_fp16(
       staging.data(),
       QA_ptr + (M4 * qa_4_rows_size) + (i - M4 * 4) * qa_row_size, K);
   }
+  auto _t1 = _prof ? prof_clk::now() : prof_clk::time_point{};
 
   /// GEMM over the 4-row-divisible rows + GEMV over the remainder, mirroring
   /// __ggml_q4_0_4x8_q8_0_GEMM_BSTP's output block (same QA addressing, same
@@ -655,6 +708,12 @@ void __ggml_q4_0_4x8_q8_0_indirect_GEMM_fp16(
       });
     }
     __copy_f16_from_f32(tail32.data(), C + (size_t)M4 * 4 * N, (size_t)rem * N);
+  }
+  if (_prof) {
+    auto _t2 = prof_clk::now();
+    convProf().ind_q += prof_ns(_t0, _t1);
+    convProf().ind_g += prof_ns(_t1, _t2);
+    convProf().ind_c += 1;
   }
 }
 
