@@ -115,20 +115,38 @@ public:
 
   /**
    * @copydoc Layer::supportInt8ActInput()
-   * @note W4A8 (U5b): conv2d can consume an int8 (Q8_0_TW) activation edge via
-   * the §5.1 boundary dequant / int8 input fast-path. The edge is still only
+   * @note W4A8 (U5b, "1x1 first" scope): conv2d consumes an int8 (Q8_0_TW)
+   * activation edge *directly* — the flat int8 payload is repacked into the
+   * SMMLA block_q8_0x4 layout and fed straight to the int8xint4 GEMM, with no
+   * FP16 dequant/re-quantize round trip. Only the 1x1 stride-1 quantized GEMM
+   * path can do this today, so int8 input capability is restricted to a 1x1
+   * stride-1 kernel whose filter is Q4_0-quantized (out_ch %32==0 — otherwise
+   * forwarding uses the FP im2col GEMM, which cannot consume a Q8_0_TW input);
+   * 3x3 / depthwise / non-32-aligned convs stay FP16. The edge is still only
    * promoted to int8 when the producer is int8-out-capable and the static scale
    * is registered (§5.7 conditions 1&3); capability alone forms no int8 edge.
    */
-  bool supportInt8ActInput() const override { return true; }
+  bool supportInt8ActInput() const override;
 
   /**
    * @copydoc Layer::supportInt8ActOutput()
-   * @note W4A8 (U5b): conv2d can emit an int8 (Q8_0_TW) activation edge via the
-   * §5.2 output requant epilogue. See supportInt8ActInput() for the promotion
-   * conditions (a registered scale is still required, §5.7 condition 3).
+   * @note W4A8 (U5b, "1x1 first" scope): conv2d emits an int8 (Q8_0_TW)
+   * activation edge via the §5.2 output requant epilogue, but only for a 1x1
+   * stride-1 kernel whose output-channel count is a multiple of 32 (block_q8_0
+   * granularity). This keeps every int8 edge channel-count %32==0, so the
+   * consumer's block_q8_0x4 GEMM is always available (no unpackable edge). See
+   * supportInt8ActInput() for the promotion conditions (a registered scale is
+   * still required, §5.7 condition 3).
    */
-  bool supportInt8ActOutput() const override { return true; }
+  bool supportInt8ActOutput() const override;
+
+  /**
+   * @copydoc Layer::hasActivationScale()
+   * @note W4A8 (U5b): true when a positive props::ActivationScale was injected
+   * for this conv's output edge (the calibration scale table). §5.7 condition 3
+   * gates int8 promotion on this.
+   */
+  bool hasActivationScale() const override;
 
   using Layer::setProperty;
 

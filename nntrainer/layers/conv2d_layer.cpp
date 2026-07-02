@@ -290,6 +290,85 @@ static inline void quantize_nhwc_q8_0x4_rows(const _FP16 *src, int in_ch,
 }
 
 /**
+ * @brief Repack a flat int8 (Q8_0_TW) NHWC [owoh, in_ch] activation *directly*
+ *        into the block_q8_0x4 (4-row interleaved) SMMLA layout — no FP16.
+ *
+ * W4A8 persistent-int8 fast path (spec §5.1/§5.7, U5b-3, "1x1 first"). The
+ * producer conv already quantized this activation once into a flat int8 payload
+ * with a single per-tensor scale (`scale`, == producer post-activation scale ==
+ * this conv's input scale). The int8 GEMM (Q8_0_Tensor::dot_prepacked_x4)
+ * consumes block_q8_0x4, so all we do here is a byte shuffle + scale
+ * replication: copy each int8 value into its interleaved SMMLA slot and set
+ * every block's fp16 scale to `scale`. There is NO dequant and NO
+ * re-quantization — the producer's int8 values pass through bit-exact, which is
+ * both faster and strictly more accurate than the int8->FP16->int8 round trip.
+ *
+ * Layout mirrors quantize_nhwc_q8_0x4_rows exactly: M4=owoh/4 groups of
+ * block_q8_0x4 (136 B/blk) then (owoh % 4) remainder rows as plain block_q8_0
+ * (34 B/blk). NHWC source is row-major (channel innermost): element (r, c) at
+ * src[r*in_ch + c]. Requires in_ch % 32 == 0 (guaranteed by
+ * Conv2DLayer::supportInt8ActOutput()'s %32 edge constraint).
+ */
+static inline void pack_int8_nhwc_q8_0x4_rows(const int8_t *src, int in_ch,
+                                              int owoh, void *dst, float scale) {
+  struct block_q8_0 {
+    uint16_t d;
+    int8_t qs[32];
+  };
+  struct block_q8_0x4 {
+    uint16_t d[4];
+    int8_t qs[128];
+  };
+  const int qk = 32;
+  const int nb = in_ch / qk;
+  const int M4 = owoh / 4;
+  const int rem = owoh % 4;
+  block_q8_0x4 *y4 = static_cast<block_q8_0x4 *>(dst);
+  const size_t qa_4_rows_size = sizeof(block_q8_0x4) * nb;
+
+  _FP16 d_half = static_cast<_FP16>(scale);
+  uint16_t d_u16;
+  std::memcpy(&d_u16, &d_half, 2);
+
+  auto &tm = ThreadManager::Global();
+  const unsigned int chunk = 256; // groups of 4 rows per task
+  const size_t loops = (M4 + chunk - 1) / chunk;
+  tm.parallel_for(0, loops, [=](size_t idx) {
+    unsigned int g0 = idx * chunk;
+    unsigned int g1 = std::min(g0 + chunk, (unsigned int)M4);
+    for (unsigned int g = g0; g < g1; ++g) {
+      unsigned int r0 = g * 4;
+      for (int b = 0; b < nb; ++b) {
+        block_q8_0x4 &dst_b = y4[g * nb + b];
+        for (unsigned int row = 0; row < 4; ++row) {
+          const int8_t *blk = src + (size_t)(r0 + row) * in_ch + b * qk;
+          dst_b.d[row] = d_u16;
+          for (int j = 0; j < qk; ++j)
+            // qs[32*(j/8) + 8*row + (j%8)] — matches the SMMLA x4 layout.
+            dst_b.qs[32 * (j / 8) + 8 * row + (j % 8)] = blk[j];
+        }
+      }
+    }
+  });
+
+  // Remainder rows (owoh % 4): plain block_q8_0 for the GEMV tail.
+  if (rem > 0) {
+    block_q8_0 *yrem =
+      reinterpret_cast<block_q8_0 *>(reinterpret_cast<char *>(dst) +
+                                     (size_t)M4 * qa_4_rows_size);
+    for (int i = 0; i < rem; ++i) {
+      unsigned int r = M4 * 4 + i;
+      for (int b = 0; b < nb; ++b) {
+        const int8_t *blk = src + (size_t)r * in_ch + b * qk;
+        yrem[i * nb + b].d = d_u16;
+        for (int j = 0; j < qk; ++j)
+          yrem[i * nb + b].qs[j] = blk[j];
+      }
+    }
+  }
+}
+
+/**
  * @brief Transpose-and-quantize FP16 NCHW [in_ch, owoh] -> Q8_0 [owoh, in_ch]
  *        in a single fused pass (no intermediate transpose copy).
  *
@@ -450,27 +529,10 @@ transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch, int owoh,
 }
 
 /**
- * @brief W4A8 boundary dequant (spec §6, U4e): tensor-wise Q8_0_TW int8 ->
- * FP16.
- *
- * Counterpart of the §5.1 input quantization (quantize_nhwc_q8_0_rows):
- * reconstructs an FP16 activation from a flat int8 payload using a single
- * per-tensor scale (`dst[i] = (FP16)(q[i] * s)`). Used at the entry of an FP16
- * island (e.g. depthwise / grouped conv) when the §5.7 propagation carried the
- * incoming edge as int8. Single pass, no per-block scale; layout-agnostic
- * because Q8_0_TW is a flat payload (channel order is preserved element-wise).
- */
-static inline void dequant_q8_0_tw_to_fp16(const int8_t *q, size_t n, float s,
-                                           _FP16 *dst) {
-  for (size_t i = 0; i < n; ++i)
-    dst[i] = static_cast<_FP16>(static_cast<float>(q[i]) * s);
-}
-
-/**
  * @brief W4A8 int8 output epilogue requant (spec §5.2, U5a): FP16 conv result
  * -> tensor-wise Q8_0_TW int8.
  *
- * Producer counterpart of dequant_q8_0_tw_to_fp16: after the GEMM + bias +
+ * Producer-side int8 epilogue: after the GEMM + bias +
  * (fused SiLU) have written the FP16 conv result, this requants it once into a
  * flat int8 payload with a single per-tensor post-activation scale:
  * `out[i] = sat8(round(x_i / s_post))`. Matches the framework Q8_0 rounding
@@ -912,6 +974,18 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
 
   out_dim.setTensorType(in_dim.getTensorType());
 
+  // §5.7/§6 (W4A8 static Q8_0): a Q8_0_TW input is an int8 activation edge that
+  // this conv dequantizes into its FP working buffer on read (boundary
+  // dequant). The conv's own result is produced in the activation working
+  // dtype, so the int8 input dtype must not leak into the output dim via the
+  // setTensorType() above — otherwise every downstream layer (the next conv,
+  // Addition, MultiOut, ...) would inherit Q8_0_TW and a non-int8 consumer
+  // would fault on read. Whether THIS output edge is itself carried as int8 is
+  // decided later by NetworkGraph::propagateActivationDataTypes(), which
+  // re-types only the selected output specs back to Q8_0_TW.
+  if (out_dim.getDataType() == ml::train::TensorDim::DataType::Q8_0_TW)
+    out_dim.setDataType(context.getActivationDataType());
+
   context.setOutputDimensions({out_dim});
 
   NNTR_THROW_IF(eff_in_height < kernel_size[0] || eff_in_width < kernel_size[1],
@@ -985,7 +1059,16 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
         // block_q8_0 = 34 bytes; use scratch_type (FP16=2 bytes) for compat.
         const unsigned int n_elems =
           (max_sp * nb * 34 + 1) / 2;  // round up to FP16 elements
-        TensorDim q8dim(1, 1, 1, n_elems, scratch_type);
+        // The q8act scratch is a raw byte buffer that forwarding() reinterprets
+        // as block_q8_0*/block_q8_0x4; n_elems is counted in activation-dtype
+        // (FP16, 2 bytes) units, so the tensor must carry the activation dtype
+        // for getMemoryBytes() to reserve the right byte count. When THIS conv
+        // consumes a persistent int8 edge, in_dim (hence scratch_type) is
+        // Q8_0_TW (1 byte/elem), which would under-size the buffer by half, so
+        // force the activation dtype here.
+        auto q8_scratch_type = scratch_type;
+        q8_scratch_type.data_type = context.getActivationDataType();
+        TensorDim q8dim(1, 1, 1, n_elems, q8_scratch_type);
         wt_idx[ConvParams::q8act_scratch] =
           context.requestTensor(q8dim, "q8act", Initializer::NONE, false,
                                 TensorLifespan::FORWARD_INFER_LIFESPAN);
@@ -1005,34 +1088,38 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     std::get<std::array<props::KernelSize, CONV2D_DIM>>(conv_props);
 
   Tensor &input_raw = context.getInput(SINGLE_INOUT_IDX);
-  Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);
+  Tensor &out_raw = context.getOutput(SINGLE_INOUT_IDX);
 
-  // W4A8 boundary dequant hook (spec §6, U4e): when the §5.7 propagation
-  // carries this conv's input edge as int8 (Q8_0_TW) but the conv consumes FP16
-  // (an FP16-island entry, e.g. depthwise / grouped conv), reconstruct the FP16
-  // activation once here so every existing FP16 conv path below runs verbatim.
-  // INACTIVE until an edge is actually int8-ified (U5b): no activation tensor
-  // is allocated as Q8_0_TW yet, so `input_is_int8` is always false,
-  // `input_dequant` stays empty, and `input_` binds to the raw input (zero
-  // behavior change).
-  Tensor input_dequant;
-  const bool input_is_int8 =
-    (input_raw.getDataType() == nntrainer::Tdatatype::Q8_0_TW);
+  // W4A8 int8 output persistence (spec §5.2, U5b-3): when the §5.7 propagation
+  // carries THIS conv's output edge as int8 (Q8_0_TW), the GEMM + bias + fused
+  // SiLU below run in a FP16 working buffer; the epilogue then requants the
+  // result once into the int8 output tensor. The Q8_0_TW payload is int8-sized
+  // (1 byte/elem), so it cannot host the FP16 GEMM write in place. When the
+  // output edge stays FP16/FP32, `hidden_` binds to the raw output directly and
+  // every path below is unchanged.
+  Tensor hidden_fp16;
+  const bool output_is_int8 =
+    (out_raw.getDataType() == nntrainer::Tdatatype::Q8_0_TW);
 #ifdef ENABLE_FP16
-  if (input_is_int8) {
-    float s_in = -1.0f;
-    auto &ais = std::get<props::InputActivationScale>(conv_props);
-    if (!ais.empty() && ais.get() > 0.0f)
-      s_in = ais.get();
-    TensorDim fp16_dim = input_raw.getDim();
+  if (output_is_int8) {
+    TensorDim fp16_dim = out_raw.getDim();
     fp16_dim.setDataType(ml::train::TensorDim::DataType::FP16);
-    input_dequant = Tensor(fp16_dim);
-    dequant_q8_0_tw_to_fp16(
-      reinterpret_cast<const int8_t *>(input_raw.getData()), input_raw.size(),
-      s_in, input_dequant.getData<_FP16>());
+    hidden_fp16 = Tensor(fp16_dim);
   }
 #endif
-  Tensor &input_ = input_is_int8 ? input_dequant : input_raw;
+  Tensor &hidden_ = output_is_int8 ? hidden_fp16 : out_raw;
+
+  // W4A8 persistent int8 input (spec §5.1/§5.7, U5b-3, "1x1 first"): when the
+  // §5.7 propagation carries this conv's input edge as int8 (Q8_0_TW), the flat
+  // int8 payload is consumed *directly* by the 1x1 int8 GEMM below (repacked
+  // into block_q8_0x4 via pack_int8_nhwc_q8_0x4_rows) — no FP16 dequant. The
+  // §5.7/supportInt8ActInput() restriction guarantees an int8 input only ever
+  // reaches the 1x1 stride-1 quantized NHWC path, so `input_` can bind straight
+  // to the raw int8 tensor here. When the edge stays FP16/FP32, input_is_int8
+  // is false and every path below is unchanged.
+  const bool input_is_int8 =
+    (input_raw.getDataType() == nntrainer::Tdatatype::Q8_0_TW);
+  Tensor &input_ = input_raw;
 
   Tensor &filter_kernel = context.getWeight(wt_idx[ConvParams::weight]);
 
@@ -1140,37 +1227,6 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
         Tensor out = hidden_.getBatchSlice(b, 1);
         Tensor in_sub = input_.getBatchSlice(b, 1);
 
-        // W4A8 static-calibration accuracy probe (spec U3): when a calibrated
-        // input scale is present, round-trip the FP16 activation through a
-        // static per-tensor int8 quantization (q = sat8(round(x/s)); x' = q*s)
-        // and feed the dequantized copy into the existing FP16 GEMM. Dataflow
-        // and graph dtype are unchanged; this isolates the accuracy impact of
-        // the static per-tensor scale before committing to a persistent int8
-        // edge (U5). Only active when act_in_scale > 0.
-#ifdef ENABLE_FP16
-        Tensor in_rt;
-        if (act_in_scale > 0.0f &&
-            in_sub.getDataType() == ml::train::TensorDim::DataType::FP16) {
-          in_rt = in_sub.clone();
-          _FP16 *p = in_rt.getData<_FP16>();
-          const size_t n = in_rt.size();
-          const float s = act_in_scale;
-          const float id = 1.0f / s;
-          for (size_t i = 0; i < n; ++i) {
-            int q = (int)std::lroundf(static_cast<float>(p[i]) * id);
-            q = q > 127 ? 127 : (q < -127 ? -127 : q);
-            p[i] = static_cast<_FP16>(static_cast<float>(q) * s);
-          }
-        }
-        Tensor &in_sub_ref =
-          (act_in_scale > 0.0f &&
-           in_sub.getDataType() == ml::train::TensorDim::DataType::FP16)
-            ? in_rt
-            : in_sub;
-#else
-        Tensor &in_sub_ref = in_sub;
-#endif
-
         if (weight_is_quant) {
           if (in_sub.getFormat() == ml::train::TensorDim::Format::NHWC) {
             // NHWC channel-last quantized convolution:
@@ -1183,18 +1239,33 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             const int in_ch_i = (int)in_dim.channel();
             const bool can_q8act =
               (in_ch_i % 32 == 0) && (std::getenv("NNTR_CONV_Q8ACT") != nullptr);
-            // Pre-allocated Q8_0 scratch (no per-forward malloc).
+            // Pre-allocated Q8_0 scratch (no per-forward malloc). Needed by the
+            // dynamic can_q8act path *and* the persistent-int8 path (both feed
+            // the block_q8_0x4 SMMLA GEMM). finalize allocated it for every
+            // NHWC quant conv with in_ch %32==0, which the §5.7 %32 edge
+            // constraint guarantees for any int8 input.
             [[maybe_unused]] ::nntrainer::block_q8_0 *q8_buf = nullptr;
-            if (can_q8act &&
+            if ((can_q8act || input_is_int8) &&
                 wt_idx[ConvParams::q8act_scratch] !=
                   std::numeric_limits<unsigned int>::max()) {
-              q8_buf = reinterpret_cast<::nntrainer::block_q8_0 *>(
-                context.getTensor(wt_idx[ConvParams::q8act_scratch])
-                  .getData());
+              auto &q8t = context.getTensor(wt_idx[ConvParams::q8act_scratch]);
+              q8_buf = reinterpret_cast<::nntrainer::block_q8_0 *>(q8t.getData());
             }
             if (is_1x1_s1) {
 #ifdef ENABLE_FP16
-              if (can_q8act && q8_buf) {
+              if (input_is_int8 && q8_buf) {
+                // W4A8 persistent int8 (U5b-3): the producer already quantized
+                // this activation to int8 with the per-tensor input scale.
+                // Repack that flat int8 payload straight into block_q8_0x4 and
+                // run the int8xint4 GEMM — no FP16 dequant, no re-quantize.
+                pack_int8_nhwc_q8_0x4_rows(
+                  reinterpret_cast<const int8_t *>(in_sub.getData()), in_ch_i,
+                  owoh, q8_buf, act_in_scale);
+                Q8_0_Tensor::dot_prepacked_x4(
+                  (unsigned)owoh, (unsigned)in_ch_i, filter_size, q8_buf,
+                  filter_kernel.getData(), out_flat.getData<_FP16>(),
+                  filter_size);
+              } else if (can_q8act && q8_buf) {
                 // Fused: quantize NHWC activation directly into the block_q8_0x4
                 // SMMLA layout and run the prepacked GEMM. This replaces the two
                 // passes (quantize -> block_q8_0, then dot() repacks to x4 with a
@@ -1207,7 +1278,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                   filter_size);
               } else {
 #endif
-                Tensor act = in_sub_ref;
+                Tensor act = in_sub;
                 act.reshape(TensorDim(1, 1, owoh, in_dim.channel(),
                                      {ml::train::TensorDim::Format::NCHW,
                                       in_sub.getDataType()}));
@@ -1242,7 +1313,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
               } else {
 #endif
                 geom.is_nhwc = true;
-                in_sub_ref.convQ4_0Indirect(filter_kernel, out_flat, geom);
+                in_sub.convQ4_0Indirect(filter_kernel, out_flat, geom);
 #ifdef ENABLE_FP16
               }
 #endif
@@ -1609,26 +1680,23 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   }
 
 #ifdef ENABLE_FP16
-  // W4A8 int8 output epilogue (spec §5.2, U5a): when the §5.7 propagation
+  // W4A8 int8 output epilogue (spec §5.2, U5b-3): when the §5.7 propagation
   // carries THIS conv's output edge as int8 (Q8_0_TW), the FP16 result computed
-  // above (GEMM + bias + fused SiLU) is requanted once, in place, into the flat
-  // int8 payload with the per-tensor post-activation scale
-  // (props::ActivationScale):
+  // above (GEMM + bias + fused SiLU) sits in the `hidden_fp16` working buffer
+  // and is requanted once into the flat int8 output `out_raw` with the
+  // per-tensor post-activation scale (props::ActivationScale):
   //   out[i] = sat8(round(x_i / s_post)).
-  // INACTIVE until U5b: conv capability (supportInt8ActOutput) is still off, so
-  // the propagation int8-ifies no edge and no conv output is allocated Q8_0_TW.
-  // `hidden_.getDataType()` is therefore never Q8_0_TW here and the branch is
-  // never taken (zero behavior change; hidden_ stays FP16/FP32). U5b wires the
-  // FP16 GEMM scratch / output allocation and the real scale table.
-  if (hidden_.getDataType() == nntrainer::Tdatatype::Q8_0_TW) {
+  // §5.7 condition 3 guarantees a positive ActivationScale whenever the output
+  // edge was int8-ified, so s_post > 0 here. When the edge stays FP16/FP32,
+  // output_is_int8 is false and this branch is skipped (zero behavior change).
+  if (output_is_int8) {
     float s_post = -1.0f;
     if (auto &aos = std::get<props::ActivationScale>(conv_props);
         !aos.empty() && aos.get() > 0.0f)
       s_post = aos.get();
-    const size_t n_out = hidden_.size();
-    requant_q8_0_tw_from_fp16(
-      reinterpret_cast<const _FP16 *>(hidden_.getData()), n_out, s_post,
-      reinterpret_cast<int8_t *>(hidden_.getData()));
+    const size_t n_out = hidden_fp16.size();
+    requant_q8_0_tw_from_fp16(hidden_fp16.getData<_FP16>(), n_out, s_post,
+                              reinterpret_cast<int8_t *>(out_raw.getData()));
   }
 #endif
 
@@ -1642,6 +1710,53 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     for (int i = 0; i < 8; ++i)
       std::cerr << "  [" << i << "]=" << p[i] << std::endl;
   }
+}
+
+bool Conv2DLayer::hasActivationScale() const {
+  // W4A8 §5.7 condition 3: report a registered output-edge scale. The app's
+  // calibration loader injects props::ActivationScale for calibrated conv
+  // output edges; an unset/non-positive scale means uncalibrated (no int8).
+  const auto &aos = std::get<props::ActivationScale>(conv_props);
+  return !aos.empty() && aos.get() > 0.0f;
+}
+
+bool Conv2DLayer::supportInt8ActInput() const {
+  // W4A8 "1x1 first" scope: only the 1x1 stride-1 quantized GEMM path consumes
+  // an int8 (Q8_0_TW) activation directly (repack flat int8 -> block_q8_0x4,
+  // no FP16 round trip). 3x3 / depthwise convs have no int8-native kernel yet,
+  // so they decline int8 input and their incoming edge stays FP16. Props are
+  // set at construction (before compile()/propagateActivationDataTypes()), so
+  // kernel/stride are known here.
+  //
+  // The int8-native path only runs when THIS conv's own filter is Q4_0
+  // (quant_matmul_filter): otherwise forwarding falls back to the FP im2col
+  // GEMM, which cannot consume a Q8_0_TW input. A conv's filter is quantized
+  // only when out_ch (filter_size) is 32-aligned (the save-time quantization
+  // gate); in_ch alignment is already guaranteed for any int8 edge by the
+  // producer's supportInt8ActOutput() %32 constraint. So a conv whose
+  // filter_size is not %32==0 (e.g. the 80-class detection head cv3_2) keeps FP
+  // weights and must decline int8 input, or its incoming edge would arrive as
+  // Q8_0_TW with no int8 kernel to consume it.
+  const auto &kernel_size =
+    std::get<std::array<props::KernelSize, CONV2D_DIM>>(conv_props);
+  const auto &stride = std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
+  const unsigned int filter_size = std::get<props::FilterSize>(conv_props);
+  return kernel_size[0].get() == 1 && kernel_size[1].get() == 1 &&
+         stride[0].get() == 1 && stride[1].get() == 1 && (filter_size % 32 == 0);
+}
+
+bool Conv2DLayer::supportInt8ActOutput() const {
+  // W4A8 "1x1 first" scope: emit int8 only from a 1x1 stride-1 kernel whose
+  // output-channel count is a multiple of 32. The edge channel count equals
+  // both this producer's out_ch and the consumer's in_ch, so constraining it
+  // here guarantees every int8 edge is %32==0 -> the consumer's block_q8_0x4
+  // GEMM is always applicable (no unpackable int8 edge can be selected).
+  const auto &kernel_size =
+    std::get<std::array<props::KernelSize, CONV2D_DIM>>(conv_props);
+  const auto &stride = std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
+  const unsigned int filter_size = std::get<props::FilterSize>(conv_props);
+  return kernel_size[0].get() == 1 && kernel_size[1].get() == 1 &&
+         stride[0].get() == 1 && stride[1].get() == 1 && (filter_size % 32 == 0);
 }
 
 void Conv2DLayer::calcDerivative(RunLayerContext &context) {
