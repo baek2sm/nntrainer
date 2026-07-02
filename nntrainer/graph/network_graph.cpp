@@ -97,12 +97,78 @@ int NetworkGraph::compile(const std::string &loss_type) {
 
   inPlaceOptimize();
 
+  propagateActivationDataTypes();
+
   status = checkCompiledGraph();
   NN_RETURN_STATUS();
 
   compiled = true;
 
   return status;
+}
+
+void NetworkGraph::propagateActivationDataTypes() {
+  /**
+   * §5.7 (W4A8 NHWC static-Q8_0) activation-dtype propagation. An edge
+   * producer→consumer is carried as int8 (Q8_0_TW) only when all three hold:
+   *   1. the producer can emit int8 output (Layer::supportInt8ActOutput),
+   *   2. every consumer of that output can accept int8 input
+   *      (Layer::supportInt8ActInput), and
+   *   3. the edge's static scale is registered (hasActivationScale).
+   * Otherwise the edge stays FP16. Every layer currently declares no int8
+   * capability, so the selection set is empty and the dataflow is unchanged;
+   * U4e/U5 consume int8_output_nodes_ to wire the boundary quant/dequant and
+   * the conv int8 input path.
+   */
+  int8_output_nodes_.clear();
+
+  for (auto iter = cbegin(); iter != cend(); ++iter) {
+    const auto &producer = *iter;
+
+    /** condition 1: producer must be able to emit int8 output */
+    if (!producer->supportInt8ActOutput())
+      continue;
+
+    const auto consumer_names = producer->getOutputConnections();
+    /** a graph output edge (no consumer) is never int8-ified in U4 */
+    if (consumer_names.empty())
+      continue;
+
+    /** condition 2: every consumer must accept int8 input (fan-out>1 requires
+     * all consumers capable) */
+    bool all_consumers_capable = true;
+    for (const auto &cname : consumer_names) {
+      if (cname.empty() || !getLayerNode(cname)->supportInt8ActInput()) {
+        all_consumers_capable = false;
+        break;
+      }
+    }
+    if (!all_consumers_capable)
+      continue;
+
+    /** condition 3: a registered static scale must exist for this edge */
+    if (!hasActivationScale(producer->getName()))
+      continue;
+
+    int8_output_nodes_.insert(producer->getName());
+  }
+
+  ml_logd("[W4A8] int8 activation edges selected: %zu",
+          int8_output_nodes_.size());
+}
+
+bool NetworkGraph::hasActivationScale(const std::string &node_name) const {
+  /**
+   * U4d scaffold: the calibration scale table is bound to the graph in U5.
+   * Until then no edge has a registered scale, so §5.7 condition 3 is not yet
+   * satisfiable and no capable edge is promoted.
+   */
+  (void)node_name;
+  return false;
+}
+
+bool NetworkGraph::isInt8ActivationOutput(const std::string &node_name) const {
+  return int8_output_nodes_.find(node_name) != int8_output_nodes_.end();
 }
 
 void NetworkGraph::setExecutionOrder() {

@@ -422,6 +422,22 @@ public:
   bool supportBackwarding() const { return getLayer()->supportBackwarding(); }
 
   /**
+   * @brief   Whether the underlying layer can consume an int8 (Q8_0_TW)
+   *          activation input edge (W4A8 NHWC path, §5.7).
+   * @return  boolean true if int8 activation input is supported
+   */
+  bool supportInt8ActInput() const { return getLayer()->supportInt8ActInput(); }
+
+  /**
+   * @brief   Whether the underlying layer can produce an int8 (Q8_0_TW)
+   *          activation output edge (W4A8 NHWC path, §5.7).
+   * @return  boolean true if int8 activation output is supported
+   */
+  bool supportInt8ActOutput() const {
+    return getLayer()->supportInt8ActOutput();
+  }
+
+  /**
    * Support interfaces for the properties intercepted from layer
    */
 

@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <stack>
+#include <unordered_set>
 #include <vector>
 
 #include <engine.h>
@@ -105,6 +106,17 @@ public:
    * returns ML_ERROR_NONE on success, error on failure
    */
   int compile(const std::string &loss_type);
+
+  /**
+   * @brief  Whether the output activation edge of the given node was selected
+   *         to be carried as int8 (Q8_0_TW) by the §5.7 propagation rule.
+   * @param[in] node_name producer node name
+   * @return true if the edge is int8-ified, false if it stays FP16
+   * @note W4A8 NHWC static-Q8_0 path. The decision is computed at compile time
+   * by propagateActivationDataTypes(); consumed by the conv boundary quant /
+   * dequant hooks (U4e) and the conv int8 input path (U5).
+   */
+  bool isInt8ActivationOutput(const std::string &node_name) const;
 
   /**
    * @brief Create new LayerNode and add into Graph
@@ -618,6 +630,12 @@ private:
   float loss_scale;
   unsigned int nan_count;
 
+  std::unordered_set<std::string>
+    int8_output_nodes_; /**< nodes whose output activation edge is carried as
+                           int8 (Q8_0_TW) per the §5.7 propagation rule (W4A8
+                           NHWC). Empty unless layers declare int8 capability.
+                         */
+
   /**
    * @brief     topological sort
    * @param[in] ith index of LayerNode
@@ -658,6 +676,26 @@ private:
    * @brief     set output connections for all the layers
    */
   void setOutputConnections();
+
+  /**
+   * @brief     Compile-time §5.7 activation-dtype propagation (W4A8 NHWC).
+   * @details   Selects which producer→consumer activation edges are carried as
+   * int8 (Q8_0_TW). An edge is int8-ified only if (1) the producer can emit
+   * int8 output, (2) all of its consumers can accept int8 input, and (3) the
+   * edge's static scale is registered. Otherwise the edge stays FP16. Every
+   * layer currently declares no int8 capability, so no edge is selected and the
+   * dataflow is unchanged; U4e/U5 build on the recorded decision.
+   */
+  void propagateActivationDataTypes();
+
+  /**
+   * @brief     Whether a registered static activation scale exists for the
+   *            given node's output edge (§5.7 condition 3).
+   * @param[in] node_name producer node name
+   * @note The calibration scale table is bound to the graph in U5; until then
+   * this returns false, so no capable edge is promoted yet.
+   */
+  bool hasActivationScale(const std::string &node_name) const;
 
   /**
    * @brief     Ensure that layer has a name.
