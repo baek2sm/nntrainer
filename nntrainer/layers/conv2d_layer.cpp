@@ -448,6 +448,23 @@ transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch, int owoh,
     });
   }
 }
+
+/**
+ * @brief W4A8 boundary dequant (spec §6, U4e): tensor-wise Q8_0_TW int8 ->
+ * FP16.
+ *
+ * Counterpart of the §5.1 input quantization (quantize_nhwc_q8_0_rows):
+ * reconstructs an FP16 activation from a flat int8 payload using a single
+ * per-tensor scale (`dst[i] = (FP16)(q[i] * s)`). Used at the entry of an FP16
+ * island (e.g. depthwise / grouped conv) when the §5.7 propagation carried the
+ * incoming edge as int8. Single pass, no per-block scale; layout-agnostic
+ * because Q8_0_TW is a flat payload (channel order is preserved element-wise).
+ */
+static inline void dequant_q8_0_tw_to_fp16(const int8_t *q, size_t n, float s,
+                                           _FP16 *dst) {
+  for (size_t i = 0; i < n; ++i)
+    dst[i] = static_cast<_FP16>(static_cast<float>(q[i]) * s);
+}
 #endif
 
 /**
@@ -958,8 +975,35 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   auto &kernel_size =
     std::get<std::array<props::KernelSize, CONV2D_DIM>>(conv_props);
 
-  Tensor &input_ = context.getInput(SINGLE_INOUT_IDX);
+  Tensor &input_raw = context.getInput(SINGLE_INOUT_IDX);
   Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);
+
+  // W4A8 boundary dequant hook (spec §6, U4e): when the §5.7 propagation
+  // carries this conv's input edge as int8 (Q8_0_TW) but the conv consumes FP16
+  // (an FP16-island entry, e.g. depthwise / grouped conv), reconstruct the FP16
+  // activation once here so every existing FP16 conv path below runs verbatim.
+  // INACTIVE until an edge is actually int8-ified (U5b): no activation tensor
+  // is allocated as Q8_0_TW yet, so `input_is_int8` is always false,
+  // `input_dequant` stays empty, and `input_` binds to the raw input (zero
+  // behavior change).
+  Tensor input_dequant;
+  const bool input_is_int8 =
+    (input_raw.getDataType() == nntrainer::Tdatatype::Q8_0_TW);
+#ifdef ENABLE_FP16
+  if (input_is_int8) {
+    float s_in = -1.0f;
+    auto &ais = std::get<props::InputActivationScale>(conv_props);
+    if (!ais.empty() && ais.get() > 0.0f)
+      s_in = ais.get();
+    TensorDim fp16_dim = input_raw.getDim();
+    fp16_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+    input_dequant = Tensor(fp16_dim);
+    dequant_q8_0_tw_to_fp16(
+      reinterpret_cast<const int8_t *>(input_raw.getData()), input_raw.size(),
+      s_in, input_dequant.getData<_FP16>());
+  }
+#endif
+  Tensor &input_ = input_is_int8 ? input_dequant : input_raw;
 
   Tensor &filter_kernel = context.getWeight(wt_idx[ConvParams::weight]);
 
