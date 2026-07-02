@@ -465,6 +465,35 @@ static inline void dequant_q8_0_tw_to_fp16(const int8_t *q, size_t n, float s,
   for (size_t i = 0; i < n; ++i)
     dst[i] = static_cast<_FP16>(static_cast<float>(q[i]) * s);
 }
+
+/**
+ * @brief W4A8 int8 output epilogue requant (spec §5.2, U5a): FP16 conv result
+ * -> tensor-wise Q8_0_TW int8.
+ *
+ * Producer counterpart of dequant_q8_0_tw_to_fp16: after the GEMM + bias +
+ * (fused SiLU) have written the FP16 conv result, this requants it once into a
+ * flat int8 payload with a single per-tensor post-activation scale:
+ * `out[i] = sat8(round(x_i / s_post))`. Matches the framework Q8_0 rounding
+ * convention (std::lroundf, symmetric [-127, 127]) used by
+ * quantize_nhwc_q8_0_rows so the two int8 domains agree. Single pass and
+ * in-place safe (int8 dst advances no faster than the FP16 src it reads),
+ * honouring the §5.2 invariant that the epilogue-read buffer == the
+ * GEMM-write buffer. Layout-agnostic: Q8_0_TW is a flat payload, so element
+ * (channel) order is preserved.
+ *
+ * NOTE: the SiLU is intended to be folded into a 255-entry pre-act LUT (§5.2,
+ * contributed separately and merged later); this plain requant is the fallback
+ * used when no LUT is wired.
+ */
+static inline void requant_q8_0_tw_from_fp16(const _FP16 *src, size_t n,
+                                             float s, int8_t *dst) {
+  const float id = (s > 0.0f) ? (1.0f / s) : 0.0f;
+  for (size_t i = 0; i < n; ++i) {
+    int q = (int)std::lroundf(static_cast<float>(src[i]) * id);
+    q = q > 127 ? 127 : (q < -127 ? -127 : q);
+    dst[i] = static_cast<int8_t>(q);
+  }
+}
 #endif
 
 /**
@@ -1578,6 +1607,30 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       convApplySwishInplace(hidden_.getData<float>(), n);
     }
   }
+
+#ifdef ENABLE_FP16
+  // W4A8 int8 output epilogue (spec §5.2, U5a): when the §5.7 propagation
+  // carries THIS conv's output edge as int8 (Q8_0_TW), the FP16 result computed
+  // above (GEMM + bias + fused SiLU) is requanted once, in place, into the flat
+  // int8 payload with the per-tensor post-activation scale
+  // (props::ActivationScale):
+  //   out[i] = sat8(round(x_i / s_post)).
+  // INACTIVE until U5b: conv capability (supportInt8ActOutput) is still off, so
+  // the propagation int8-ifies no edge and no conv output is allocated Q8_0_TW.
+  // `hidden_.getDataType()` is therefore never Q8_0_TW here and the branch is
+  // never taken (zero behavior change; hidden_ stays FP16/FP32). U5b wires the
+  // FP16 GEMM scratch / output allocation and the real scale table.
+  if (hidden_.getDataType() == nntrainer::Tdatatype::Q8_0_TW) {
+    float s_post = -1.0f;
+    if (auto &aos = std::get<props::ActivationScale>(conv_props);
+        !aos.empty() && aos.get() > 0.0f)
+      s_post = aos.get();
+    const size_t n_out = hidden_.size();
+    requant_q8_0_tw_from_fp16(
+      reinterpret_cast<const _FP16 *>(hidden_.getData()), n_out, s_post,
+      reinterpret_cast<int8_t *>(hidden_.getData()));
+  }
+#endif
 
   if (std::getenv("NNTR_CONV_PROBE") &&
       context.getName() == "conv0/conv") {
