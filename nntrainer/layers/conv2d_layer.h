@@ -113,6 +113,19 @@ public:
    */
   bool supportBackwarding() const override { return true; }
 
+  /**
+   * @copydoc Layer::supportInt8ActInput()
+   * @note W4A8 skeleton: capability is declared but kept OFF until the conv
+   * int8 input path (U5) is wired; returns false so no int8 edge is formed.
+   */
+  bool supportInt8ActInput() const override { return false; }
+
+  /**
+   * @copydoc Layer::supportInt8ActOutput()
+   * @note W4A8 skeleton: see supportInt8ActInput(); kept OFF for now.
+   */
+  bool supportInt8ActOutput() const override { return false; }
+
   using Layer::setProperty;
 
   /**

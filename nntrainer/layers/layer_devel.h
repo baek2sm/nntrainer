@@ -344,6 +344,24 @@ public:
   virtual bool supportBackwarding() const = 0;
 
   /**
+   * @brief  check if this layer can consume a tensor-wise static Q8_0 (int8)
+   * activation directly on its input edge (W4A8 NHWC path)
+   * @note   default false; an int8 input edge is only formed when the producer
+   * also produces int8 and the edge's scale exists (spec §5.7). Layers that
+   * cannot accept int8 keep an FP16 input edge.
+   * @return true if this layer accepts a Q8_0_TW input, else false
+   */
+  virtual bool supportInt8ActInput() const { return false; }
+
+  /**
+   * @brief  check if this layer can produce a tensor-wise static Q8_0 (int8)
+   * activation directly on its output edge (W4A8 NHWC path)
+   * @note   default false; see supportInt8ActInput().
+   * @return true if this layer produces a Q8_0_TW output, else false
+   */
+  virtual bool supportInt8ActOutput() const { return false; }
+
+  /**
    * @brief     save layer Weight & Bias data from file
    * @param file output file stream
    * @param run_context run context for the layer
