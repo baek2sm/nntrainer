@@ -70,11 +70,13 @@ public:
             */
     UINT4, /** quantized unsigned int 4*/
     UINT8, /** unsigned int 8 bit */
-    UINT16, /** unsigned int 16 bit */
-    UINT32, /** unsigned int 32 bit */
-    FP16,   /** half precision */
-    FP32,   /** single precision */
-    NONE,   /** not specified */
+    UINT16,  /** unsigned int 16 bit */
+    UINT32,  /** unsigned int 32 bit */
+    FP16,    /** half precision */
+    FP32,    /** single precision */
+    Q8_0_TW, /** tensor-wise static Q8_0: pure int8 payload (scale is graph
+                metadata, not embedded in memory) */
+    NONE,    /** not specified */
   };
 
   /**
