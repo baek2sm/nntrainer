@@ -75,6 +75,32 @@ static inline void convApplySwishInplace(T *data, size_t n) {
   });
 }
 
+/**
+ * @brief Env-gated (NNTR_CALIB_DUMP=<file>) pre-activation amax collector for
+ * the W4A8 static-calibration pipeline (spec U2a, pre-act point).
+ * @details Records the amax of a fused-activation conv's bias-included,
+ * pre-SiLU output, keyed "<name>:preact" — this is the scale domain for the
+ * int8 SiLU LUT input (spec §5.2). The post-act point (graph output edge) lives
+ * in neuralnet.cpp. Appends one line; the offline converter takes the per-key
+ * max. NaN/inf skipped. Zero cost when NNTR_CALIB_DUMP is unset. Offline only.
+ */
+template <typename T>
+static void dumpConvPreactAmax(const std::string &name, const T *data, size_t n,
+                               const char *path) {
+  double amax = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    const double v = static_cast<double>(data[i]);
+    if (std::isnan(v) || std::isinf(v))
+      continue;
+    const double a = v < 0 ? -v : v;
+    if (a > amax)
+      amax = a;
+  }
+  std::ofstream ofs(path, std::ios::app);
+  if (ofs)
+    ofs << name << ":preact\t" << amax << '\n';
+}
+
 static TensorDim calcCol2ImOutputDim(const TensorDim &out,
                                      const TensorDim &kdim) {
 
@@ -1400,6 +1426,18 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   if (auto &act = std::get<props::FusedActivation>(conv_props);
       !act.empty() && act.get() == ActivationType::ACT_SWISH) {
     const size_t n = hidden_.size();
+    // W4A8 static-calibration pre-act amax collection (spec U2a). Env-gated:
+    // the bias-included, pre-SiLU value is the LUT input scale domain (§5.2).
+    if (const char *calib = std::getenv("NNTR_CALIB_DUMP")) {
+#ifdef ENABLE_FP16
+      if (hidden_.getDataType() == nntrainer::Tdatatype::FP16)
+        dumpConvPreactAmax(context.getName(), hidden_.getData<_FP16>(), n,
+                           calib);
+      else
+#endif
+        dumpConvPreactAmax(context.getName(), hidden_.getData<float>(), n,
+                           calib);
+    }
 #ifdef ENABLE_FP16
     if (hidden_.getDataType() == nntrainer::Tdatatype::FP16) {
       convApplySwishInplace(hidden_.getData<_FP16>(), n);

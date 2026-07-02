@@ -28,6 +28,7 @@
 #include <compute_ops.h>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <future>
@@ -399,6 +400,49 @@ NeuralNetwork::~NeuralNetwork() {
     close(model_file_fd);
 }
 
+namespace {
+/**
+ * @brief Env-gated (NNTR_CALIB_DUMP=<file>) activation amax collector for the
+ * W4A8 static-calibration pipeline (spec U2a).
+ * @details Appends one "<key>\t<amax>" line per call; the offline converter
+ * takes the per-key max across the calibration image set to derive per-tensor
+ * scales. Zero cost when NNTR_CALIB_DUMP is unset (single getenv per forward).
+ * This is the post-act collection point (graph output edge, key = layer name);
+ * the pre-act point (fused-conv bias-included value, key "<name>:preact") lives
+ * in conv2d_layer. Values are scanned as double; NaN/inf are skipped so they
+ * never poison a scale. Offline tool only.
+ */
+void dumpCalibAmax(const std::string &key, const Tensor &t, const char *path) {
+  const size_t n = t.size();
+  double amax = 0.0;
+  auto scan = [&amax](double v) {
+    if (std::isnan(v) || std::isinf(v))
+      return;
+    const double a = v < 0 ? -v : v;
+    if (a > amax)
+      amax = a;
+  };
+  if (t.getDataType() == TensorDim::DataType::FP32) {
+    const float *d = t.getData<float>();
+    for (size_t i = 0; i < n; ++i)
+      scan(static_cast<double>(d[i]));
+  }
+#ifdef ENABLE_FP16
+  else if (t.getDataType() == TensorDim::DataType::FP16) {
+    const _FP16 *d = t.getData<_FP16>();
+    for (size_t i = 0; i < n; ++i)
+      scan(static_cast<double>(d[i]));
+  }
+#endif
+  else {
+    return;
+  }
+  std::ofstream ofs(path, std::ios::app);
+  if (ofs)
+    ofs << key << '\t' << amax << '\n';
+}
+} // namespace
+
 /**
  * @brief     forward propagation using layers object which has layer
  */
@@ -455,6 +499,18 @@ sharedConstTensors NeuralNetwork::forwarding(
       node->forwarding(training);
       model_graph.inActive(f);
       model_graph.LoadTensors(f + lookahead);
+    }
+
+    // W4A8 static-calibration post-act amax collection (spec U2a). Env-gated:
+    // dumps each layer output edge's amax keyed by layer name. Offline only.
+    if (const char *calib = std::getenv("NNTR_CALIB_DUMP")) {
+      for (unsigned int oi = 0; oi < node->getNumOutputs(); ++oi) {
+        const std::string key =
+          node->getNumOutputs() > 1
+            ? node->getName() + ":out" + std::to_string(oi)
+            : node->getName();
+        dumpCalibAmax(key, node->getOutput(oi), calib);
+      }
     }
   };
 
