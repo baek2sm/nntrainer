@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include <act_int8_boundary.h>
 #include <conv2d_layer.h>
 #include <cpu_backend.h>
 #include <layer_context.h>
@@ -175,15 +176,16 @@ static inline void quantize_nhwc_q8_0_rows(const _FP16 *src, int n_spatial,
  * @brief Quantize FP16 NHWC [owoh, in_ch] directly into the block_q8_0x4
  *        (4-row interleaved) layout the SMMLA GEMM consumes — single pass.
  *
- * NHWC source is row-major (channel innermost): element (r, c) at src[r*in_ch+c].
- * This is the NHWC-read counterpart of transpose_quantize_q8_0x4_act (which reads
- * NCHW channel-major). It fuses the two passes the prior 1x1 W4A8 path performed
- * (quantize_nhwc_q8_0_rows -> plain block_q8_0, then Q8_0_Tensor::dot repacks to
- * x4) into one, and lets the caller invoke Q8_0_Tensor::dot_prepacked_x4 (no
- * per-conv repack, no per-conv QA malloc). Output bytes are identical to what the
- * two-pass path produced. dst layout: M4=owoh/4 groups of block_q8_0x4 (136 B/blk)
- * followed by (owoh % 4) remainder rows as plain block_q8_0 (34 B/blk) — exactly
- * what dot_prepacked_x4 expects. dst must hold the same total as the block_q8_0
+ * NHWC source is row-major (channel innermost): element (r, c) at
+ * src[r*in_ch+c]. This is the NHWC-read counterpart of
+ * transpose_quantize_q8_0x4_act (which reads NCHW channel-major). It fuses the
+ * two passes the prior 1x1 W4A8 path performed (quantize_nhwc_q8_0_rows ->
+ * plain block_q8_0, then Q8_0_Tensor::dot repacks to x4) into one, and lets the
+ * caller invoke Q8_0_Tensor::dot_prepacked_x4 (no per-conv repack, no per-conv
+ * QA malloc). Output bytes are identical to what the two-pass path produced.
+ * dst layout: M4=owoh/4 groups of block_q8_0x4 (136 B/blk) followed by (owoh %
+ * 4) remainder rows as plain block_q8_0 (34 B/blk) — exactly what
+ * dot_prepacked_x4 expects. dst must hold the same total as the block_q8_0
  * buffer (136 B per 4 rows == 4 * 34 B). Q8_0 requires in_ch % 32 == 0.
  */
 static inline void quantize_nhwc_q8_0x4_rows(const _FP16 *src, int in_ch,
@@ -254,9 +256,8 @@ static inline void quantize_nhwc_q8_0x4_rows(const _FP16 *src, int in_ch,
 
   // Remainder rows (owoh % 4): plain block_q8_0 for the GEMV tail.
   if (rem > 0) {
-    block_q8_0 *yrem =
-      reinterpret_cast<block_q8_0 *>(reinterpret_cast<char *>(dst) +
-                                     (size_t)M4 * qa_4_rows_size);
+    block_q8_0 *yrem = reinterpret_cast<block_q8_0 *>(
+      reinterpret_cast<char *>(dst) + (size_t)M4 * qa_4_rows_size);
     for (int i = 0; i < rem; ++i) {
       unsigned int r = M4 * 4 + i;
       for (int b = 0; b < nb; ++b) {
@@ -310,7 +311,8 @@ static inline void quantize_nhwc_q8_0x4_rows(const _FP16 *src, int in_ch,
  * Conv2DLayer::supportInt8ActOutput()'s %32 edge constraint).
  */
 static inline void pack_int8_nhwc_q8_0x4_rows(const int8_t *src, int in_ch,
-                                              int owoh, void *dst, float scale) {
+                                              int owoh, void *dst,
+                                              float scale) {
   struct block_q8_0 {
     uint16_t d;
     int8_t qs[32];
@@ -353,9 +355,8 @@ static inline void pack_int8_nhwc_q8_0x4_rows(const int8_t *src, int in_ch,
 
   // Remainder rows (owoh % 4): plain block_q8_0 for the GEMV tail.
   if (rem > 0) {
-    block_q8_0 *yrem =
-      reinterpret_cast<block_q8_0 *>(reinterpret_cast<char *>(dst) +
-                                     (size_t)M4 * qa_4_rows_size);
+    block_q8_0 *yrem = reinterpret_cast<block_q8_0 *>(
+      reinterpret_cast<char *>(dst) + (size_t)M4 * qa_4_rows_size);
     for (int i = 0; i < rem; ++i) {
       unsigned int r = M4 * 4 + i;
       for (int b = 0; b < nb; ++b) {
@@ -383,7 +384,7 @@ static inline void pack_int8_nhwc_q8_0x4_rows(const int8_t *src, int in_ch,
  * Q8_0_Tensor::dot / the indirect GEMM consumes (M=owoh, K=in_ch).
  */
 static inline void transpose_quantize_q8_0_act(const _FP16 *src, int in_ch,
-                                                int owoh, void *dst) {
+                                               int owoh, void *dst) {
   struct block_q8_0 {
     uint16_t d;
     int8_t qs[32];
@@ -403,8 +404,7 @@ static inline void transpose_quantize_q8_0_act(const _FP16 *src, int in_ch,
         float amax = 0.0f;
         for (int j = 0; j < qk; ++j) {
           int c = b * qk + j;
-          float val =
-            std::abs(static_cast<float>(src[c * owoh + r]));
+          float val = std::abs(static_cast<float>(src[c * owoh + r]));
           if (val > amax)
             amax = val;
         }
@@ -436,9 +436,8 @@ static inline void transpose_quantize_q8_0_act(const _FP16 *src, int in_ch,
  * tail. dst must hold the block_q8_0x4 region followed by the remainder
  * block_q8_0 region (same total as Q8_0_Tensor::dot's QA buffer).
  */
-static inline void
-transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch, int owoh,
-                               void *dst) {
+static inline void transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch,
+                                                 int owoh, void *dst) {
   struct block_q8_0 {
     uint16_t d;
     int8_t qs[32];
@@ -493,9 +492,8 @@ transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch, int owoh,
 
   // Remainder rows (owoh % 4): plain block_q8_0 for the GEMV tail.
   if (rem > 0) {
-    block_q8_0 *yrem =
-      reinterpret_cast<block_q8_0 *>(reinterpret_cast<char *>(dst) +
-                                     (size_t)M4 * qa_4_rows_size);
+    block_q8_0 *yrem = reinterpret_cast<block_q8_0 *>(
+      reinterpret_cast<char *>(dst) + (size_t)M4 * qa_4_rows_size);
     const unsigned int rchunk = 1024;
     const size_t rloops = (rem + rchunk - 1) / rchunk;
     tm.parallel_for(0, rloops, [=](size_t idx) {
@@ -528,34 +526,7 @@ transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch, int owoh,
   }
 }
 
-/**
- * @brief W4A8 int8 output epilogue requant (spec §5.2, U5a): FP16 conv result
- * -> tensor-wise Q8_0_TW int8.
- *
- * Producer-side int8 epilogue: after the GEMM + bias +
- * (fused SiLU) have written the FP16 conv result, this requants it once into a
- * flat int8 payload with a single per-tensor post-activation scale:
- * `out[i] = sat8(round(x_i / s_post))`. Matches the framework Q8_0 rounding
- * convention (std::lroundf, symmetric [-127, 127]) used by
- * quantize_nhwc_q8_0_rows so the two int8 domains agree. Single pass and
- * in-place safe (int8 dst advances no faster than the FP16 src it reads),
- * honouring the §5.2 invariant that the epilogue-read buffer == the
- * GEMM-write buffer. Layout-agnostic: Q8_0_TW is a flat payload, so element
- * (channel) order is preserved.
- *
- * NOTE: the SiLU is intended to be folded into a 255-entry pre-act LUT (§5.2,
- * contributed separately and merged later); this plain requant is the fallback
- * used when no LUT is wired.
- */
-static inline void requant_q8_0_tw_from_fp16(const _FP16 *src, size_t n,
-                                             float s, int8_t *dst) {
-  const float id = (s > 0.0f) ? (1.0f / s) : 0.0f;
-  for (size_t i = 0; i < n; ++i) {
-    int q = (int)std::lroundf(static_cast<float>(src[i]) * id);
-    q = q > 127 ? 127 : (q < -127 ? -127 : q);
-    dst[i] = static_cast<int8_t>(q);
-  }
-}
+using nntrainer::act_int8::requant_q8_0_tw_from_fp16;
 #endif
 
 /**
@@ -768,8 +739,7 @@ static void im2col(const Tensor &in, const TensorDim &kdim,
     const size_t inHW = (size_t)in_height * (size_t)in_width;
     const bool unit_dil =
       ((unsigned int)dilation[0] == 1 && (unsigned int)dilation[1] == 1);
-    const bool is_nhwc =
-      (in.getFormat() == ml::train::TensorDim::Format::NHWC);
+    const bool is_nhwc = (in.getFormat() == ml::train::TensorDim::Format::NHWC);
 
     /// Each output row (oh) writes a disjoint band of `out_width` columns
     /// (rows [oh*out_width, (oh+1)*out_width) of the [OH*OW, CRS] matrix), so
@@ -1042,15 +1012,15 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
     // Q8_0 activation scratch for NHWC W4A8 path: pre-allocated once so
     // forwarding never calls malloc. Size = max(owoh, in_h*in_w) * nb blocks,
     // stored as a plain float buffer and reinterpret-cast to block_q8_0*.
-    // FORWARD_INFER_LIFESPAN (LongTerm) is used instead of FORWARD_FUNC_LIFESPAN
-    // (ShortTerm) because ShortTerm scratch shares memory with activation tensors
-    // in the pool. Writing Q8_0 bytes there corrupts skip-connection activations
-    // that are still live when this layer's forward runs. LongTerm gives this
-    // scratch its own allocation that never overlaps with activation memory.
+    // FORWARD_INFER_LIFESPAN (LongTerm) is used instead of
+    // FORWARD_FUNC_LIFESPAN (ShortTerm) because ShortTerm scratch shares memory
+    // with activation tensors in the pool. Writing Q8_0 bytes there corrupts
+    // skip-connection activations that are still live when this layer's forward
+    // runs. LongTerm gives this scratch its own allocation that never overlaps
+    // with activation memory.
     const bool nhwc_layout =
       (in_dim.getFormat() == ml::train::TensorDim::Format::NHWC);
-    if (quant_matmul_filter && nhwc_layout &&
-        NNTR_HAS_Q4_0_INDIRECT_CONV) {
+    if (quant_matmul_filter && nhwc_layout && NNTR_HAS_Q4_0_INDIRECT_CONV) {
       const int in_ch_i = (int)in_dim.channel();
       if (in_ch_i % 32 == 0) {
         const unsigned int max_sp =
@@ -1058,7 +1028,7 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
         const unsigned int nb = (unsigned int)in_ch_i / 32;
         // block_q8_0 = 34 bytes; use scratch_type (FP16=2 bytes) for compat.
         const unsigned int n_elems =
-          (max_sp * nb * 34 + 1) / 2;  // round up to FP16 elements
+          (max_sp * nb * 34 + 1) / 2; // round up to FP16 elements
         // The q8act scratch is a raw byte buffer that forwarding() reinterprets
         // as block_q8_0*/block_q8_0x4; n_elems is counted in activation-dtype
         // (FP16, 2 bytes) units, so the tensor must carry the activation dtype
@@ -1230,15 +1200,17 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
         if (weight_is_quant) {
           if (in_sub.getFormat() == ml::train::TensorDim::Format::NHWC) {
             // NHWC channel-last quantized convolution:
-            // Since physical layout is [owoh, filter_size], we reshape `out` to flat
-            // NCHW [1, 1, owoh, filter_size] and write directly, completely bypassing
-            // qgemm_scratch and transposes!
+            // Since physical layout is [owoh, filter_size], we reshape `out` to
+            // flat NCHW [1, 1, owoh, filter_size] and write directly,
+            // completely bypassing qgemm_scratch and transposes!
             Tensor out_flat = out;
-            out_flat.reshape(TensorDim(1, 1, owoh, filter_size, {ml::train::TensorDim::Format::NCHW, out.getDataType()}));
+            out_flat.reshape(TensorDim(
+              1, 1, owoh, filter_size,
+              {ml::train::TensorDim::Format::NCHW, out.getDataType()}));
 
             const int in_ch_i = (int)in_dim.channel();
-            const bool can_q8act =
-              (in_ch_i % 32 == 0) && (std::getenv("NNTR_CONV_Q8ACT") != nullptr);
+            const bool can_q8act = (in_ch_i % 32 == 0) &&
+                                   (std::getenv("NNTR_CONV_Q8ACT") != nullptr);
             // Pre-allocated Q8_0 scratch (no per-forward malloc). Needed by the
             // dynamic can_q8act path *and* the persistent-int8 path (both feed
             // the block_q8_0x4 SMMLA GEMM). finalize allocated it for every
@@ -1249,7 +1221,8 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                 wt_idx[ConvParams::q8act_scratch] !=
                   std::numeric_limits<unsigned int>::max()) {
               auto &q8t = context.getTensor(wt_idx[ConvParams::q8act_scratch]);
-              q8_buf = reinterpret_cast<::nntrainer::block_q8_0 *>(q8t.getData());
+              q8_buf =
+                reinterpret_cast<::nntrainer::block_q8_0 *>(q8t.getData());
             }
             if (is_1x1_s1) {
 #ifdef ENABLE_FP16
@@ -1266,10 +1239,11 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                   filter_kernel.getData(), out_flat.getData<_FP16>(),
                   filter_size);
               } else if (can_q8act && q8_buf) {
-                // Fused: quantize NHWC activation directly into the block_q8_0x4
-                // SMMLA layout and run the prepacked GEMM. This replaces the two
-                // passes (quantize -> block_q8_0, then dot() repacks to x4 with a
-                // per-call malloc) with one; output is bit-identical.
+                // Fused: quantize NHWC activation directly into the
+                // block_q8_0x4 SMMLA layout and run the prepacked GEMM. This
+                // replaces the two passes (quantize -> block_q8_0, then dot()
+                // repacks to x4 with a per-call malloc) with one; output is
+                // bit-identical.
                 quantize_nhwc_q8_0x4_rows(in_sub.getData<_FP16>(), in_ch_i,
                                           owoh, q8_buf, act_in_scale);
                 Q8_0_Tensor::dot_prepacked_x4(
@@ -1279,9 +1253,9 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
               } else {
 #endif
                 Tensor act = in_sub;
-                act.reshape(TensorDim(1, 1, owoh, in_dim.channel(),
-                                     {ml::train::TensorDim::Format::NCHW,
-                                      in_sub.getDataType()}));
+                act.reshape(TensorDim(
+                  1, 1, owoh, in_dim.channel(),
+                  {ml::train::TensorDim::Format::NCHW, in_sub.getDataType()}));
                 act.dot(filter_kernel, out_flat, false, false);
 #ifdef ENABLE_FP16
               }
@@ -1318,30 +1292,32 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
               }
 #endif
             } else {
-              throw std::runtime_error("Fallback quantized NHWC conv is not supported (requires indirect conv on ARM).");
+              throw std::runtime_error(
+                "Fallback quantized NHWC conv is not supported (requires "
+                "indirect conv on ARM).");
             }
           } else {
             // Quantized conv as matmul: act [OH*OW, CRS] . weight [CRS, out_ch]
             // -> [OH*OW, out_ch] -> out [out_ch, OH*OW]. CRS = in_ch*kh*kw.
-            // NOTE: col must outlive `act` (act aliases col's storage); here col
-            // is a view into the context-owned scratch, so its storage outlives
-            // the loop iteration regardless.
+            // NOTE: col must outlive `act` (act aliases col's storage); here
+            // col is a view into the context-owned scratch, so its storage
+            // outlives the loop iteration regardless.
             Tensor tmp = qgemm_scratch->getBatchSlice(b, 1);
             tmp.reshape(
               TensorDim(1, 1, owoh, filter_size, in_sub.getTensorType()));
             if (is_1x1_s1) {
-              // 1x1 stride-1: im2col is an identity. The raw input is laid out as
-              // [in_ch, OH*OW] (NCHW), so transpose to the act layout [OH*OW,
-              // CRS] (CRS == in_ch here).
+              // 1x1 stride-1: im2col is an identity. The raw input is laid out
+              // as [in_ch, OH*OW] (NCHW), so transpose to the act layout
+              // [OH*OW, CRS] (CRS == in_ch here).
               in_sub.reshape({in_dim.channel(), owoh});
               Tensor act = in_sub.transpose("0:2:1");
               act.dot(filter_kernel, tmp, false, false);
             } else if (NNTR_HAS_Q4_0_INDIRECT_CONV) {
               // Quantized 3x3+ indirect: fold im2col gather into the q8_0
               // activation quantization so the activation matrix is never
-              // materialized (the FP16 input is gathered on the fly and quantized
-              // per tile inside the indirect GEMM). Output tmp is FP16
-              // [OH*OW, out_ch].
+              // materialized (the FP16 input is gathered on the fly and
+              // quantized per tile inside the indirect GEMM). Output tmp is
+              // FP16 [OH*OW, out_ch].
               ConvGatherParams geom;
               geom.in_ch = in_dim.channel();
               geom.in_h = in_dim.height();
@@ -1360,15 +1336,17 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             } else {
               // Fallback (no fused backend op): materialize im2col into the col
               // scratch, then the standard quant GEMM.
-              // build the real kernel geometry (filter is stored as [CRS,out_ch])
-              TensorDim kdim(filter_size, in_dim.channel(), kernel_size[0].get(),
-                             kernel_size[1].get(), in_sub.getTensorType());
+              // build the real kernel geometry (filter is stored as
+              // [CRS,out_ch])
+              TensorDim kdim(filter_size, in_dim.channel(),
+                             kernel_size[0].get(), kernel_size[1].get(),
+                             in_sub.getTensorType());
               Tensor col = col_scratch->getBatchSlice(b, 1);
               // im2col reshapes col in place to [OH*OW, CRS] (spatial-major),
               // which is ALREADY the act layout — no transpose (unlike the
-              // raw-input 1x1 branch above). Transposing here gives [CRS, OH*OW]
-              // and makes the GEMM emit CRS rows into the owoh-row `tmp`,
-              // overflowing it whenever CRS > owoh (deep convs) -> heap
+              // raw-input 1x1 branch above). Transposing here gives [CRS,
+              // OH*OW] and makes the GEMM emit CRS rows into the owoh-row
+              // `tmp`, overflowing it whenever CRS > owoh (deep convs) -> heap
               // corruption.
               im2col(in_sub, kdim, padding, stride, dilation, col);
               col.dot(filter_kernel, tmp, false, false);
@@ -1392,11 +1370,11 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             // physical cells. Compute into a plain NCHW-order buffer (format
             // NCHW so dot writes channel-major), then scatter channel c of
             // spatial r to out[r*out_ch + c] (NHWC physical).
-            // Compute into a plain NCHW-order buffer (same result feeding as the
-            // NCHW path above — do NOT reshape result, im2col already laid it
-            // out as the dot expects). nchw_out is format NCHW so dot writes
-            // channel-major [out_ch, OH*OW]; then scatter channel c of spatial r
-            // to out[r*out_ch + c] (NHWC physical).
+            // Compute into a plain NCHW-order buffer (same result feeding as
+            // the NCHW path above — do NOT reshape result, im2col already laid
+            // it out as the dot expects). nchw_out is format NCHW so dot writes
+            // channel-major [out_ch, OH*OW]; then scatter channel c of spatial
+            // r to out[r*out_ch + c] (NHWC physical).
             auto nchw_type = out.getTensorType();
             nchw_type.format = ml::train::TensorDim::Format::NCHW;
             // nchw_out holds the GEMM result [out_ch, OH*OW] in channel-major
@@ -1425,14 +1403,14 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             Tensor filt_nchw = Tensor::Map<float>(
               filter_kernel.getData<float>(), filter_kernel.bytes(), fdim_nchw);
             if (out.getDataType() == nntrainer::Tdatatype::FP32) {
-              Tensor col_nchw = Tensor::Map<float>(
-                result.getData<float>(), result.bytes(), cdim_nchw);
+              Tensor col_nchw = Tensor::Map<float>(result.getData<float>(),
+                                                   result.bytes(), cdim_nchw);
               filt_nchw.dot(col_nchw, nchw_out, false, true);
             }
 #ifdef ENABLE_FP16
             else {
-              Tensor col_nchw = Tensor::Map<_FP16>(
-                result.getData<_FP16>(), result.bytes(), cdim_nchw);
+              Tensor col_nchw = Tensor::Map<_FP16>(result.getData<_FP16>(),
+                                                   result.bytes(), cdim_nchw);
               filt_nchw.dot(col_nchw, nchw_out, false, true);
             }
 #endif
@@ -1521,8 +1499,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                   const int iw = ow * sw - pw + static_cast<int>(kw) * dw_;
                   if (iw < 0 || iw >= IW)
                     continue;
-                  const T *id =
-                    inb + (static_cast<size_t>(ih) * IW + iw) * C;
+                  const T *id = inb + (static_cast<size_t>(ih) * IW + iw) * C;
                   const float *fk = filt + kh * fw + kw;
                   for (unsigned int c = 0; c < C; ++c)
                     acc[c] += static_cast<float>(id[c]) *
@@ -1544,7 +1521,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
         run(input_.getData<_FP16>(), hidden_.getData<_FP16>());
 #endif
     } else if (is_true_depthwise &&
-        in_dim.getDataType() == nntrainer::Tdatatype::FP32) {
+               in_dim.getDataType() == nntrainer::Tdatatype::FP32) {
       // True depthwise (groups == channels): delegate to the CPU backend op so
       // the optimised kernel lives in the backend, not in the layer.
       nntrainer::getComputeOps()->depthwise_conv2d_fp32(
@@ -1700,12 +1677,11 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   }
 #endif
 
-  if (std::getenv("NNTR_CONV_PROBE") &&
-      context.getName() == "conv0/conv") {
-    std::cerr << "[CONV_PROBE] " << context.getName() << " format="
-              << (int)hidden_.getFormat() << " C=" << out_dim.channel()
-              << " H=" << out_dim.height() << " W=" << out_dim.width()
-              << std::endl;
+  if (std::getenv("NNTR_CONV_PROBE") && context.getName() == "conv0/conv") {
+    std::cerr << "[CONV_PROBE] " << context.getName()
+              << " format=" << (int)hidden_.getFormat()
+              << " C=" << out_dim.channel() << " H=" << out_dim.height()
+              << " W=" << out_dim.width() << std::endl;
     const float *p = hidden_.getData<float>();
     for (int i = 0; i < 8; ++i)
       std::cerr << "  [" << i << "]=" << p[i] << std::endl;
@@ -1739,10 +1715,12 @@ bool Conv2DLayer::supportInt8ActInput() const {
   // Q8_0_TW with no int8 kernel to consume it.
   const auto &kernel_size =
     std::get<std::array<props::KernelSize, CONV2D_DIM>>(conv_props);
-  const auto &stride = std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
+  const auto &stride =
+    std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
   const unsigned int filter_size = std::get<props::FilterSize>(conv_props);
   return kernel_size[0].get() == 1 && kernel_size[1].get() == 1 &&
-         stride[0].get() == 1 && stride[1].get() == 1 && (filter_size % 32 == 0);
+         stride[0].get() == 1 && stride[1].get() == 1 &&
+         (filter_size % 32 == 0);
 }
 
 bool Conv2DLayer::supportInt8ActOutput() const {
@@ -1753,10 +1731,12 @@ bool Conv2DLayer::supportInt8ActOutput() const {
   // GEMM is always applicable (no unpackable int8 edge can be selected).
   const auto &kernel_size =
     std::get<std::array<props::KernelSize, CONV2D_DIM>>(conv_props);
-  const auto &stride = std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
+  const auto &stride =
+    std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
   const unsigned int filter_size = std::get<props::FilterSize>(conv_props);
   return kernel_size[0].get() == 1 && kernel_size[1].get() == 1 &&
-         stride[0].get() == 1 && stride[1].get() == 1 && (filter_size % 32 == 0);
+         stride[0].get() == 1 && stride[1].get() == 1 &&
+         (filter_size % 32 == 0);
 }
 
 void Conv2DLayer::calcDerivative(RunLayerContext &context) {

@@ -13,6 +13,7 @@
 
 #include "nntrainer_test_util.h"
 #include "util_func.h"
+#include <act_int8_boundary.h>
 #include <cmath>
 #include <cpu_backend.h>
 #include <float_tensor.h>
@@ -7160,6 +7161,34 @@ TEST(nntrainer_Tensor, normalization_i_05_default_args_p) {
   for (int i = 0; i < 5; ++i) {
     EXPECT_NEAR(data[i], expected, 1e-5);
   }
+}
+
+TEST(act_int8_boundary, requant_dequant_roundtrip_fp32_p) {
+  const float s = 0.05f;
+  std::vector<float> src = {0.0f,   0.049f, -0.05f, 6.35f,
+                            -6.35f, 100.0f, -100.0f};
+  std::vector<int8_t> q(src.size());
+  nntrainer::act_int8::requant_q8_0_tw_from_fp32(src.data(), src.size(), s,
+                                                 q.data());
+  EXPECT_EQ(q[0], 0);   // round(0 / 0.05)
+  EXPECT_EQ(q[1], 1);   // round(0.049 / 0.05) = round(0.98)
+  EXPECT_EQ(q[2], -1);  // round(-0.05 / 0.05)
+  EXPECT_EQ(q[3], 127); // round(6.35 / 0.05) = 127 exactly
+  EXPECT_EQ(q[4], -127);
+  EXPECT_EQ(q[5], 127);  // saturate, not wrap
+  EXPECT_EQ(q[6], -127); // -128 is forbidden
+
+  /* Dequant back and check finite / scale-agreement where unsaturated. */
+  std::vector<float> back(src.size());
+  nntrainer::act_int8::dequant_fp32_from_q8_0_tw(q.data(), q.size(), s,
+                                                 back.data());
+  EXPECT_NEAR(back[0], 0.0f, 1e-6f);
+  EXPECT_NEAR(back[1], 0.05f, 1e-6f);
+  EXPECT_NEAR(back[2], -0.05f, 1e-6f);
+  EXPECT_NEAR(back[3], 127.0f * s, 1e-6f);
+  EXPECT_NEAR(back[4], -127.0f * s, 1e-6f);
+  EXPECT_NEAR(back[5], 127.0f * s, 1e-6f);
+  EXPECT_NEAR(back[6], -127.0f * s, 1e-6f);
 }
 
 int main(int argc, char **argv) {
