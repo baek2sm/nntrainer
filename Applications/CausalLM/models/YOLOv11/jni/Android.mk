@@ -64,6 +64,6 @@ LOCAL_LDFLAGS += -fexceptions
 
 LOCAL_SRC_FILES := main.cpp c2psa_layer.cpp
 LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
-LOCAL_C_INCLUDES += $(NNTRAINER_INCLUDES)
+LOCAL_C_INCLUDES += $(NNTRAINER_INCLUDES) $(LOCAL_PATH)/../../../third_party
 
 include $(BUILD_EXECUTABLE)

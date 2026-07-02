@@ -6,7 +6,7 @@ yolov11_infer_src = [
   meson.current_source_dir() / 'c2psa_layer.cpp',
 ]
 
-yolov11_inc = include_directories('.')
+yolov11_inc = include_directories('.', '../../../third_party')
 
 # Optional direct image (.jpg/.png) input: enabled only when stb_image.h is
 # present in this directory (it is not committed). Without it the example still

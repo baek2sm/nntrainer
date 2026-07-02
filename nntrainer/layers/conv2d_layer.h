@@ -136,7 +136,8 @@ private:
   std::tuple<props::FilterSize, std::array<props::KernelSize, CONV2D_DIM>,
              std::array<props::Stride, CONV2D_DIM>, props::Padding2D,
              std::array<props::Dilation, CONV2D_DIM>, props::ConvGroups,
-             props::FusedActivation>
+             props::FusedActivation, props::ActivationScale, props::PreactScale,
+             props::InputActivationScale>
     conv_props;
 
   std::array<unsigned int, 5> wt_idx; /**< indices of the weights and tensors */

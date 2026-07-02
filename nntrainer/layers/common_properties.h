@@ -1045,6 +1045,47 @@ public:
 };
 
 /**
+ * @brief Per-tensor activation quantization scale (W4A8 static Q8_0 path).
+ *
+ * @note Graph metadata only: q = sat8(round(x / s)), x_hat = q * s. Injected by
+ * the application from an offline calibration table; the layer holds it and (in
+ * the static-Q8_0 path) uses it to quantize its output edge. Default 0 means
+ * "uncalibrated" -> the layer keeps its normal float dataflow. The scale never
+ * lives in tensor memory, so slice/offset ops cannot corrupt it.
+ */
+class ActivationScale final : public Property<float> {
+public:
+  static constexpr const char *key = "activation_scale"; /**< unique key */
+  using prop_tag = float_prop_tag;                       /**< property type */
+};
+
+/**
+ * @brief Pre-activation quantization scale for a fused-activation conv.
+ *
+ * @note Scale of the bias-included, activation-input value (SiLU LUT domain in
+ * the static-Q8_0 epilogue). Graph metadata only; 0 means uncalibrated.
+ */
+class PreactScale final : public Property<float> {
+public:
+  static constexpr const char *key = "preact_scale"; /**< unique key */
+  using prop_tag = float_prop_tag;                   /**< property type */
+};
+
+/**
+ * @brief Quantization scale of the activation this layer consumes as input.
+ *
+ * @note The producer edge's scale, resolved offline and injected so a consumer
+ * (e.g. Conv2D) can quantize its input without a handle to the producer layer.
+ * Graph metadata only; 0 means uncalibrated -> normal float input.
+ */
+class InputActivationScale final : public Property<float> {
+public:
+  static constexpr const char *key =
+    "input_activation_scale";      /**< unique key */
+  using prop_tag = float_prop_tag; /**< type */
+};
+
+/**
  * @brief HiddenStateActivation Enumeration Information
  *
  */

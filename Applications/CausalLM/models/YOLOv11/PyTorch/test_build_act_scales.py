@@ -114,6 +114,28 @@ def test_chain_transitive_union():
         assert approx(scales[n], s(44)), (n, scales[n])
 
 
+def test_input_edge_scale_emitted():
+    # conv 'c' consumes multiout 'mo' (== producer 'cv' scale); c:in == cv scale.
+    topo = B.parse_topo([
+        "cv\tconv2d\t",
+        "mo\tmultiout\tcv",
+        "c\tconv2d\tmo",
+    ])
+    post, pre = B.parse_amax([["cv\t20\n", "mo\t20\n", "c\t5\n"]])
+    scales, _ = B.build_scale_table(topo, post, pre)
+    assert approx(scales["c:in"], s(20)), scales.get("c:in")  # producer edge
+    assert approx(scales["mo:in"], s(20))                     # multiout input
+    assert "cv:in" not in scales                              # source has no input
+
+
+def test_input_edge_scale_multi_input_takes_max():
+    topo = B.parse_topo(["x\tconv2d\t", "y\tconv2d\t", "cat\tconcat\tx,y"])
+    post, pre = B.parse_amax([["x\t8\n", "y\t30\n", "cat\t30\n"]])
+    scales, _ = B.build_scale_table(topo, post, pre)
+    # concat unions inputs+output to 30, so cat:in == 30
+    assert approx(scales["cat:in"], s(30))
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

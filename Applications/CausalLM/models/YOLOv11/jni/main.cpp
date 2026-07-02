@@ -41,6 +41,7 @@
 
 #include "c2psa_layer.h"
 #include "yolov11_graph.h"
+#include <nlohmann/json.hpp>
 #include <app_context.h>
 #include <engine.h>
 #include <layer.h>
@@ -569,6 +570,51 @@ int main(int argc, char *argv[]) {
     model->load(weights_path, ml::train::ModelFormat::MODEL_FORMAT_SAFETENSORS);
     std::cout << "Model built and weights loaded (" << weights_path << ")."
               << std::endl;
+
+    // W4A8 static-calibration scale injection (spec U2b loader). When
+    // YOLO_ACT_SCALES points at an <model>.act_scales.json produced by
+    // PyTorch/build_act_scales.py, inject each conv2d's activation/pre-act/input
+    // scale as graph metadata. Keys: "<name>" (post-act edge), "<name>:preact"
+    // (fused pre-activation), "<name>:in" (consumed input edge). Scales are
+    // hold-only metadata at this stage (U2b) — dataflow is unchanged, so
+    // detections must stay bit-identical (gate B). Env-gated / offline artifact.
+    if (const char *scale_path = std::getenv("YOLO_ACT_SCALES")) {
+      std::ifstream sf(scale_path);
+      if (!sf)
+        throw std::runtime_error(std::string("cannot open YOLO_ACT_SCALES=") +
+                                 scale_path);
+      nlohmann::json sj;
+      sf >> sj;
+      size_t injected = 0, skipped = 0;
+      for (auto it = sj.begin(); it != sj.end(); ++it) {
+        const std::string key = it.key();
+        const float s = it.value().get<float>();
+        if (s <= 0.0f) // 0 = uncalibrated node; nothing to inject
+          continue;
+        // Resolve the property from the key suffix, and the owning node name.
+        std::string node = key, prop = "activation_scale";
+        if (key.size() > 7 && key.compare(key.size() - 7, 7, ":preact") == 0) {
+          node = key.substr(0, key.size() - 7);
+          prop = "preact_scale";
+        } else if (key.size() > 3 && key.compare(key.size() - 3, 3, ":in") == 0) {
+          node = key.substr(0, key.size() - 3);
+          prop = "input_activation_scale";
+        }
+        std::shared_ptr<ml::train::Layer> layer;
+        if (model->getLayer(node.c_str(), &layer) != 0 || !layer) {
+          ++skipped; // node not in graph (e.g. multiout copy) — ignore
+          continue;
+        }
+        if (layer->getType() != "conv2d") // props exist only on conv2d
+          continue;
+        std::ostringstream v;
+        v << prop << "=" << s;
+        layer->setProperty({v.str()});
+        ++injected;
+      }
+      std::cout << "[YOLO] injected " << injected << " activation scales (skipped "
+                << skipped << " non-graph keys) from " << scale_path << std::endl;
+    }
 
     // Offline quantization: re-save with the framework's general per-layer
     // quantizer. dtype=Q4_0 + empty layer map => every layer is targeted, and

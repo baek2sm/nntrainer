@@ -725,7 +725,8 @@ Conv2DLayer::Conv2DLayer(
   conv_props(props::FilterSize(), std::array<props::KernelSize, CONV2D_DIM>(),
              std::array<props::Stride, CONV2D_DIM>(), props::Padding2D(),
              std::array<props::Dilation, CONV2D_DIM>(), props::ConvGroups(),
-             props::FusedActivation()) {
+             props::FusedActivation(), props::ActivationScale(),
+             props::PreactScale(), props::InputActivationScale()) {
   wt_idx.fill(std::numeric_limits<unsigned>::max());
 }
 

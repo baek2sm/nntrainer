@@ -143,6 +143,14 @@ def build_scale_table(topo, post_amax, preact_amax):
                 % (node, own, g_amax, g_amax / own)
             )
 
+    # Input edge scale per node, resolved offline so the app loader can inject
+    # a consumer's input scale without carrying graph edges at inference time.
+    # Inputs of concat/add are unioned (same scale); for a single-input conv it
+    # is just the producer edge. Use max over inputs for the rare mixed case.
+    for node, (_ntype, ins) in topo.items():
+        if ins:
+            scales["%s:in" % node] = max(scales.get(i, 0.0) for i in ins)
+
     for node, amax in preact_amax.items():  # fused-conv pre-activation scales
         scales["%s:preact" % node] = scale_of(amax)
 
