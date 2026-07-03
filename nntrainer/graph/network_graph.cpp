@@ -46,6 +46,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -180,6 +181,42 @@ void NetworkGraph::propagateActivationDataTypes() {
 
   ml_logd("[W4A8] int8 activation edges selected: %zu",
           int8_output_nodes_.size());
+
+  /**
+   * Census breakdown (finalization metric): classify every producer edge (a
+   * node with at least one output connection) as int8 or fp16, and for fp16
+   * edges record why — either the node cannot emit int8 at all
+   * (!supportInt8ActOutput, e.g. an intentional FP16 island like PSAAttention
+   * or the FP32 stem) or it was demoted by the greatest-fixpoint reduction
+   * (a consumer/scale contradiction). Gated verbose per-edge dump behind
+   * NNTR_CENSUS for offline auditing; the summary counts are always logged.
+   */
+  const bool census_dump = std::getenv("NNTR_CENSUS") != nullptr;
+  size_t producers = 0, int8_edges = 0, fp16_incapable = 0, fp16_demoted = 0;
+  for (auto iter = cbegin(); iter != cend(); ++iter) {
+    const auto &node = *iter;
+    if (node->getOutputConnections().empty())
+      continue;
+    ++producers;
+    const std::string &name = node->getName();
+    if (isInt8ActivationOutput(name)) {
+      ++int8_edges;
+      continue;
+    }
+    const bool incapable = !node->supportInt8ActOutput();
+    if (incapable)
+      ++fp16_incapable;
+    else
+      ++fp16_demoted;
+    if (census_dump)
+      ml_logd("[W4A8] fp16 edge: %s (%s) reason=%s", name.c_str(),
+              node->getType().c_str(),
+              incapable ? "no-int8-output" : "demoted-by-consumer/scale");
+  }
+  ml_logd("[W4A8] activation census: %zu producer edges = %zu int8 + %zu fp16 "
+          "(%zu no-int8-output + %zu demoted)",
+          producers, int8_edges, fp16_incapable + fp16_demoted, fp16_incapable,
+          fp16_demoted);
 }
 
 bool NetworkGraph::hasActivationScale(const std::string &node_name) const {
