@@ -412,8 +412,9 @@ inline Tensor buildC2PSA(const std::string &n, Tensor x,
   auto v = vcat(v_parts);
   auto pe = yolov11::dwConvBnOnly(n + "/pe", 256, v);
 
-  LayerHandle att(
-    createLayer("psa_attention", {nntrainer::withKey("name", n + "/attn")}));
+  std::vector<std::string> attn_props = {nntrainer::withKey("name", n + "/attn")};
+  appendActScales(attn_props, n + "/attn");
+  LayerHandle att(createLayer("psa_attention", attn_props));
   auto attn = att(qkv);
   auto attn_pe = addT(n + "/add_pe", attn, pe);
   auto proj =

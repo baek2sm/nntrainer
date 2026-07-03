@@ -36,6 +36,15 @@ void PSAAttentionLayer::finalize(nntrainer::InitLayerContext &context) {
 
   nntrainer::TensorDim out_dim = in_dim;
   out_dim.channel(NUM_HEADS * VD); // 256
+  // W4A8: an int8 (Q8_0_TW) input edge must not leak into this layer's own
+  // nominal output dim -- PSAAttentionLayer is not a passthrough (it
+  // computes real attention values), so its own output dtype is decided
+  // independently by NetworkGraph::propagateActivationDataTypes() based on
+  // ITS consumers, not inherited from its input (mirrors
+  // Conv2DLayer::finalize()'s and AdditionLayer::finalize()'s identical
+  // correction).
+  if (out_dim.getDataType() == ml::train::TensorDim::DataType::Q8_0_TW)
+    out_dim.setDataType(context.getActivationDataType());
   context.setOutputDimensions({out_dim});
 }
 
@@ -58,12 +67,11 @@ void PSAAttentionLayer::multiHeadAttention(const float *Q, const float *K,
     float *outh = out + static_cast<size_t>(h) * vd * N;
 
     // score = scale * Qh^T * Kh
-    nntrainer::sgemm(0, true, false, static_cast<unsigned int>(N),
-                     static_cast<unsigned int>(N),
-                     static_cast<unsigned int>(kd), scale, Qh,
-                     static_cast<unsigned int>(N), Kh,
-                     static_cast<unsigned int>(N), 0.0f, score.data(),
-                     static_cast<unsigned int>(N));
+    nntrainer::sgemm(
+      0, true, false, static_cast<unsigned int>(N),
+      static_cast<unsigned int>(N), static_cast<unsigned int>(kd), scale, Qh,
+      static_cast<unsigned int>(N), Kh, static_cast<unsigned int>(N), 0.0f,
+      score.data(), static_cast<unsigned int>(N));
 
     // softmax over key axis j for each query i
     for (int i = 0; i < N; ++i) {
@@ -94,14 +102,26 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
   nntrainer::Tensor &out_t = context.getOutput(0);
 
   const nntrainer::Tdatatype dtype = in_t.getDataType();
+  const bool int8_in = (dtype == nntrainer::Tdatatype::Q8_0_TW);
 #ifdef ENABLE_FP16
   const bool fp16 = (dtype == nntrainer::Tdatatype::FP16);
 #else
   const bool fp16 = false;
 #endif
-  NNTR_THROW_IF(dtype != nntrainer::Tdatatype::FP32 && !fp16,
+  NNTR_THROW_IF(dtype != nntrainer::Tdatatype::FP32 && !fp16 && !int8_in,
                 std::invalid_argument)
-    << "PSAAttentionLayer only implements the FP32 and FP16 activation paths";
+    << "PSAAttentionLayer only implements the FP32, FP16, and Q8_0_TW "
+       "activation paths";
+
+  float in_scale = -1.0f;
+  if (int8_in) {
+    const auto &ais =
+      std::get<nntrainer::props::InputActivationScale>(psa_props);
+    NNTR_THROW_IF(ais.empty() || ais.get() <= 0.0f, std::invalid_argument)
+      << "PSAAttentionLayer: int8 input edge with no registered "
+         "InputActivationScale";
+    in_scale = ais.get();
+  }
 
   const unsigned int B = in_t.batch();
   const unsigned int H = in_t.height();
@@ -116,8 +136,17 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
   std::vector<float> in_f32, out_f32;
   const float *in;
   float *out;
+  if (int8_in) {
+    in_f32.resize(in_t.size());
+    const int8_t *src = in_t.getData<int8_t>();
+    for (size_t i = 0; i < in_f32.size(); ++i)
+      in_f32[i] = static_cast<float>(src[i]) * in_scale;
+    out_f32.resize(out_t.size());
+    in = in_f32.data();
+    out = out_f32.data();
+  }
 #ifdef ENABLE_FP16
-  if (fp16) {
+  else if (fp16) {
     in_f32.resize(in_t.size());
     const _FP16 *src = in_t.getData<_FP16>();
     for (size_t i = 0; i < in_f32.size(); ++i)
@@ -125,9 +154,9 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
     out_f32.resize(out_t.size());
     in = in_f32.data();
     out = out_f32.data();
-  } else
+  }
 #endif
-  {
+  else {
     in = in_t.getData<float>();
     out = out_t.getData<float>();
   }
@@ -145,9 +174,8 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
   // attention output must be scattered back to channel-last positions. The
   // attention math itself operates on head-major planar [d,N] buffers either
   // way, so only these boundary conversions differ.
-  const bool nhwc =
-    in_t.getFormat() == ml::train::TensorDim::Format::NHWC &&
-    out_t.getFormat() == ml::train::TensorDim::Format::NHWC;
+  const bool nhwc = in_t.getFormat() == ml::train::TensorDim::Format::NHWC &&
+                    out_t.getFormat() == ml::train::TensorDim::Format::NHWC;
   std::vector<float> out_planar;
   if (nhwc)
     out_planar.resize(static_cast<size_t>(v_ch) * N);
@@ -198,13 +226,25 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
                        VD, N);
   }
 
+  // W4A8: PSAAttention emits an FP16/FP32 output edge (never int8). Per-tensor
+  // scalar int8 cannot represent this attention output's distribution without
+  // material accuracy loss (its small-magnitude values carry detection signal
+  // but are crushed by the outlier-driven per-tensor step), so this is a
+  // deliberate FP16 island -- see supportInt8ActOutput() == false. The int8
+  // INPUT edge is still consumed (dequantized above). When the input was staged
+  // through the FP32 buffer, write the result back to the output edge here.
+  if (!out_f32.empty()) {
 #ifdef ENABLE_FP16
-  if (fp16) {
-    _FP16 *dst = out_t.getData<_FP16>();
-    for (size_t i = 0; i < out_f32.size(); ++i)
-      dst[i] = static_cast<_FP16>(out_f32[i]);
-  }
+    if (out_t.getDataType() == nntrainer::Tdatatype::FP16) {
+      _FP16 *dst = out_t.getData<_FP16>();
+      for (size_t i = 0; i < out_f32.size(); ++i)
+        dst[i] = static_cast<_FP16>(out_f32[i]);
+      return;
+    }
 #endif
+    std::memcpy(out_t.getData<float>(), out_f32.data(),
+                out_f32.size() * sizeof(float));
+  }
 }
 
 } // namespace yolov11
