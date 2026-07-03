@@ -196,6 +196,30 @@ static void upsampleForwardT(
   }
 }
 
+// W4A8 static Q8_0: only the nearest mode is a bit-exact int8 passthrough
+// (verbatim element copy). Bilinear interpolates and would need a real DQ->Q.
+static bool isNearestPassthrough(
+  const std::tuple<props::UpsampleMode,
+                   std::array<props::KernelSize, UPSAMPLE2D_DIM>>
+    &props_tuple) {
+  const auto &mode = std::get<props::UpsampleMode>(props_tuple);
+  if (mode.empty())
+    return false;
+  return mode.get() == props::UpsampleModeInfo::Interpolation::nearest;
+}
+
+bool Upsample2dLayer::supportInt8ActInput() const {
+  return isNearestPassthrough(upsample2d_props);
+}
+
+bool Upsample2dLayer::supportInt8ActOutput() const {
+  return isNearestPassthrough(upsample2d_props);
+}
+
+bool Upsample2dLayer::isActivationPassthrough() const {
+  return isNearestPassthrough(upsample2d_props);
+}
+
 void Upsample2dLayer::forwarding(nntrainer::RunLayerContext &context,
                                  bool training) {
   nntrainer::Tensor &in = context.getInput(SINGLE_INOUT_IDX);
@@ -206,6 +230,13 @@ void Upsample2dLayer::forwarding(nntrainer::RunLayerContext &context,
   const auto &kernel_size =
     std::get<std::array<props::KernelSize, UPSAMPLE2D_DIM>>(upsample2d_props);
 
+  if (out.getDataType() == ml::train::TensorDim::DataType::Q8_0_TW) {
+    // W4A8: nearest upsample copies the int8 payload verbatim (see
+    // isNearestPassthrough). The memcpy fast paths in upsampleForwardT operate
+    // on raw bytes, so int8_t replication is bit-exact under the shared scale.
+    upsampleForwardT<int8_t>(in, out, upsampling_type, kernel_size);
+    return;
+  }
 #ifdef ENABLE_FP16
   if (out.getDataType() == ml::train::TensorDim::DataType::FP16) {
     upsampleForwardT<_FP16>(in, out, upsampling_type, kernel_size);

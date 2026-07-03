@@ -63,6 +63,27 @@ public:
   bool supportBackwarding() const override { return true; };
 
   /**
+   * @copydoc Layer::supportInt8ActInput()
+   * @note W4A8 static Q8_0: nearest upsample is a pure passthrough — every
+   * output element is a verbatim copy of an input element, so on the int8
+   * (Q8_0_TW) payload the replicated codes stay valid under the same per-tensor
+   * scale (calibration keeps it unchanged across the upsample) with no
+   * dequant/requant. Bilinear interpolation would need a real DQ->Q, so int8 is
+   * only advertised for the nearest mode.
+   */
+  bool supportInt8ActInput() const override;
+
+  /**
+   * @copydoc Layer::supportInt8ActOutput()
+   */
+  bool supportInt8ActOutput() const override;
+
+  /**
+   * @copydoc Layer::isActivationPassthrough()
+   */
+  bool isActivationPassthrough() const override;
+
+  /**
    * @copydoc Layer::exportTo(Exporter &exporter, ExportMethods method)
    */
   void exportTo(nntrainer::Exporter &exporter,
