@@ -56,4 +56,8 @@ if get_option('enable-transformer')
   endif
 endif
 
+if enable_ccapi
+  subdir('FaceLandmark')
+endif
+
 subdir('Optimizers/jni')
