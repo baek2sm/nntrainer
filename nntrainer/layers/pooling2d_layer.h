@@ -99,6 +99,27 @@ public:
   bool supportBackwarding() const override { return true; }
 
   /**
+   * @copydoc Layer::supportInt8ActInput()
+   * @note W4A8 static Q8_0: max pooling is a pure passthrough over the int8
+   * (Q8_0_TW) payload — the window maximum of the quantized codes equals the
+   * quantized code of the window maximum when the input and output share one
+   * scale (calibration keeps the scale unchanged across the pool), so no
+   * dequant/requant is needed. Average pooling would need a real DQ->Q, so
+   * int8 is only advertised for max/global_max.
+   */
+  bool supportInt8ActInput() const override;
+
+  /**
+   * @copydoc Layer::supportInt8ActOutput()
+   */
+  bool supportInt8ActOutput() const override;
+
+  /**
+   * @copydoc Layer::isActivationPassthrough()
+   */
+  bool isActivationPassthrough() const override;
+
+  /**
    * @copydoc Layer::setProperty(const std::vector<std::string> &values)
    */
   void setProperty(const std::vector<std::string> &values) override;

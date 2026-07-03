@@ -315,6 +315,36 @@ void Pooling2DLayer::setProperty(const std::vector<std::string> &values) {
          std::to_string(values.size());
 }
 
+/**
+ * @brief W4A8 static Q8_0: max pooling is the only int8 passthrough. The
+ * window maximum of the quantized int8 codes equals the quantized code of the
+ * true window maximum under a single shared scale, so max/global_max forward
+ * int8 verbatim; average pooling needs a real dequant/requant and stays float.
+ */
+static bool isMaxPassthrough(
+  const std::tuple<props::PoolingType, std::vector<props::PoolSize>,
+                   std::array<props::Stride, POOLING2D_DIM>, props::Padding2D>
+    &props_tuple) {
+  const auto &pt = std::get<props::PoolingType>(props_tuple);
+  if (pt.empty())
+    return false;
+  auto e = pt.get();
+  return e == props::PoolingTypeInfo::Enum::max ||
+         e == props::PoolingTypeInfo::Enum::global_max;
+}
+
+bool Pooling2DLayer::supportInt8ActInput() const {
+  return isMaxPassthrough(pooling2d_props);
+}
+
+bool Pooling2DLayer::supportInt8ActOutput() const {
+  return isMaxPassthrough(pooling2d_props);
+}
+
+bool Pooling2DLayer::isActivationPassthrough() const {
+  return isMaxPassthrough(pooling2d_props);
+}
+
 void Pooling2DLayer::pooling2d(Tensor &in, bool training, Tensor &output,
                                Tensor &pool_helper, int batch_idx) {
 
@@ -390,6 +420,12 @@ void Pooling2DLayer::pooling2d(Tensor &in, bool training, Tensor &output,
 
       if (in.getDataType() == ml::train::TensorDim::DataType::FP32) {
         run_nhwc.template operator()<float>();
+        return;
+      } else if (in.getDataType() == ml::train::TensorDim::DataType::Q8_0_TW) {
+        // W4A8 static Q8_0: max over the int8 payload; lowest() = -128 is a
+        // valid sentinel and the >-comparison of int8 codes is order-preserving
+        // under the shared scale, so this is bit-exact passthrough.
+        run_nhwc.template operator()<int8_t>();
         return;
       }
 #ifdef ENABLE_FP16
