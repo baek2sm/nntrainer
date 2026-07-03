@@ -445,6 +445,15 @@ public:
   bool hasActivationScale() const { return getLayer()->hasActivationScale(); }
 
   /**
+   * @brief   Whether the underlying layer is a pure activation passthrough
+   *          (carries its input edge to its output edge unchanged, W4A8 §5.7).
+   * @return  boolean true if the layer is an activation passthrough
+   */
+  bool isActivationPassthrough() const {
+    return getLayer()->isActivationPassthrough();
+  }
+
+  /**
    * Support interfaces for the properties intercepted from layer
    */
 

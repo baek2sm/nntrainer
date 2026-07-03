@@ -698,6 +698,18 @@ private:
   bool hasActivationScale(const std::string &node_name) const;
 
   /**
+   * @brief  Whether a node can genuinely consume an int8 (Q8_0_TW) input edge.
+   *         A non-passthrough (terminal, e.g. conv2d) qualifies as soon as it
+   *         declares supportInt8ActInput(). A passthrough (multiout/concat/…)
+   *         only qualifies if it can also emit int8 AND every one of its own
+   *         consumers can consume int8 — otherwise it would receive an int8
+   *         input it cannot forward (int8-in / fp16-out). Recursion is bounded
+   *         by the DAG and short-circuits at the first terminal consumer.
+   * @param[in] node_name candidate consumer node name
+   */
+  bool canConsumeInt8(const std::string &node_name) const;
+
+  /**
    * @brief     Ensure that layer has a name.
    * @param[in] layer Layer whose name is to be ensured to be valid
    * @param[in] prefix Prefix to be attached to the layer name

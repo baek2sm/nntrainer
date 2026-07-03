@@ -74,6 +74,24 @@ public:
   bool supportBackwarding() const override { return true; };
 
   /**
+   * @copydoc Layer::supportInt8ActInput() const
+   * @note MultiOut is a pure activation passthrough: it moves the input edge
+   * to each output edge unchanged, so it carries an int8 (Q8_0_TW) edge
+   * transparently.
+   */
+  bool supportInt8ActInput() const override { return true; }
+
+  /**
+   * @copydoc Layer::supportInt8ActOutput() const
+   */
+  bool supportInt8ActOutput() const override { return true; }
+
+  /**
+   * @copydoc Layer::isActivationPassthrough() const
+   */
+  bool isActivationPassthrough() const override { return true; }
+
+  /**
    * @brief Initialize the in-place settings of the layer
    * @return InPlaceType
    */

@@ -372,6 +372,21 @@ public:
   virtual bool hasActivationScale() const { return false; }
 
   /**
+   * @brief  check if this layer is a pure activation passthrough (its output
+   * edge carries the same values, and therefore the same static scale, as its
+   * input edge) — e.g. MultiOut/Concat/Slice/Upsample which only move bytes.
+   * @note   default false. A passthrough carries int8 (Q8_0_TW) transparently
+   * without owning a calibrated scale of its own: the graph promotes its edges
+   * to int8 only when its input edge is already an int8 (scale-anchored) edge
+   * AND all of its consumers accept int8, so it never ends up with an int8
+   * input it cannot forward (spec §5.7 passthrough rule). int8-capable
+   * consumers read the edge scale from their own calibrated ":in" entry, so the
+   * scale value never needs to flow through the passthrough node.
+   * @return true if this layer is an activation passthrough, else false
+   */
+  virtual bool isActivationPassthrough() const { return false; }
+
+  /**
    * @brief     save layer Weight & Bias data from file
    * @param file output file stream
    * @param run_context run context for the layer

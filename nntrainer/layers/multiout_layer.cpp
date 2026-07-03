@@ -34,7 +34,18 @@ void MultiOutLayer::forwarding(RunLayerContext &context, bool training) {
   if (!context.getInPlace()) {
     const Tensor &input_ = context.getInput(SINGLE_INOUT_IDX);
     for (unsigned int idx = 0; idx < context.getNumOutputs(); ++idx) {
-      context.getOutput(idx).fill(input_);
+      Tensor &output_ = context.getOutput(idx);
+      if (input_.getDataType() == ml::train::TensorDim::DataType::Q8_0_TW) {
+        /** Q8_0_TW is a flat int8 payload; fill() is unsupported, so copy the
+         * raw bytes (the per-tensor scale is graph metadata, not in-buffer). */
+        NNTR_THROW_IF(input_.getMemoryBytes() != output_.getMemoryBytes(),
+                      std::invalid_argument)
+          << "[MultiOutLayer] Q8_0_TW input/output size mismatch";
+        std::memcpy(output_.getData<int8_t>(), input_.getData<int8_t>(),
+                    input_.getMemoryBytes());
+      } else {
+        output_.fill(input_);
+      }
     }
   }
 }
@@ -50,6 +61,20 @@ void MultiOutLayer::incremental_forwarding(RunLayerContext &context,
     }
 
     const Tensor &input_ = context.getInput(SINGLE_INOUT_IDX);
+
+    if (input_.getDataType() == ml::train::TensorDim::DataType::Q8_0_TW) {
+      /** flat int8 payload: step-slicing/fill is unsupported, copy raw bytes */
+      for (unsigned int idx = 0; idx < context.getNumOutputs(); ++idx) {
+        Tensor &output_ = context.getOutput(idx);
+        NNTR_THROW_IF(input_.getMemoryBytes() != output_.getMemoryBytes(),
+                      std::invalid_argument)
+          << "[MultiOutLayer] Q8_0_TW input/output size mismatch";
+        std::memcpy(output_.getData<int8_t>(), input_.getData<int8_t>(),
+                    input_.getMemoryBytes());
+      }
+      return;
+    }
+
     TensorDim input_dim = input_.getDim();
     TensorDim input_step_dim = {input_dim.batch(), input_dim.channel(),
                                 to - from, input_dim.width()};
