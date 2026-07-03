@@ -88,6 +88,24 @@ public:
   bool supportBackwarding() const override { return true; }
 
   /**
+   * @copydoc Layer::supportInt8ActInput()
+   */
+  bool supportInt8ActInput() const override { return true; }
+
+  /**
+   * @copydoc Layer::supportInt8ActOutput()
+   */
+  bool supportInt8ActOutput() const override { return true; }
+
+  /**
+   * @copydoc Layer::isActivationPassthrough()
+   * @note Channel-axis concat moves each input's int8 payload into the output
+   * unchanged; YOLOv11's W4A8 calibration unifies all input scales with the
+   * concat output scale, so the joined edge carries a single consistent scale.
+   */
+  bool isActivationPassthrough() const override { return true; }
+
+  /**
    * @copydoc Layer::setProperty(const PropertyType type, const std::string
    * &value)
    */
@@ -109,8 +127,9 @@ private:
     input_reshape_helper;          /** helper dimension to reshape inputs */
   TensorDim output_reshape_helper; /** helper dimension to reshape outputs */
   std::tuple<props::ConcatDimension> concat_props;
-  unsigned int concat_dimension_cache = 1; /**< resolved in finalize for
-                                          forwarding (NHWC channel-concat path) */
+  unsigned int concat_dimension_cache =
+    1; /**< resolved in finalize for
+      forwarding (NHWC channel-concat path) */
 
   /**
    * @brief set batch for the internal variables

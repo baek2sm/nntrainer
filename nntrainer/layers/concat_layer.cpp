@@ -191,6 +191,22 @@ void ConcatLayer::forwarding(RunLayerContext &context, bool training) {
 #else
         throw std::invalid_argument("Error: enable-fp16 is not enabled");
 #endif
+      } else if (input.getDataType() == TensorDim::DataType::Q8_0_TW) {
+        // Q8_0_TW carries a flat int8 payload (1 byte/element); the per-tensor
+        // activation scale lives in graph metadata. YOLOv11's W4A8 calibration
+        // unifies every concat input's scale with the concat output scale, so a
+        // channel-run byte copy (no requantization) is exact. Layout matches
+        // the FP path with element size 1.
+        const int8_t *src = input.getData<int8_t>();
+        int8_t *dst = output.getData<int8_t>();
+        for (unsigned int b = 0; b < B; ++b) {
+          const size_t base = (size_t)b * HW;
+          for (size_t p = 0; p < HW; ++p) {
+            const int8_t *s = src + (base + p) * Ci;
+            int8_t *d = dst + (base + p) * out_dim.channel() + c_offset;
+            std::memcpy(d, s, (size_t)Ci);
+          }
+        }
       }
       c_offset += Ci;
     }

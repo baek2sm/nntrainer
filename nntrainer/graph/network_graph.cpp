@@ -109,72 +109,73 @@ int NetworkGraph::compile(const std::string &loss_type) {
 
 void NetworkGraph::propagateActivationDataTypes() {
   /**
-   * §5.7 (W4A8 NHWC static-Q8_0) activation-dtype propagation. An edge
-   * producer→consumer is carried as int8 (Q8_0_TW) only when all three hold:
-   *   1. the producer can emit int8 output (Layer::supportInt8ActOutput),
-   *   2. every consumer of that output can accept int8 input
-   *      (Layer::supportInt8ActInput), and
-   *   3. the edge's static scale is registered (hasActivationScale).
-   * Otherwise the edge stays FP16. Every layer currently declares no int8
-   * capability, so the selection set is empty and the dataflow is unchanged;
-   * U4e/U5 consume int8_output_nodes_ to wire the boundary quant/dequant and
-   * the conv int8 input path.
+   * §5.7 (W4A8 NHWC static-Q8_0) activation-dtype propagation. A node's output
+   * edge is carried as int8 (Q8_0_TW) only when all hold:
+   *   1. the producer can emit int8 (Layer::supportInt8ActOutput) and has ≥1
+   *      consumer,
+   *   2. every consumer accepts int8: a terminal consumer (conv2d) needs only
+   *      supportInt8ActInput; a passthrough consumer must itself be int8-output
+   *      (so it forwards, never strands an int8-in/fp16-out edge),
+   *   3. the edge is scale-anchored (hasActivationScale) OR the producer is a
+   *      pure passthrough whose EVERY input is itself int8-output — so a joiner
+   *      (concat/addition) emits int8 only when all its inputs are int8, giving
+   *      one consistent scale its consumers read from ":in".
+   *
+   * These conditions are mutually recursive (a joiner's status depends on its
+   * inputs' and consumers' statuses and vice-versa, forming genuine cycles in
+   * C2f fan-out/join diamonds). We solve the GREATEST fixpoint: seed the set
+   * with every int8-emit-capable node, then monotonically remove any node that
+   * violates (2) or (3) under the current set until stable. Greatest (not
+   * least) fixpoint is the intended semantics — an edge stays int8 unless
+   * concretely contradicted by an unscaled/incapable anchor — and removal is
+   * monotone so it terminates. An uncalibrated graph (no scales) removes
+   * everything → empty set → dataflow bit-identical to FP16.
    */
   int8_output_nodes_.clear();
-
-  /**
-   * Topological order guarantees every producer's own inputs were decided
-   * before it is visited, so the passthrough rule (below) can look upstream in
-   * int8_output_nodes_ without a second pass.
-   */
   for (auto iter = cbegin(); iter != cend(); ++iter) {
-    const auto &producer = *iter;
+    const auto &node = *iter;
+    if (node->supportInt8ActOutput() && !node->getOutputConnections().empty())
+      int8_output_nodes_.insert(node->getName());
+  }
 
-    /** condition 1: producer must be able to emit int8 output */
-    if (!producer->supportInt8ActOutput())
-      continue;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (auto iter = cbegin(); iter != cend(); ++iter) {
+      const auto &node = *iter;
+      const std::string &name = node->getName();
+      if (int8_output_nodes_.find(name) == int8_output_nodes_.end())
+        continue;
 
-    const auto consumer_names = producer->getOutputConnections();
-    /** a graph output edge (no consumer) is never int8-ified in U4 */
-    if (consumer_names.empty())
-      continue;
-
-    /** condition 2: every consumer must genuinely consume int8 (fan-out>1
-     * requires all consumers capable; a passthrough consumer must in turn be
-     * able to forward int8 — see canConsumeInt8) */
-    bool all_consumers_capable = true;
-    for (const auto &cname : consumer_names) {
-      if (cname.empty() || !canConsumeInt8(cname)) {
-        all_consumers_capable = false;
-        break;
-      }
-    }
-    if (!all_consumers_capable)
-      continue;
-
-    /**
-     * condition 3: either the producer owns a registered static scale for this
-     * edge, or it is a pure activation passthrough whose input edge is already
-     * an int8 (scale-anchored) edge. A passthrough carries the same values —
-     * hence the same scale — as its input, so int8-capable consumers read the
-     * scale from their own calibrated ":in" entry; the value need not flow
-     * through the passthrough node itself.
-     */
-    bool scale_ok = hasActivationScale(producer->getName());
-    if (!scale_ok && producer->isActivationPassthrough()) {
-      const auto in_conns = producer->getInputConnections();
-      scale_ok = !in_conns.empty();
-      for (const auto &iname : in_conns) {
-        if (iname.empty() || !isInt8ActivationOutput(iname)) {
-          scale_ok = false;
+      bool ok = true;
+      /** condition 2: every consumer accepts int8 under the current set */
+      for (const auto &cname : node->getOutputConnections()) {
+        if (cname.empty() || !canConsumeInt8(cname)) {
+          ok = false;
           break;
         }
       }
-    }
-    if (!scale_ok)
-      continue;
+      /** condition 3: scale-anchored, or passthrough with all inputs int8 */
+      if (ok && !hasActivationScale(name)) {
+        if (node->isActivationPassthrough()) {
+          const auto in_conns = node->getInputConnections();
+          ok = !in_conns.empty();
+          for (const auto &iname : in_conns) {
+            if (iname.empty() || !isInt8ActivationOutput(iname)) {
+              ok = false;
+              break;
+            }
+          }
+        } else {
+          ok = false;
+        }
+      }
 
-    int8_output_nodes_.insert(producer->getName());
+      if (!ok) {
+        int8_output_nodes_.erase(name);
+        changed = true;
+      }
+    }
   }
 
   ml_logd("[W4A8] int8 activation edges selected: %zu",
@@ -198,25 +199,15 @@ bool NetworkGraph::canConsumeInt8(const std::string &node_name) const {
   if (!node->supportInt8ActInput())
     return false;
 
-  /** a terminal (non-passthrough) consumer, e.g. conv2d, absorbs the int8
-   * input directly — it is the scale-anchored endpoint */
+  /** a terminal (non-passthrough) consumer, e.g. conv2d, absorbs the int8 input
+   * directly — it is the scale-anchored endpoint. A passthrough consumer can
+   * accept int8 only if it itself emits int8 (∈ the current selection set); a
+   * passthrough that is not int8-output would strand an int8-in/fp16-out edge.
+   * This is evaluated against the greatest-fixpoint set being reduced in
+   * propagateActivationDataTypes(). */
   if (!node->isActivationPassthrough())
     return true;
-
-  /** a passthrough must be able to forward the int8 edge unchanged: it must
-   * emit int8 and every one of its own consumers must in turn consume int8.
-   * A graph-output passthrough (no consumer) cannot forward → not int8. */
-  if (!node->supportInt8ActOutput())
-    return false;
-
-  const auto out_conns = node->getOutputConnections();
-  if (out_conns.empty())
-    return false;
-  for (const auto &cname : out_conns) {
-    if (cname.empty() || !canConsumeInt8(cname))
-      return false;
-  }
-  return true;
+  return isInt8ActivationOutput(node_name);
 }
 
 bool NetworkGraph::isInt8ActivationOutput(const std::string &node_name) const {
