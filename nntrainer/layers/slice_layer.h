@@ -76,6 +76,24 @@ public:
   bool supportBackwarding() const final { return support_backwarding; };
 
   /**
+   * @copydoc Layer::supportInt8ActInput()
+   */
+  bool supportInt8ActInput() const final { return true; }
+
+  /**
+   * @copydoc Layer::supportInt8ActOutput()
+   */
+  bool supportInt8ActOutput() const final { return true; }
+
+  /**
+   * @copydoc Layer::isActivationPassthrough()
+   * @note Slice selects a contiguous sub-range along one axis and copies the
+   * elements unchanged; the Q8_0_TW int8 payload is moved as-is, so the sliced
+   * edge inherits the input activation scale (no requantization).
+   */
+  bool isActivationPassthrough() const final { return true; }
+
+  /**
    * @copydoc Layer::exportTo(Exporter &exporter, ml::train::ExportMethods
    * method)
    */
