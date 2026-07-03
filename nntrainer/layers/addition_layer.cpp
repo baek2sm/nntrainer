@@ -29,8 +29,75 @@ void AdditionLayer::finalize(InitLayerContext &context) {
   context.setOutputDimensions({context.getInputDimensions()[0]});
 }
 
+/**
+ * @brief W4A8 static Q8_0: dequantize-and-sum for int8 (Q8_0_TW) residual
+ * inputs into a float output.
+ *
+ * The residual add is a compute joiner: each producer feeding it keeps its
+ * output edge int8, and calibration unifies every such producer's output scale
+ * to this add's single input activation scale (add:in). So each int8 input's
+ * true value is `q_i * s_in`, and the exact sum is `s_in * sum(q_i)` (plus any
+ * genuinely float inputs added in their natural units). The result is written
+ * to the float output edge; the add does not re-quantize (its output edge stays
+ * float), so no rounding beyond the producers' own quantization is introduced.
+ */
+template <typename OUT>
+static void additionDequantSum(RunLayerContext &context, float s_in) {
+  Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);
+  const size_t n = hidden_.size();
+  OUT *out = hidden_.getData<OUT>();
+  for (size_t i = 0; i < n; ++i)
+    out[i] = static_cast<OUT>(0);
+
+  for (unsigned int idx = 0; idx < context.getNumInputs(); ++idx) {
+    const Tensor &input_ = context.getInput(idx);
+    if (input_.getDataType() == ml::train::TensorDim::DataType::Q8_0_TW) {
+      const int8_t *q = input_.getData<int8_t>();
+      for (size_t i = 0; i < n; ++i)
+        out[i] = static_cast<OUT>(static_cast<float>(out[i]) +
+                                  s_in * static_cast<float>(q[i]));
+#ifdef ENABLE_FP16
+    } else if (input_.getDataType() == ml::train::TensorDim::DataType::FP16) {
+      const _FP16 *f = input_.getData<_FP16>();
+      for (size_t i = 0; i < n; ++i)
+        out[i] = static_cast<OUT>(static_cast<float>(out[i]) +
+                                  static_cast<float>(f[i]));
+#endif
+    } else {
+      const float *f = input_.getData<float>();
+      for (size_t i = 0; i < n; ++i)
+        out[i] = static_cast<OUT>(static_cast<float>(out[i]) + f[i]);
+    }
+  }
+}
+
 void AdditionLayer::forwarding(RunLayerContext &context, bool training) {
   Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);
+
+  // W4A8 static Q8_0: if any input arrived as an int8 (Q8_0_TW) activation
+  // edge, dequantize each by the calibrated input activation scale and sum in
+  // float. The output edge is float (this layer does not emit int8), so no
+  // requantization is needed.
+  bool any_int8_in = false;
+  for (unsigned int idx = 0; idx < context.getNumInputs(); ++idx) {
+    if (context.getInput(idx).getDataType() ==
+        ml::train::TensorDim::DataType::Q8_0_TW) {
+      any_int8_in = true;
+      break;
+    }
+  }
+  if (any_int8_in) {
+    const auto &ais = std::get<props::InputActivationScale>(add_props);
+    const float s_in = (!ais.empty() && ais.get() > 0.0f) ? ais.get() : 0.0f;
+#ifdef ENABLE_FP16
+    if (hidden_.getDataType() == ml::train::TensorDim::DataType::FP16) {
+      additionDequantSum<_FP16>(context, s_in);
+      return;
+    }
+#endif
+    additionDequantSum<float>(context, s_in);
+    return;
+  }
 
   /** @todo check possibility for in-place of addition layer */
   for (unsigned int idx = 0; idx < context.getNumInputs(); ++idx) {

@@ -135,8 +135,13 @@ inline Tensor bottleneck(const std::string &name, int ch, Tensor input,
                          bool conv_q40 = false) {
   auto h = convBnSilu(name + "/cv1", ch, ch, 3, 1, 1, input, conv_q40);
   h = convBnSilu(name + "/cv2", ch, ch, 3, 1, 1, h, conv_q40);
-  LayerHandle add(
-    createLayer("Addition", {nntrainer::withKey("name", name + "/add")}));
+  // W4A8: inject the calibrated input activation scale so AdditionLayer can
+  // dequantize its int8 (Q8_0_TW) residual inputs. Both residual inputs share
+  // this scale (calibration unifies every producer feeding the add to add:in).
+  std::vector<std::string> add_props = {
+    nntrainer::withKey("name", name + "/add")};
+  appendActScales(add_props, name + "/add");
+  LayerHandle add(createLayer("Addition", add_props));
   return add({h, input});
 }
 
@@ -358,7 +363,12 @@ inline Tensor sliceCh(const std::string &name, int start0, int end0,
 
 /** @brief Elementwise addition of two tensors. */
 inline Tensor addT(const std::string &name, Tensor a, Tensor b) {
-  LayerHandle l(createLayer("Addition", {nntrainer::withKey("name", name)}));
+  // W4A8: inject the calibrated input activation scale so AdditionLayer can
+  // dequantize any int8 (Q8_0_TW) input by add:in before summing. Producers
+  // feeding this add are calibration-unified to this single input scale.
+  std::vector<std::string> add_props = {nntrainer::withKey("name", name)};
+  appendActScales(add_props, name);
+  LayerHandle l(createLayer("Addition", add_props));
   return l({a, b});
 }
 

@@ -29,7 +29,10 @@ public:
   /**
    * @brief     Constructor of Addition Layer
    */
-  AdditionLayer() : Layer(), add_props(props::Print(), props::SkipPrefill()) {}
+  AdditionLayer() :
+    Layer(),
+    add_props(props::Print(), props::SkipPrefill(), props::ActivationScale(),
+              props::InputActivationScale()) {}
 
   /**
    * @brief     Destructor of Addition Layer
@@ -76,6 +79,17 @@ public:
   bool supportBackwarding() const override { return true; };
 
   /**
+   * @copydoc Layer::supportInt8ActInput()
+   * @note W4A8 static Q8_0: the residual add is a compute joiner. It accepts
+   * int8 (Q8_0_TW) activation inputs and dequantizes each internally by the
+   * calibrated input activation scale before summing, so its producers can keep
+   * their output edges int8. The output edge itself stays float
+   * (supportInt8ActOutput() = default false), so no downstream %32 int8-edge
+   * constraint is imposed.
+   */
+  bool supportInt8ActInput() const override { return true; }
+
+  /**
    * @copydoc Layer::exportTo(Exporter &exporter, ml::train::ExportMethods
    * method)
    */
@@ -96,7 +110,8 @@ public:
     nntrainer::RunLayerContext &context,
     std::vector<nntrainer::TensorDim> input_dimensions) override;
 
-  std::tuple<props::Print, props::SkipPrefill>
+  std::tuple<props::Print, props::SkipPrefill, props::ActivationScale,
+             props::InputActivationScale>
     add_props; /**< fc layer properties : unit - number of output neurons */
   bool skip_prefill = false;
 
