@@ -11,6 +11,7 @@
  */
 
 #include <fstream>
+#include <mutex>
 
 #include <app_context.h>
 #include <engine.h>
@@ -22,6 +23,8 @@
 
 #include <embedding_layer.h>
 #include <mha_core.h>
+#include <neuralnet.h>
+#include <qs4cx_tensor.h>
 #include <rms_norm.h>
 #include <swiglu.h>
 #include <tie_word_embedding.h>
@@ -108,8 +111,11 @@ Transformer::Transformer(json &cfg, json &generation_cfg, json &nntr_cfg,
     setupParameters(cfg, generation_cfg, nntr_cfg);
   }
 
-  // Skip tokenizer if specified (e.g., for vision encoder models)
-  if (skip_tokenizer) {
+  // Skip tokenizer if specified, or when no tokenizer_file is configured
+  // (e.g. vision-encoder sub-models composed into a multimodal handle, whose
+  // config carries no tokenizer). Avoids a json type_error on a null path.
+  if (skip_tokenizer || !nntr_cfg.contains("tokenizer_file") ||
+      nntr_cfg["tokenizer_file"].is_null()) {
     tokenizer = nullptr; // No tokenizer for this model
   } else {
     tokenizer = tokenizers::Tokenizer::FromBlobJSON(
@@ -139,6 +145,8 @@ void Transformer::setupParameters(json &cfg, json &generation_cfg,
   USE_FLASH_ATTENTION = nntr_cfg.contains("use_flash_attention")
                           ? nntr_cfg["use_flash_attention"].get<bool>()
                           : true;
+  EMBEDDING_FILE_NAME = nntr_cfg.value("embedding_file_name", std::string());
+  PLE_FILE_NAME = nntr_cfg.value("ple_file_name", std::string());
 
   if (cfg.contains("is_causal")) {
     IS_CAUSAL = cfg["is_causal"].get<bool>();
@@ -238,11 +246,13 @@ std::pair<Tensor, Tensor> Transformer::constructModel() {
   const std::string embedding_type =
     TIE_WORD_EMBEDDINGS ? "tie_word_embeddings" : "embedding_layer";
 
+  NNTR_THROW_IF(TIE_WORD_EMBEDDINGS && !EMBEDDING_FILE_NAME.empty(),
+                std::invalid_argument)
+    << "embedding_file_name requires untied embedding_layer";
   LayerHandle embedding(createLayer(
     embedding_type,
-    {"name=embedding0", "in_dim=" + std::to_string(NUM_VOCAB),
-     "weight_dtype=" + EMBEDDING_DTYPE, "out_dim=" + std::to_string(DIM),
-     "scale=" + std::to_string(EMBEDDING_SCALE)}));
+    buildEmbeddingLayerProperties("embedding0", NUM_VOCAB, DIM, EMBEDDING_DTYPE,
+                                  EMBEDDING_SCALE, EMBEDDING_FILE_NAME)));
   Tensor h = embedding(x);
 
   // transformer decoder blocks
@@ -259,6 +269,24 @@ std::pair<Tensor, Tensor> Transformer::constructModel() {
 
   return {x, h};
 };
+
+std::vector<std::string> Transformer::buildEmbeddingLayerProperties(
+  const std::string &name, unsigned int in_dim, unsigned int out_dim,
+  const std::string &weight_dtype, float scale,
+  const std::string &quantized_lut_path) const {
+  std::vector<std::string> props = {
+    withKey("name", name),
+    withKey("in_dim", std::to_string(in_dim)),
+    withKey("weight_dtype", weight_dtype),
+    withKey("out_dim", std::to_string(out_dim)),
+    withKey("scale", std::to_string(scale)),
+  };
+
+  if (!quantized_lut_path.empty())
+    props.emplace_back(withKey("quantized_lut_path", quantized_lut_path));
+
+  return props;
+}
 
 /**
  * @brief Load model weights from a binary nntrainer model file.
@@ -317,6 +345,34 @@ void Transformer::save_weight(
 
   } catch (const std::exception &e) {
     throw std::runtime_error("Failed to save model weights with dtype: " +
+                             std::string(e.what()));
+  }
+};
+
+/**
+ * @brief Repack all QS4CX weights after loading.
+ */
+void Transformer::repack_weight() {
+  if (!is_initialized) {
+    throw std::runtime_error(
+      "Transformer model is not initialized. Please call "
+      "initialize() before repack_weight().");
+  }
+  std::function<void(ml::train::Layer &, nntrainer::RunLayerContext &, void *)>
+    fn = [](ml::train::Layer &l, nntrainer::RunLayerContext &context, void *) {
+      auto weights = context.getWeights();
+      for (auto &w : weights) {
+        if (w->getVariableRef().getDataType() ==
+            ml::train::TensorDim::DataType::QS4CX) {
+          w->getVariableRef().pack();
+        }
+      }
+    };
+  try {
+    model->forEachLayer(fn, nullptr);
+    ml_logd("QS4CX weights repacked successfully");
+  } catch (const std::exception &e) {
+    throw std::runtime_error("Failed to repack weights: " +
                              std::string(e.what()));
   }
 };
@@ -507,12 +563,12 @@ Tensor Transformer::createMlp(const int layer_id, int dim, int hidden_dim,
  * @brief Register custom CausalLM layers in the nntrainer app context.
  */
 void Transformer::registerCustomLayers() {
-  ///
-  const auto &ct_engine = nntrainer::Engine::Global();
-  const auto app_context =
-    static_cast<nntrainer::AppContext *>(ct_engine.getRegisteredContext("cpu"));
+  static std::once_flag registered;
+  std::call_once(registered, []() {
+    const auto &ct_engine = nntrainer::Engine::Global();
+    const auto app_context = static_cast<nntrainer::AppContext *>(
+      ct_engine.getRegisteredContext("cpu"));
 
-  try {
     app_context->registerFactory(nntrainer::createLayer<causallm::SwiGLULayer>);
     app_context->registerFactory(
       nntrainer::createLayer<causallm::RMSNormLayer>);
@@ -522,11 +578,7 @@ void Transformer::registerCustomLayers() {
       nntrainer::createLayer<causallm::TieWordEmbedding>);
     app_context->registerFactory(
       nntrainer::createLayer<causallm::EmbeddingLayer>);
-
-  } catch (std::invalid_argument &e) {
-    std::cerr << "failed to register factory, reason: " << e.what()
-              << std::endl;
-  }
+  });
 }
 
 } // namespace causallm

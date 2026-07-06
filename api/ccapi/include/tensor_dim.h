@@ -68,8 +68,9 @@ public:
     Q4_0,   /** Q4_0 k quantized */
     Q8_0,  /** Q8_0 k quantized (8-bit signed + fp16 scale per 32-element block)
             */
-    UINT4, /** quantized unsigned int 4*/
-    UINT8, /** unsigned int 8 bit */
+    QS4CX,  /** QS4CX quantized */
+    UINT4,  /** quantized unsigned int 4*/
+    UINT8,  /** unsigned int 8 bit */
     UINT16, /** unsigned int 16 bit */
     UINT32, /** unsigned int 32 bit */
     FP16,   /** half precision */

@@ -430,7 +430,8 @@ static void col2im(const Tensor &col_matrix, const TensorDim &kdim,
    * of Tensor. Then we could remove to access the getData or getValue which has
    * dependecy of data type.
    */
-  auto apply_data = [&]<typename T>(T *val) {
+  auto apply_data = [&](auto *val) {
+    using T = std::decay_t<decltype(*val)>;
     unsigned col_w = 0;
     for (int hs = -(int)pt; hs <= h_stride_end; hs += hstride) {
       for (int ws = -(int)pl; ws <= w_stride_end; ws += wstride) {
