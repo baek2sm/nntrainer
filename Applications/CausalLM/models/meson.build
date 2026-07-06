@@ -25,3 +25,8 @@ endif
 if get_option('enable-app')
     subdir('YOLOv11/jni')
 endif
+
+# PFLD face landmark inference example
+if get_option('enable-app')
+    subdir('PFLD/jni')
+endif
