@@ -472,7 +472,6 @@ void EmbeddingLayer::finalize(nntrainer::InitLayerContext &context) {
                 std::invalid_argument)
     << "Embedding layer takes only FP32 input data";
 
-
   auto &weight_regularizer =
     std::get<nntrainer::props::WeightRegularizer>(*layer_impl_props);
   auto &weight_regularizer_constant =
