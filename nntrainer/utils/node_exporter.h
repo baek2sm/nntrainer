@@ -240,6 +240,7 @@ class InPlaceDirectionProp;
 class Exponent;
 class StartIndex;
 class EndIndex;
+class FusedActivation;
 } // namespace props
 
 class LayerNode;
@@ -333,7 +334,8 @@ template <>
 void Exporter::saveTflResult(
   const std::tuple<props::FilterSize, std::array<props::KernelSize, 2>,
                    std::array<props::Stride, 2>, props::Padding2D,
-                   std::array<props::Dilation, 2>, props::ConvGroups> &props,
+                   std::array<props::Dilation, 2>, props::ConvGroups,
+                   props::FusedActivation> &props,
   const Conv2DLayer *self);
 
 class InputLayer;
