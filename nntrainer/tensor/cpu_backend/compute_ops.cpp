@@ -151,11 +151,12 @@ void ComputeOps::transpose_matrix_fp32(unsigned int, unsigned int,
   NI(transpose_matrix_fp32);
 }
 
-void ComputeOps::depthwise_conv2d_fp32(
-  const float *, const float *, float *, unsigned int, unsigned int,
-  unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
-  unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
-  unsigned int, unsigned int) {
+void ComputeOps::depthwise_conv2d_fp32(const float *, const float *, float *,
+                                       unsigned int, unsigned int, unsigned int,
+                                       unsigned int, unsigned int, unsigned int,
+                                       unsigned int, unsigned int, unsigned int,
+                                       unsigned int, unsigned int, unsigned int,
+                                       unsigned int, unsigned int) {
   NI(depthwise_conv2d_fp32);
 }
 
