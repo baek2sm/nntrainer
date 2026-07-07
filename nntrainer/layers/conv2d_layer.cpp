@@ -30,7 +30,6 @@
 #include <nntrainer_log.h>
 #include <node_exporter.h>
 #include <profiler.h>
-#include <q8_0_tensor.h>
 #include <tensor_dim.h>
 #include <thread>
 #include <thread_manager.h>
@@ -692,7 +691,7 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
     // that never materialize a col buffer: the 1x1 path (im2col is an identity
     // handled by an input transpose) and, where the fused backend op exists,
     // the non-1x1 path (gather is fused into the q8_0 activation packing).
-    if (!(quant_matmul_filter && (is_1x1_s1 || NNTR_HAS_Q4_0_INDIRECT_CONV))) {
+    if (!(quant_matmul_filter && is_1x1_s1)) {
       // FP path or quant fallback: materialize the im2col column buffer
       // [batch, 1, CRS, OH*OW] once (planned into the activation arena). The
       // quant 1x1 path (identity input transpose) and the quant indirect path
@@ -804,7 +803,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     // (gather fused into the GEMM) requested no col buffer in finalize, so the
     // pointer stays null for them.
     const bool use_im2col_scratch =
-      !(weight_is_quant && (is_1x1_s1 || NNTR_HAS_Q4_0_INDIRECT_CONV));
+      !(weight_is_quant && is_1x1_s1);
     Tensor *col_scratch =
       use_im2col_scratch
         ? &context.getTensor(wt_idx[ConvParams::im2col_scratch])
@@ -835,22 +834,6 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
               Tensor act = in_sub;
               act.reshape(TensorDim(1, 1, owoh, in_dim.channel(), {ml::train::TensorDim::Format::NCHW, in_sub.getDataType()}));
               act.dot(filter_kernel, out_flat, false, false);
-            } else if (NNTR_HAS_Q4_0_INDIRECT_CONV) {
-              ConvGatherParams geom;
-              geom.in_ch = in_dim.channel();
-              geom.in_h = in_dim.height();
-              geom.in_w = in_dim.width();
-              geom.k_h = kernel_size[0].get();
-              geom.k_w = kernel_size[1].get();
-              geom.pad_t = padding[0];
-              geom.pad_l = padding[2];
-              geom.stride_h = stride[0].get();
-              geom.stride_w = stride[1].get();
-              geom.dil_h = dilation[0].get();
-              geom.dil_w = dilation[1].get();
-              geom.out_w = out_dim.width();
-              geom.is_nhwc = true;
-              in_sub.convQ4_0Indirect(filter_kernel, out_flat, geom);
             } else {
               throw std::runtime_error("Fallback quantized NHWC conv is not supported (requires indirect conv on ARM).");
             }
@@ -870,27 +853,6 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
               in_sub.reshape({in_dim.channel(), owoh});
               Tensor act = in_sub.transpose("0:2:1");
               act.dot(filter_kernel, tmp, false, false);
-            } else if (NNTR_HAS_Q4_0_INDIRECT_CONV) {
-              // Quantized 3x3+ indirect: fold im2col gather into the q8_0
-              // activation quantization so the activation matrix is never
-              // materialized (the FP16 input is gathered on the fly and quantized
-              // per tile inside the indirect GEMM). Output tmp is FP16
-              // [OH*OW, out_ch].
-              ConvGatherParams geom;
-              geom.in_ch = in_dim.channel();
-              geom.in_h = in_dim.height();
-              geom.in_w = in_dim.width();
-              geom.k_h = kernel_size[0].get();
-              geom.k_w = kernel_size[1].get();
-              geom.pad_t = padding[0];
-              geom.pad_l = padding[2];
-              geom.stride_h = stride[0].get();
-              geom.stride_w = stride[1].get();
-              geom.dil_h = dilation[0].get();
-              geom.dil_w = dilation[1].get();
-              geom.out_w = out_dim.width();
-              geom.is_nhwc = false;
-              in_sub.convQ4_0Indirect(filter_kernel, tmp, geom);
             } else {
               // Fallback (no fused backend op): materialize im2col into the col
               // scratch, then the standard quant GEMM.
