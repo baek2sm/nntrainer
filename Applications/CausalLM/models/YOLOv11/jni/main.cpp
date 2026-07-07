@@ -192,7 +192,7 @@ inline void dist2bbox(const std::vector<float> &dist, int N,
 inline void decodeOneScale(const float *raw, int H, int W, float stride,
                            const std::vector<float> &anchors,
                            const std::vector<float> &strides_vec,
-                           int anchor_off, int N_total,
+                           int anchor_off, int N_total, int nc,
                            std::vector<float> &decoded) {
   const int N = H * W;
   const int reg_max = 16;
@@ -219,9 +219,11 @@ inline void decodeOneScale(const float *raw, int H, int W, float stride,
       decoded[c * N_total + anchor_off + a] = decoded_box[c * N + a];
     }
   }
-  for (int a = 0; a < N; ++a) {
-    decoded[4 * N_total + anchor_off + a] =
-      1.0f / (1.0f + std::exp(-raw_cls[a]));
+  for (int c = 0; c < nc; ++c) {
+    for (int a = 0; a < N; ++a) {
+      decoded[(4 + c) * N_total + anchor_off + a] =
+        1.0f / (1.0f + std::exp(-raw_cls[c * N + a]));
+    }
   }
 }
 
@@ -250,15 +252,16 @@ inline float iou(const Detection &a, const Detection &b) {
 
 /**
  * @brief Run NMS on decoded predictions.
- * @param decoded    [5, N_total] (cx, cy, w, h, score)
+ * @param decoded    [(4 + nc) * N_total] (cx, cy, w, h, class_scores...)
  * @param N_total    total anchors
+ * @param nc         number of classes
  * @param conf_thres confidence threshold
  * @param iou_thres  IoU threshold
  * @param max_det    max detections to keep
  * @return sorted (descending conf) list of Detection
  */
 inline std::vector<Detection> nms(const std::vector<float> &decoded,
-                                  int N_total, float conf_thres,
+                                  int N_total, int nc, float conf_thres,
                                   float iou_thres, int max_det) {
   const float *cx_ptr = decoded.data() + 0 * N_total;
   const float *cy_ptr = decoded.data() + 1 * N_total;
@@ -266,14 +269,20 @@ inline std::vector<Detection> nms(const std::vector<float> &decoded,
   const float *h_ptr = decoded.data() + 3 * N_total;
   const float *sc_ptr = decoded.data() + 4 * N_total;
 
-  // nc=1: single class, cls_idx always 0
-  // per-class offset = cls_idx * 7680 = 0 for nc=1
   // Build candidate list: xywh → xyxy, filter by score
   std::vector<Detection> candidates;
   candidates.reserve(512);
   for (int a = 0; a < N_total; ++a) {
-    float score = sc_ptr[a];
-    if (score <= conf_thres)
+    float max_score = -1e9f;
+    int max_cls = -1;
+    for (int c = 0; c < nc; ++c) {
+      float score = sc_ptr[c * N_total + a];
+      if (score > max_score) {
+        max_score = score;
+        max_cls = c;
+      }
+    }
+    if (max_score <= conf_thres)
       continue;
     float cx = cx_ptr[a];
     float cy = cy_ptr[a];
@@ -283,7 +292,7 @@ inline std::vector<Detection> nms(const std::vector<float> &decoded,
     float y1 = cy - bh * 0.5f;
     float x2 = cx + bw * 0.5f;
     float y2 = cy + bh * 0.5f;
-    candidates.push_back({x1, y1, x2, y2, score, 0});
+    candidates.push_back({x1, y1, x2, y2, max_score, max_cls});
   }
 
   // Sort descending by conf
@@ -292,8 +301,6 @@ inline std::vector<Detection> nms(const std::vector<float> &decoded,
     [](const Detection &a, const Detection &b) { return a.conf > b.conf; });
 
   // Greedy NMS
-  // For agnostic=False with nc=1, per-class offset = cls_idx*7680 = 0
-  // So effectively agnostic NMS here (same as agnostic since nc=1)
   std::vector<bool> suppressed(candidates.size(), false);
   std::vector<Detection> result;
   result.reserve(max_det);
@@ -534,6 +541,19 @@ int main(int argc, char *argv[]) {
     if (quantize_mode)
       yolov11::quantConvSink() = &q_conv_names;
 
+    // Retrieve dynamic model configuration from environment variables
+    const std::string scale =
+      std::getenv("YOLO_SCALE") ? std::getenv("YOLO_SCALE") : "m";
+    const int imgsz =
+      std::getenv("YOLO_IMGSZ") ? std::atoi(std::getenv("YOLO_IMGSZ")) : 832;
+    const int nc =
+      std::getenv("YOLO_NC") ? std::atoi(std::getenv("YOLO_NC")) : 1;
+    const yolov11::YOLOv11Params p = yolov11::getParams(scale, nc);
+
+    std::cout << "[YOLO] Configuration: scale=" << scale << " ("
+              << (scale == "s" || scale == "S" ? "v11s" : "v11m")
+              << "), imgsz=" << imgsz << ", nc=" << nc << std::endl;
+
     // Declare the input tensor's dtype to match the activation dtype so the
     // synthesized InputLayer emits FP16 output for an FP16-activation model.
     // The input tensor's declared format must match the graph layout so the
@@ -545,25 +565,28 @@ int main(int argc, char *argv[]) {
                                 : ml::train::TensorDim::Format::NCHW;
     auto x =
       fp16_act
-        ? Tensor(ml::train::TensorDim(1, 3, 832, 832, in_fmt,
+        ? Tensor(ml::train::TensorDim(1, 3, imgsz, imgsz, in_fmt,
                                       ml::train::TensorDim::DataType::FP16),
                  "input0")
-        : Tensor(ml::train::TensorDim(1, 3, 832, 832, in_fmt,
+        : Tensor(ml::train::TensorDim(1, 3, imgsz, imgsz, in_fmt,
                                       ml::train::TensorDim::DataType::FP32),
                  "input0");
     Tensor m4, m6;
-    auto m10 = yolov11::buildBackbone(x, m4, m6, conv_q40);
-    auto outputs = yolov11::buildHead(m4, m6, m10, conv_q40); // {P3, P4, P5}
+    auto m10 = yolov11::buildBackbone(x, m4, m6, p, conv_q40);
+    auto outputs = yolov11::buildHead(m4, m6, m10, p, conv_q40); // {P3, P4, P5}
     yolov11::quantConvSink() = nullptr;
 
     if (int ret =
           model->compile(x, outputs, ml::train::ExecutionMode::INFERENCE))
       throw std::runtime_error("compile failed: " + std::to_string(ret));
+
     // Load every weight from the single nntrainer safetensors produced by
     // PyTorch/convert_weights.py (tensor names match the model weight names).
     // YOLO_WEIGHTS overrides the file (absolute, or relative to RES_DIR) so a
     // baseline and a fused/quantized model can be compared without rebuilding.
-    std::string weights_path = RES_DIR + "/yolov11m.safetensors";
+    std::string weights_path = RES_DIR + "/yolov11" +
+                               (scale == "s" || scale == "S" ? "s" : "m") +
+                               ".safetensors";
     if (const char *wenv = std::getenv("YOLO_WEIGHTS")) {
       weights_path =
         (wenv[0] == '/') ? std::string(wenv) : RES_DIR + "/" + wenv;
@@ -610,7 +633,7 @@ int main(int argc, char *argv[]) {
     // run_pytorch.py), or — when built with stb_image.h present — an image
     // (.jpg/.png/...) which is decoded + letterboxed here.
 #ifdef YOLO_WITH_STB_IMAGE
-    auto input = isImagePath(input_path) ? loadImageLetterbox(input_path)
+    auto input = isImagePath(input_path) ? loadImageLetterbox(input_path, imgsz)
                                          : loadBin(input_path);
 #else
     auto input = loadBin(input_path);
@@ -622,7 +645,7 @@ int main(int argc, char *argv[]) {
     // When the graph is NHWC, the input bytes must also be NHWC-ordered
     // ([N,H,W,C]); input_832.bin is stored NCHW, so transpose here.
     if (preset_nhwc || std::getenv("YOLO_NHWC")) {
-      const int C = 3, H = 832, W = 832;
+      const int C = 3, H = imgsz, W = imgsz;
       std::vector<float> nhwc(input.size());
       for (int c = 0; c < C; ++c)
         for (int h = 0; h < H; ++h)
@@ -653,20 +676,23 @@ int main(int argc, char *argv[]) {
               << " ms (avg over " << bench_iters << " iters)" << std::endl;
     printPeakRSS();
 
-    // Post-process: DFL decode + dist2bbox + sigmoid -> [5, N] then NMS.
-    std::vector<yolov11::ScaleInfo> scales = {
-      {104, 104, 8.0f}, {52, 52, 16.0f}, {26, 26, 32.0f}};
-    const int N_total = 104 * 104 + 52 * 52 + 26 * 26; // 14196
+    // Post-process: DFL decode + dist2bbox + sigmoid -> [4+nc, N] then NMS.
+    std::vector<yolov11::ScaleInfo> scales = {{imgsz / 8, imgsz / 8, 8.0f},
+                                              {imgsz / 16, imgsz / 16, 16.0f},
+                                              {imgsz / 32, imgsz / 32, 32.0f}};
+    const int N_total = (imgsz / 8) * (imgsz / 8) +
+                        (imgsz / 16) * (imgsz / 16) +
+                        (imgsz / 32) * (imgsz / 32);
     std::vector<float> anchors, strides;
     yolov11::makeAnchors(scales, anchors, strides);
 
     // When the graph runs NHWC, each scale output tensor is stored channel-last
     // in memory ((h*W+w)*C + c), but decodeOneScale expects the NCHW channel-
     // major layout (c*N + a). Transpose each output to NCHW before decoding.
-    // Detect output channels = 4*reg_max (DFL box) + nc = 64 + 1 = 65 (nc=1).
+    // Detect output channels = 4*reg_max (DFL box) + nc = 64 + nc.
     const bool out_nhwc = preset_nhwc || std::getenv("YOLO_NHWC");
-    const int OUT_CH = 65;
-    std::vector<float> decoded(5 * N_total, 0.0f);
+    const int OUT_CH = 64 + nc;
+    std::vector<float> decoded((4 + nc) * N_total, 0.0f);
     int off = 0;
     for (size_t i = 0; i < scales.size(); ++i) {
       const float *raw = outs[i];
@@ -681,7 +707,7 @@ int main(int argc, char *argv[]) {
         raw = nchw_buf.data();
       }
       yolov11::decodeOneScale(raw, scales[i].H, scales[i].W, scales[i].stride,
-                              anchors, strides, off, N_total, decoded);
+                              anchors, strides, off, N_total, nc, decoded);
       off += scales[i].H * scales[i].W;
     }
 
@@ -689,7 +715,7 @@ int main(int argc, char *argv[]) {
       std::getenv("YOLO_CONF") ? std::stof(std::getenv("YOLO_CONF")) : 0.25f;
     const float iou_thres =
       std::getenv("YOLO_IOU") ? std::stof(std::getenv("YOLO_IOU")) : 0.70f;
-    auto dets = yolov11::nms(decoded, N_total, conf_thres, iou_thres, 300);
+    auto dets = yolov11::nms(decoded, N_total, nc, conf_thres, iou_thres, 300);
 
     // JSON output — same field names as the PyTorch reference JSON
     std::cout << "\n[";
@@ -705,7 +731,10 @@ int main(int argc, char *argv[]) {
 
     if (verify) {
       std::cout << "\nVerification vs PyTorch references:" << std::endl;
-      const size_t ns[3] = {65UL * 104 * 104, 65UL * 52 * 52, 65UL * 26 * 26};
+      const size_t ns[3] = {
+        static_cast<size_t>(OUT_CH) * (imgsz / 8) * (imgsz / 8),
+        static_cast<size_t>(OUT_CH) * (imgsz / 16) * (imgsz / 16),
+        static_cast<size_t>(OUT_CH) * (imgsz / 32) * (imgsz / 32)};
       const char *names[3] = {"ref_p3.bin", "ref_p4.bin", "ref_p5.bin"};
       for (int i = 0; i < 3; ++i)
         verifyAgainst(names[i], outs[i], ns[i]);

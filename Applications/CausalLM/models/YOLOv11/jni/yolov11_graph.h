@@ -94,10 +94,11 @@ inline Tensor convBnSilu(const std::string &name, int in_ch, int out_ch, int k,
 /**
  * @brief Build a Bottleneck sub-graph (cv1 3x3 + cv2 3x3 + residual add).
  */
-inline Tensor bottleneck(const std::string &name, int ch, Tensor input,
-                         bool conv_q40 = false) {
-  auto h = convBnSilu(name + "/cv1", ch, ch, 3, 1, 1, input, conv_q40);
-  h = convBnSilu(name + "/cv2", ch, ch, 3, 1, 1, h, conv_q40);
+inline Tensor bottleneck(const std::string &name, int in_ch, int hidden_ch,
+                         int out_ch, Tensor input, bool conv_q40 = false) {
+  auto h =
+    convBnSilu(name + "/cv1", in_ch, hidden_ch, 3, 1, 1, input, conv_q40);
+  h = convBnSilu(name + "/cv2", hidden_ch, out_ch, 3, 1, 1, h, conv_q40);
   LayerHandle add(
     createLayer("Addition", {nntrainer::withKey("name", name + "/add")}));
   return add({h, input});
@@ -110,8 +111,10 @@ inline Tensor c3kBlock(const std::string &name, int in_ch, int inner_ch,
                        int out_ch, Tensor input, bool conv_q40 = false) {
   auto inner =
     convBnSilu(name + "/cv1", in_ch, inner_ch, 1, 1, 0, input, conv_q40);
-  inner = bottleneck(name + "/inner0", inner_ch, inner, conv_q40);
-  inner = bottleneck(name + "/inner1", inner_ch, inner, conv_q40);
+  inner =
+    bottleneck(name + "/inner0", inner_ch, inner_ch, inner_ch, inner, conv_q40);
+  inner =
+    bottleneck(name + "/inner1", inner_ch, inner_ch, inner_ch, inner, conv_q40);
   auto skip =
     convBnSilu(name + "/cv2", in_ch, inner_ch, 1, 1, 0, input, conv_q40);
 
@@ -128,7 +131,7 @@ inline Tensor c3kBlock(const std::string &name, int in_ch, int inner_ch,
  * @brief Build a C3k2 sub-graph.
  */
 inline Tensor c3k2Block(const std::string &name, int in_ch, int out_ch, int c,
-                        Tensor input, bool conv_q40 = false) {
+                        bool c3k, Tensor input, bool conv_q40 = false) {
   auto y = convBnSilu(name + "/cv1", in_ch, 2 * c, 1, 1, 0, input, conv_q40);
 
   LayerHandle sliceA(
@@ -145,7 +148,12 @@ inline Tensor c3k2Block(const std::string &name, int in_ch, int out_ch, int c,
                           nntrainer::withKey("end_index", 2 * c + 1)}));
   auto y_b = sliceB(y);
 
-  auto y_c = c3kBlock(name + "/m0", c, c / 2, c, y_b, conv_q40);
+  Tensor y_c;
+  if (c3k) {
+    y_c = c3kBlock(name + "/m0", c, c / 2, c, y_b, conv_q40);
+  } else {
+    y_c = bottleneck(name + "/m0", c, c / 2, c, y_b, conv_q40);
+  }
 
   LayerHandle cat(
     createLayer("concat", {nntrainer::withKey("name", name + "/cat"),
@@ -275,27 +283,160 @@ inline Tensor dwConvBnOnly(const std::string &name, int ch, Tensor input) {
   return dw(input);
 }
 
+struct YOLOv11Params {
+  std::string scale;
+  int nc;
+
+  // Backbone channels
+  int c0, c1, c2, c3, m4_in, m4_out, c5, m6_in, m6_out, c7, m8_in, m8_out;
+  int m10_c;
+
+  // Backbone C3k2/C2PSA configs
+  bool m2_c3k, m4_c3k, m6_c3k, m8_c3k;
+  int m2_inner_c, m4_inner_c, m6_inner_c, m8_inner_c;
+
+  // Head channels
+  int m13_in, m13_out, m13_c;
+  int m16_in, m16_out, m16_c;
+  int m17_out;
+  int m19_in, m19_out, m19_c;
+  int m20_out;
+  int m22_in, m22_out, m22_c;
+
+  bool m13_c3k, m16_c3k, m19_c3k, m22_c3k;
+
+  // Detect head channels
+  int det0_pi, det1_pi, det2_pi;
+};
+
+inline YOLOv11Params getParams(const std::string &scale, int nc = 1) {
+  YOLOv11Params p;
+  p.scale = scale;
+  p.nc = nc;
+
+  if (scale == "s" || scale == "S") {
+    p.c0 = 32;
+    p.c1 = 64;
+    p.c2 = 128;
+    p.c3 = 128;
+    p.m4_in = 128;
+    p.m4_out = 256;
+    p.c5 = 256;
+    p.m6_in = 256;
+    p.m6_out = 256;
+    p.c7 = 512;
+    p.m8_in = 512;
+    p.m8_out = 512;
+
+    p.m2_c3k = false;
+    p.m2_inner_c = 32;
+    p.m4_c3k = false;
+    p.m4_inner_c = 64;
+    p.m6_c3k = true;
+    p.m6_inner_c = 128;
+    p.m8_c3k = true;
+    p.m8_inner_c = 256;
+
+    p.m10_c = 512;
+
+    p.m13_in = 768;
+    p.m13_out = 256;
+    p.m13_c = 128;
+    p.m13_c3k = false;
+    p.m16_in = 512;
+    p.m16_out = 128;
+    p.m16_c = 64;
+    p.m16_c3k = false;
+    p.m17_out = 128;
+    p.m19_in = 384;
+    p.m19_out = 256;
+    p.m19_c = 128;
+    p.m19_c3k = false;
+    p.m20_out = 256;
+    p.m22_in = 768;
+    p.m22_out = 512;
+    p.m22_c = 256;
+    p.m22_c3k = true;
+
+    p.det0_pi = 128;
+    p.det1_pi = 256;
+    p.det2_pi = 512;
+  } else {
+    // Default to medium ("m")
+    p.c0 = 64;
+    p.c1 = 128;
+    p.c2 = 256;
+    p.c3 = 256;
+    p.m4_in = 256;
+    p.m4_out = 512;
+    p.c5 = 512;
+    p.m6_in = 512;
+    p.m6_out = 512;
+    p.c7 = 512;
+    p.m8_in = 512;
+    p.m8_out = 512;
+
+    p.m2_c3k = true;
+    p.m2_inner_c = 64;
+    p.m4_c3k = true;
+    p.m4_inner_c = 128;
+    p.m6_c3k = true;
+    p.m6_inner_c = 256;
+    p.m8_c3k = true;
+    p.m8_inner_c = 256;
+
+    p.m10_c = 512;
+
+    p.m13_in = 1024;
+    p.m13_out = 512;
+    p.m13_c = 256;
+    p.m13_c3k = true;
+    p.m16_in = 1024;
+    p.m16_out = 256;
+    p.m16_c = 128;
+    p.m16_c3k = true;
+    p.m17_out = 256;
+    p.m19_in = 768;
+    p.m19_out = 512;
+    p.m19_c = 256;
+    p.m19_c3k = true;
+    p.m20_out = 512;
+    p.m22_in = 1024;
+    p.m22_out = 512;
+    p.m22_c = 256;
+    p.m22_c3k = true;
+
+    p.det0_pi = 256;
+    p.det1_pi = 512;
+    p.det2_pi = 512;
+  }
+
+  return p;
+}
+
 /**
  * @brief Build one Detect scale -> raw logits [1, 64+nc, H, W].
  *
  * @param s       name prefix (e.g. "det0")
  * @param pi_ch   input feature channels (256 for P3, 512 for P4/P5)
+ * @param c3      classification branch channels (max(ch[0], nc))
+ * @param nc      number of classes
  * @param in      input feature map
  * @param conv_q40  If true, eligible convs use Q4_0.
  */
-inline Tensor detectScale(const std::string &s, int pi_ch, Tensor in,
-                          bool conv_q40 = false) {
+inline Tensor detectScale(const std::string &s, int pi_ch, int c3, int nc,
+                          Tensor in, bool conv_q40 = false) {
   // box branch (cv2): pi_ch->64->64->64 (1x1 output)
   auto x = convBnSilu(s + "/cv2_0", pi_ch, 64, 3, 1, 1, in, conv_q40);
   x = convBnSilu(s + "/cv2_1", 64, 64, 3, 1, 1, x, conv_q40);
   auto box = convBias1x1(s + "/cv2_2", 64, 64, x, conv_q40);
 
-  // cls branch (cv3): depthwise-separable x2 then 1x1 (out_ch=1, never Q4_0)
+  // cls branch (cv3): depthwise-separable x2 then 1x1 (out_ch=nc, never Q4_0)
   auto c = dwConvBnSilu(s + "/cv3_0_dw", pi_ch, in);
-  c = convBnSilu(s + "/cv3_0_pw", pi_ch, 256, 1, 1, 0, c, conv_q40);
-  c = dwConvBnSilu(s + "/cv3_1_dw", 256, c);
-  c = convBnSilu(s + "/cv3_1_pw", 256, 256, 1, 1, 0, c, conv_q40);
-  auto cls = convBias1x1(s + "/cv3_2", 1, 256, c, conv_q40); // out_ch=1: FP32
+  c = convBnSilu(s + "/cv3_0_pw", pi_ch, c3, 1, 1, 0, c, conv_q40);
+  c = dwConvBnSilu(s + "/cv3_1_dw", c3, c);
+  c = convBnSilu(s + "/cv3_1_pw", c3, c3, 1, 1, 0, c, conv_q40);
+  auto cls = convBias1x1(s + "/cv3_2", nc, c3, c, conv_q40); // out_ch=nc: FP32
 
   LayerHandle cat(createLayer("concat", {nntrainer::withKey("name", s + "/out"),
                                          nntrainer::withKey("axis", 1)}));
@@ -342,41 +483,45 @@ inline Tensor concatCh(const std::string &name,
  *
  * @param conv_q40  If true, eligible group=1 convs use Q4_0.
  */
-inline Tensor buildC2PSA(const std::string &n, Tensor x,
+inline Tensor buildC2PSA(const std::string &n, int ch, Tensor x,
                          bool conv_q40 = false) {
-  auto cv1 = yolov11::convBnSilu(n + "/cv1", 512, 512, 1, 1, 0, x, conv_q40);
-  auto a = sliceCh(n + "/slice_a", 0, 256, cv1);
-  auto b = sliceCh(n + "/slice_b", 256, 512, cv1);
+  auto cv1 = yolov11::convBnSilu(n + "/cv1", ch, ch, 1, 1, 0, x, conv_q40);
+  auto a = sliceCh(n + "/slice_a", 0, ch / 2, cv1);
+  auto b = sliceCh(n + "/slice_b", ch / 2, ch, cv1);
 
-  auto qkv = yolov11::convBnOnly(n + "/qkv", 256, 512, 1, 1, 0, b, conv_q40);
+  auto qkv = yolov11::convBnOnly(n + "/qkv", ch / 2, ch, 1, 1, 0, b, conv_q40);
 
   std::vector<Tensor> v_parts;
+  int head_dim = ch / 4;
+  int v_dim = head_dim / 2;
   for (int h = 0; h < 4; ++h)
-    v_parts.push_back(sliceCh(n + "/slice_v" + std::to_string(h), h * 128 + 64,
-                              h * 128 + 128, qkv));
+    v_parts.push_back(sliceCh(n + "/slice_v" + std::to_string(h),
+                              h * head_dim + v_dim, h * head_dim + head_dim,
+                              qkv));
   LayerHandle vcat(
     createLayer("concat", {nntrainer::withKey("name", n + "/vcat"),
                            nntrainer::withKey("axis", 1)}));
   auto v = vcat(v_parts);
-  auto pe = yolov11::dwConvBnOnly(n + "/pe", 256, v);
+  auto pe = yolov11::dwConvBnOnly(n + "/pe", ch / 2, v);
 
   LayerHandle att(
     createLayer("psa_attention", {nntrainer::withKey("name", n + "/attn")}));
   auto attn = att(qkv);
   auto attn_pe = addT(n + "/add_pe", attn, pe);
-  auto proj =
-    yolov11::convBnOnly(n + "/proj", 256, 256, 1, 1, 0, attn_pe, conv_q40);
+  auto proj = yolov11::convBnOnly(n + "/proj", ch / 2, ch / 2, 1, 1, 0, attn_pe,
+                                  conv_q40);
   auto b1 = addT(n + "/res1", b, proj);
 
-  auto ffn0 = yolov11::convBnSilu(n + "/ffn0", 256, 512, 1, 1, 0, b1, conv_q40);
+  auto ffn0 =
+    yolov11::convBnSilu(n + "/ffn0", ch / 2, ch, 1, 1, 0, b1, conv_q40);
   auto ffn1 =
-    yolov11::convBnOnly(n + "/ffn1", 512, 256, 1, 1, 0, ffn0, conv_q40);
+    yolov11::convBnOnly(n + "/ffn1", ch, ch / 2, 1, 1, 0, ffn0, conv_q40);
   auto b2 = addT(n + "/res2", b1, ffn1);
 
   LayerHandle cat(createLayer("concat", {nntrainer::withKey("name", n + "/cat"),
                                          nntrainer::withKey("axis", 1)}));
   auto cc = cat({a, b2});
-  return yolov11::convBnSilu(n + "/cv2", 512, 512, 1, 1, 0, cc, conv_q40);
+  return yolov11::convBnSilu(n + "/cv2", ch, ch, 1, 1, 0, cc, conv_q40);
 }
 
 // ===== Top-level whole-network builders =====
@@ -386,25 +531,29 @@ inline Tensor buildC2PSA(const std::string &n, Tensor x,
  *
  * Also outputs m4 and m6 (FPN skip connections).
  *
- * @param xIn       Input symbolic tensor [1, 3, 832, 832]
+ * @param xIn       Input symbolic tensor [1, 3, imgsz, imgsz]
  * @param m4_out    [out] C3k2 block 4 output (P3 skip)
  * @param m6_out    [out] C3k2 block 6 output (P4 skip)
+ * @param p         YOLOv11 scaling and layout parameters
  * @param conv_q40  If true, eligible convs use Q4_0.
  * @return m10 (C2PSA output, P5 feature)
  */
 inline Tensor buildBackbone(Tensor xIn, Tensor &m4_out, Tensor &m6_out,
-                            bool conv_q40 = false) {
-  auto h = yolov11::convBnSilu("conv0", 3, 64, 3, 2, 1, xIn, conv_q40);
-  h = yolov11::convBnSilu("conv1", 64, 128, 3, 2, 1, h, conv_q40);
-  h = yolov11::c3k2Block("m2", 128, 256, 64, h, conv_q40);
-  h = yolov11::convBnSilu("conv3", 256, 256, 3, 2, 1, h, conv_q40);
-  m4_out = yolov11::c3k2Block("m4", 256, 512, 128, h, conv_q40);
-  h = yolov11::convBnSilu("conv5", 512, 512, 3, 2, 1, m4_out, conv_q40);
-  m6_out = yolov11::c3k2Block("m6", 512, 512, 256, h, conv_q40);
-  h = yolov11::convBnSilu("conv7", 512, 512, 3, 2, 1, m6_out, conv_q40);
-  h = yolov11::c3k2Block("m8", 512, 512, 256, h, conv_q40);
-  h = yolov11::sppfBlock("m9", 512, h, conv_q40);
-  return buildC2PSA("m10", h, conv_q40);
+                            const YOLOv11Params &p, bool conv_q40 = false) {
+  auto h = yolov11::convBnSilu("conv0", 3, p.c0, 3, 2, 1, xIn, conv_q40);
+  h = yolov11::convBnSilu("conv1", p.c0, p.c1, 3, 2, 1, h, conv_q40);
+  h = yolov11::c3k2Block("m2", p.c1, p.c2, p.m2_inner_c, p.m2_c3k, h, conv_q40);
+  h = yolov11::convBnSilu("conv3", p.c2, p.c3, 3, 2, 1, h, conv_q40);
+  m4_out = yolov11::c3k2Block("m4", p.c3, p.m4_out, p.m4_inner_c, p.m4_c3k, h,
+                              conv_q40);
+  h = yolov11::convBnSilu("conv5", p.m4_out, p.c5, 3, 2, 1, m4_out, conv_q40);
+  m6_out = yolov11::c3k2Block("m6", p.c5, p.m6_out, p.m6_inner_c, p.m6_c3k, h,
+                              conv_q40);
+  h = yolov11::convBnSilu("conv7", p.m6_out, p.c7, 3, 2, 1, m6_out, conv_q40);
+  h = yolov11::c3k2Block("m8", p.c7, p.m8_out, p.m8_inner_c, p.m8_c3k, h,
+                         conv_q40);
+  h = yolov11::sppfBlock("m9", p.m8_out, h, conv_q40);
+  return buildC2PSA("m10", p.m10_c, h, conv_q40);
 }
 
 /**
@@ -413,30 +562,38 @@ inline Tensor buildBackbone(Tensor xIn, Tensor &m4_out, Tensor &m6_out,
  * @param m4       C3k2 block 4 output (P3 skip from backbone)
  * @param m6       C3k2 block 6 output (P4 skip from backbone)
  * @param m10      C2PSA output (P5 feature from backbone)
+ * @param p        YOLOv11 scaling and layout parameters
  * @param conv_q40 If true, eligible convs use Q4_0.
- * @return {P3, P4, P5} raw detection logits [1, 65, H, W] each
+ * @return {P3, P4, P5} raw detection logits [1, 64+nc, H, W] each
  */
 inline std::vector<Tensor> buildHead(Tensor m4, Tensor m6, Tensor m10,
+                                     const YOLOv11Params &p,
                                      bool conv_q40 = false) {
   auto m11 = upsampleX2("m11", m10);
   auto m12 = concatCh("m12", {m11, m6});
-  auto m13 = yolov11::c3k2Block("m13", 1024, 512, 256, m12, conv_q40);
+  auto m13 = yolov11::c3k2Block("m13", p.m13_in, p.m13_out, p.m13_c, p.m13_c3k,
+                                m12, conv_q40);
 
   auto m14 = upsampleX2("m14", m13);
   auto m15 = concatCh("m15", {m14, m4});
-  auto m16 = yolov11::c3k2Block("m16", 1024, 256, 128, m15, conv_q40);
+  auto m16 = yolov11::c3k2Block("m16", p.m16_in, p.m16_out, p.m16_c, p.m16_c3k,
+                                m15, conv_q40);
 
-  auto m17 = yolov11::convBnSilu("m17", 256, 256, 3, 2, 1, m16, conv_q40);
+  auto m17 =
+    yolov11::convBnSilu("m17", p.m16_out, p.m17_out, 3, 2, 1, m16, conv_q40);
   auto m18 = concatCh("m18", {m17, m13});
-  auto m19 = yolov11::c3k2Block("m19", 768, 512, 256, m18, conv_q40);
+  auto m19 = yolov11::c3k2Block("m19", p.m19_in, p.m19_out, p.m19_c, p.m19_c3k,
+                                m18, conv_q40);
 
-  auto m20 = yolov11::convBnSilu("m20", 512, 512, 3, 2, 1, m19, conv_q40);
+  auto m20 =
+    yolov11::convBnSilu("m20", p.m19_out, p.m20_out, 3, 2, 1, m19, conv_q40);
   auto m21 = concatCh("m21", {m20, m10});
-  auto m22 = yolov11::c3k2Block("m22", 1024, 512, 256, m21, conv_q40);
+  auto m22 = yolov11::c3k2Block("m22", p.m22_in, p.m22_out, p.m22_c, p.m22_c3k,
+                                m21, conv_q40);
 
-  return {detectScale("det0", 256, m16, conv_q40),
-          detectScale("det1", 512, m19, conv_q40),
-          detectScale("det2", 512, m22, conv_q40)};
+  return {detectScale("det0", p.det0_pi, p.det0_pi, p.nc, m16, conv_q40),
+          detectScale("det1", p.det1_pi, p.det0_pi, p.nc, m19, conv_q40),
+          detectScale("det2", p.det2_pi, p.det0_pi, p.nc, m22, conv_q40)};
 }
 
 } // namespace yolov11
