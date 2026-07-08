@@ -14,9 +14,6 @@
  */
 
 #include "tensor_api_impl.h"
-
-#include <cstdio>
-#include <cstdlib>
 #include <model.h>
 
 #include <layer_context.h>
@@ -512,9 +509,6 @@ int Model::compile(std::vector<Tensor> &inputs, std::vector<Tensor> &outputs,
       input_props.push_back(std::string("input_dtype=") +
                             dtype_to_str(dim.getDataType()));
     }
-    if (std::getenv("NNTR_INPUT_DTYPE_PROBE"))
-      fprintf(stderr, "[GRAPH_EMIT] inp_name=%s dim.dtype=%d props.size=%zu\n",
-              inp_name.c_str(), (int)dim.getDataType(), input_props.size());
     auto input_layer = createLayer("input", input_props);
     status = addLayer(std::move(input_layer));
     if (status != ML_ERROR_NONE) {
