@@ -2160,13 +2160,15 @@ void nntr_gemm_q8_0_q8_0_fp16(int n, _FP16 *__restrict s, size_t bs,
 }
 
 // Interleaved (q8_0x4) SMMLA GEMM: both weight and activation are pre-packed to
-// block_q8_0x4 (4 rows interleaved, byte layout qs[32*sub + row*8 + c], mirroring
+// block_q8_0x4 (4 rows interleaved, byte layout qs[32*sub + row*8 + c],
+// mirroring
 // __ggml_quantize_mat_q8_0_4x8 and the offline Python repack_q8_0). This is the
-// speed variant of nntr_gemm_q8_0_q8_0_fp16: the register-blocked 4x4 compute is
-// byte-for-byte the same, but each i8mm operand is now a single contiguous
-// vld1q_s8 instead of a vcombine of two scattered per-row vld1_s8 loads -- fewer
-// load micro-ops and cache-friendly streaming, matching the proven Q4_0 x8 path.
-// Requires nr % 4 == 0 (front-end pads the M-tail); nc%4 handled scalar.
+// speed variant of nntr_gemm_q8_0_q8_0_fp16: the register-blocked 4x4 compute
+// is byte-for-byte the same, but each i8mm operand is now a single contiguous
+// vld1q_s8 instead of a vcombine of two scattered per-row vld1_s8 loads --
+// fewer load micro-ops and cache-friendly streaming, matching the proven Q4_0
+// x8 path. Requires nr % 4 == 0 (front-end pads the M-tail); nc%4 handled
+// scalar.
 void nntr_gemm_q8_0_q8_0_4x4_fp16(int n, _FP16 *__restrict s, size_t bs,
                                   const void *__restrict vx,
                                   const void *__restrict vy, int nr, int nc) {
@@ -2199,8 +2201,9 @@ void nntr_gemm_q8_0_q8_0_4x4_fp16(int n, _FP16 *__restrict s, size_t bs,
   const int nc4 = nc & ~3;
   const int nr16 = nr & ~15;
 
-  // Fold a 4x4 int32 tile (two vmmla acc pairs for one act super-block) into the
-  // four FP row accumulators. Shared by the 8-row main loop and the 4-row tail.
+  // Fold a 4x4 int32 tile (two vmmla acc pairs for one act super-block) into
+  // the four FP row accumulators. Shared by the 8-row main loop and the 4-row
+  // tail.
   auto fold4 = [](int32x4_t acc01_lo, int32x4_t acc01_hi, int32x4_t acc23_lo,
                   int32x4_t acc23_hi, float32x4_t da, float32x4_t db,
                   float32x4_t &f0, float32x4_t &f1, float32x4_t &f2,
@@ -2213,10 +2216,14 @@ void nntr_gemm_q8_0_q8_0_4x4_fp16(int n, _FP16 *__restrict s, size_t bs,
       vcombine_s32(vget_low_s32(acc23_lo), vget_low_s32(acc23_hi));
     const int32x4_t ri3 =
       vcombine_s32(vget_high_s32(acc23_lo), vget_high_s32(acc23_hi));
-    f0 = vfmaq_f32(f0, vmulq_n_f32(vcvtq_f32_s32(ri0), vgetq_lane_f32(da, 0)), db);
-    f1 = vfmaq_f32(f1, vmulq_n_f32(vcvtq_f32_s32(ri1), vgetq_lane_f32(da, 1)), db);
-    f2 = vfmaq_f32(f2, vmulq_n_f32(vcvtq_f32_s32(ri2), vgetq_lane_f32(da, 2)), db);
-    f3 = vfmaq_f32(f3, vmulq_n_f32(vcvtq_f32_s32(ri3), vgetq_lane_f32(da, 3)), db);
+    f0 =
+      vfmaq_f32(f0, vmulq_n_f32(vcvtq_f32_s32(ri0), vgetq_lane_f32(da, 0)), db);
+    f1 =
+      vfmaq_f32(f1, vmulq_n_f32(vcvtq_f32_s32(ri1), vgetq_lane_f32(da, 1)), db);
+    f2 =
+      vfmaq_f32(f2, vmulq_n_f32(vcvtq_f32_s32(ri2), vgetq_lane_f32(da, 2)), db);
+    f3 =
+      vfmaq_f32(f3, vmulq_n_f32(vcvtq_f32_s32(ri3), vgetq_lane_f32(da, 3)), db);
   };
   auto store4 = [&](int row, int j, float32x4_t f) {
     float tmp[4];
@@ -2227,8 +2234,9 @@ void nntr_gemm_q8_0_q8_0_4x4_fp16(int n, _FP16 *__restrict s, size_t bs,
 
   // Main loop: 16 rows (four act super-blocks) share ONE set of 8 weight
   // registers per block, matching ggml's Q4 weight reuse (16x vs a 4-row tile's
-  // 4x). Per super-block only 4 int32 accumulators are live, folded immediately,
-  // so 16 FP accumulators + 8 weight regs stay resident without spilling.
+  // 4x). Per super-block only 4 int32 accumulators are live, folded
+  // immediately, so 16 FP accumulators + 8 weight regs stay resident without
+  // spilling.
   for (int m = 0; m < nr16; m += 16) {
     const block_q8_0x4 *aA = a_sbase + (size_t)(m / 4 + 0) * nb;
     const block_q8_0x4 *aB = a_sbase + (size_t)(m / 4 + 1) * nb;
@@ -2261,9 +2269,10 @@ void nntr_gemm_q8_0_q8_0_4x4_fp16(int n, _FP16 *__restrict s, size_t bs,
 
         const float32x4_t db = vcvt_f32_f16(vld1_f16((const __fp16 *)b[bi].d));
 
-        // Compute one 4-row super-block against the resident weights, then fold.
-        auto do_sb = [&](const block_q8_0x4 *a, float32x4_t &f0, float32x4_t &f1,
-                         float32x4_t &f2, float32x4_t &f3) {
+        // Compute one 4-row super-block against the resident weights, then
+        // fold.
+        auto do_sb = [&](const block_q8_0x4 *a, float32x4_t &f0,
+                         float32x4_t &f1, float32x4_t &f2, float32x4_t &f3) {
           int32x4_t c00 = vdupq_n_s32(0), c01 = vdupq_n_s32(0);
           int32x4_t c10 = vdupq_n_s32(0), c11 = vdupq_n_s32(0);
           const int8x16_t r0a = vld1q_s8(a[bi].qs + 0);
@@ -2290,7 +2299,8 @@ void nntr_gemm_q8_0_q8_0_4x4_fp16(int n, _FP16 *__restrict s, size_t bs,
           c01 = vmmlaq_s32(c01, r3a, w3b);
           c10 = vmmlaq_s32(c10, r3b, w3a);
           c11 = vmmlaq_s32(c11, r3b, w3b);
-          const float32x4_t da = vcvt_f32_f16(vld1_f16((const __fp16 *)a[bi].d));
+          const float32x4_t da =
+            vcvt_f32_f16(vld1_f16((const __fp16 *)a[bi].d));
           fold4(c00, c01, c10, c11, da, db, f0, f1, f2, f3);
         };
 
@@ -2325,11 +2335,13 @@ void nntr_gemm_q8_0_q8_0_4x4_fp16(int n, _FP16 *__restrict s, size_t bs,
       const block_q8_0x4 *ap[4] = {aA, aB, aC, aD};
       for (int sb = 0; sb < 4; ++sb)
         for (int rr = 0; rr < 4; ++rr)
-          s[(size_t)(m + sb * 4 + rr) * bs + j] = (_FP16)dot_one(ap[sb], rr, b, wr);
+          s[(size_t)(m + sb * 4 + rr) * bs + j] =
+            (_FP16)dot_one(ap[sb], rr, b, wr);
     }
   }
 
-  // M-tail: remaining rows (nr - nr16), guaranteed multiple of 4, in 4-row tiles.
+  // M-tail: remaining rows (nr - nr16), guaranteed multiple of 4, in 4-row
+  // tiles.
   for (int m = nr16; m < nr; m += 4) {
     const block_q8_0x4 *a = a_sbase + (size_t)(m / 4) * nb;
 
@@ -2427,10 +2439,14 @@ void nntr_gemm_q8_0_4x8_q8_0_fp16(int n, NNTR_GGML_FP16 *__restrict s,
       vcombine_s32(vget_low_s32(acc23_lo), vget_low_s32(acc23_hi));
     const int32x4_t ri3 =
       vcombine_s32(vget_high_s32(acc23_lo), vget_high_s32(acc23_hi));
-    f0 = vfmaq_f32(f0, vmulq_n_f32(vcvtq_f32_s32(ri0), vgetq_lane_f32(da, 0)), db);
-    f1 = vfmaq_f32(f1, vmulq_n_f32(vcvtq_f32_s32(ri1), vgetq_lane_f32(da, 1)), db);
-    f2 = vfmaq_f32(f2, vmulq_n_f32(vcvtq_f32_s32(ri2), vgetq_lane_f32(da, 2)), db);
-    f3 = vfmaq_f32(f3, vmulq_n_f32(vcvtq_f32_s32(ri3), vgetq_lane_f32(da, 3)), db);
+    f0 =
+      vfmaq_f32(f0, vmulq_n_f32(vcvtq_f32_s32(ri0), vgetq_lane_f32(da, 0)), db);
+    f1 =
+      vfmaq_f32(f1, vmulq_n_f32(vcvtq_f32_s32(ri1), vgetq_lane_f32(da, 1)), db);
+    f2 =
+      vfmaq_f32(f2, vmulq_n_f32(vcvtq_f32_s32(ri2), vgetq_lane_f32(da, 2)), db);
+    f3 =
+      vfmaq_f32(f3, vmulq_n_f32(vcvtq_f32_s32(ri3), vgetq_lane_f32(da, 3)), db);
   };
   auto store4 = [&](int row, int j, float32x4_t f) {
     float tmp[4];
@@ -2504,7 +2520,8 @@ void nntr_gemm_q8_0_4x8_q8_0_fp16(int n, NNTR_GGML_FP16 *__restrict s,
           c01 = vmmlaq_s32(c01, a01_3, w23_3);
           c10 = vmmlaq_s32(c10, a23_3, w01_3);
           c11 = vmmlaq_s32(c11, a23_3, w23_3);
-          const float32x4_t da = vcvt_f32_f16(vld1_f16((const __fp16 *)a[bi].d));
+          const float32x4_t da =
+            vcvt_f32_f16(vld1_f16((const __fp16 *)a[bi].d));
           fold4(c00, c01, c10, c11, da, db, f0, f1, f2, f3);
         };
 

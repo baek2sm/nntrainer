@@ -834,15 +834,16 @@ void __ggml_q8_0_q8_0_indirect_GEMM_fp16(const unsigned int M,
                                          const ConvGatherParams &geom,
                                          const void *B, const unsigned int ldb,
                                          _FP16 *C, const unsigned int ldc) {
-  /// Interleaved (q8_0x4) SMMLA path, mirroring the proven Q4_0 x8 FP16 indirect
-  /// GEMM. The activation is gathered in 4-row tiles and quantized to the
-  /// interleaved block_q8_0x4 layout (same __ggml_quantize_mat_q8_0_4x8 the Q4_0
-  /// path uses), and the weight is consumed pre-interleaved to q8_0x4 offline
-  /// (Python repack_q8_0). A q8_0x4 super-block is exactly 4 plain block_q8_0
-  /// rows of bytes, so the per-column weight stride B_step = nb*sizeof(block_q8_0)
-  /// lands on 4-col super-block boundaries -- identical addressing trick to the
-  /// Q4_0 path. Both operands then feed the register-blocked 4x4 SMMLA kernel
-  /// with single contiguous loads (see nntr_gemm_q8_0_q8_0_4x4_fp16).
+  /// Interleaved (q8_0x4) SMMLA path, mirroring the proven Q4_0 x8 FP16
+  /// indirect GEMM. The activation is gathered in 4-row tiles and quantized to
+  /// the interleaved block_q8_0x4 layout (same __ggml_quantize_mat_q8_0_4x8 the
+  /// Q4_0 path uses), and the weight is consumed pre-interleaved to q8_0x4
+  /// offline (Python repack_q8_0). A q8_0x4 super-block is exactly 4 plain
+  /// block_q8_0 rows of bytes, so the per-column weight stride B_step =
+  /// nb*sizeof(block_q8_0) lands on 4-col super-block boundaries -- identical
+  /// addressing trick to the Q4_0 path. Both operands then feed the
+  /// register-blocked 4x4 SMMLA kernel with single contiguous loads (see
+  /// nntr_gemm_q8_0_q8_0_4x4_fp16).
   auto &tm = ThreadManager::Global();
   (void)ldb;
   (void)ldc;
@@ -856,8 +857,8 @@ void __ggml_q8_0_q8_0_indirect_GEMM_fp16(const unsigned int M,
 
   // 1) Fused gather + Q8_0 quantize to interleaved q8_0x4, 4 rows at a time.
   //    To match the highly optimized Q4_0 path's chunked parallel_for:
-  //    we parallelize over larger chunks (QCHUNK = 64 rows / 16 tiles) instead of
-  //    individual 4-row groups, reducing thread manager dispatch overheads
+  //    we parallelize over larger chunks (QCHUNK = 64 rows / 16 tiles) instead
+  //    of individual 4-row groups, reducing thread manager dispatch overheads
   //    drastically, and allocating our reusable tile buffer once per thread.
   std::vector<char> QA((size_t)M4c * qa_4_rows_size);
   char *QA_ptr = QA.data();
@@ -871,8 +872,8 @@ void __ggml_q8_0_q8_0_indirect_GEMM_fp16(const unsigned int M,
       std::vector<_FP16> tile((size_t)4 * K); // one quantize tile, reused
       for (unsigned int r = r0; r < r1; r += 4) {
         gather_conv_act_rows_fp16(tile.data(), in, geom, (int)r, 4);
-        __ggml_quantize_mat_q8_0_4x8(tile.data(),
-                                     QA_ptr + (size_t)(r / 4) * qa_4_rows_size, K);
+        __ggml_quantize_mat_q8_0_4x8(
+          tile.data(), QA_ptr + (size_t)(r / 4) * qa_4_rows_size, K);
       }
     });
   }
@@ -888,8 +889,8 @@ void __ggml_q8_0_q8_0_indirect_GEMM_fp16(const unsigned int M,
   // 2) Tiled 4x4 SMMLA GEMM over the 4-row-divisible part, direct to C.
   const size_t B_step = (size_t)nb * sizeof(block_q8_0);
   const size_t A_step = (size_t)nb * sizeof(block_q8_0); // 4 plain rows / super
-  const unsigned int row_chunk_size = 16; // multiple of 4
-  const unsigned int col_chunk_size = 16; // multiple of 4
+  const unsigned int row_chunk_size = 16;                // multiple of 4
+  const unsigned int col_chunk_size = 16;                // multiple of 4
 
   if (Mfull > 0) {
     const size_t row_loop = (Mfull + row_chunk_size - 1) / row_chunk_size;

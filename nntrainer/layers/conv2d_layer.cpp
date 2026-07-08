@@ -54,9 +54,9 @@ static inline void convApplySwishInplace(T *data, size_t n) {
   auto &tm = ThreadManager::Global();
   const size_t nthreads = std::max<size_t>(1, tm.getComputeThreadCount());
   const size_t chunk = (n + nthreads - 1) / nthreads;
-  
+
   static const bool use_approx = []() {
-    if (const char* env_p = std::getenv("YOLO_APPROX_SILU")) {
+    if (const char *env_p = std::getenv("YOLO_APPROX_SILU")) {
       return std::string(env_p) == "1";
     }
     return false;
@@ -70,27 +70,33 @@ static inline void convApplySwishInplace(T *data, size_t n) {
     size_t i = start;
 
     if (use_approx) {
-#if defined(__ARM_NEON)
+#if defined(__ARM_NEON) && defined(ENABLE_FP16)
       if constexpr (std::is_same_v<T, _FP16>) {
         const float32x4_t v_three = vdupq_n_f32(3.0f);
         const float32x4_t v_six_inv = vdupq_n_f32(1.0f / 6.0f);
         const float32x4_t v_zero = vdupq_n_f32(0.0f);
         const float32x4_t v_six = vdupq_n_f32(6.0f);
-        
+
         for (; i + 7 < end; i += 8) {
-          float16x8_t vx = vld1q_f16(reinterpret_cast<const __fp16*>(&data[i]));
+          float16x8_t vx =
+            vld1q_f16(reinterpret_cast<const __fp16 *>(&data[i]));
 
           float32x4_t vx_lo = vcvt_f32_f16(vget_low_f16(vx));
           float32x4_t v_add_lo = vaddq_f32(vx_lo, v_three);
-          float32x4_t v_relu6_lo = vminq_f32(vmaxq_f32(v_add_lo, v_zero), v_six);
-          float32x4_t vres_lo = vmulq_f32(vmulq_f32(vx_lo, v_relu6_lo), v_six_inv);
+          float32x4_t v_relu6_lo =
+            vminq_f32(vmaxq_f32(v_add_lo, v_zero), v_six);
+          float32x4_t vres_lo =
+            vmulq_f32(vmulq_f32(vx_lo, v_relu6_lo), v_six_inv);
 
           float32x4_t vx_hi = vcvt_f32_f16(vget_high_f16(vx));
           float32x4_t v_add_hi = vaddq_f32(vx_hi, v_three);
-          float32x4_t v_relu6_hi = vminq_f32(vmaxq_f32(v_add_hi, v_zero), v_six);
-          float32x4_t vres_hi = vmulq_f32(vmulq_f32(vx_hi, v_relu6_hi), v_six_inv);
+          float32x4_t v_relu6_hi =
+            vminq_f32(vmaxq_f32(v_add_hi, v_zero), v_six);
+          float32x4_t vres_hi =
+            vmulq_f32(vmulq_f32(vx_hi, v_relu6_hi), v_six_inv);
 
-          vst1q_f16(reinterpret_cast<__fp16*>(&data[i]), vcombine_f16(vcvt_f16_f32(vres_lo), vcvt_f16_f32(vres_hi)));
+          vst1q_f16(reinterpret_cast<__fp16 *>(&data[i]),
+                    vcombine_f16(vcvt_f16_f32(vres_lo), vcvt_f16_f32(vres_hi)));
         }
       }
 #endif
