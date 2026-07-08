@@ -1467,16 +1467,6 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       convApplySwishInplace(hidden_.getData<float>(), n);
     }
   }
-
-  if (std::getenv("NNTR_CONV_PROBE") && context.getName() == "conv0/conv") {
-    std::cerr << "[CONV_PROBE] " << context.getName()
-              << " format=" << (int)hidden_.getFormat()
-              << " C=" << out_dim.channel() << " H=" << out_dim.height()
-              << " W=" << out_dim.width() << std::endl;
-    const float *p = hidden_.getData<float>();
-    for (int i = 0; i < 8; ++i)
-      std::cerr << "  [" << i << "]=" << p[i] << std::endl;
-  }
 }
 
 void Conv2DLayer::calcDerivative(RunLayerContext &context) {
