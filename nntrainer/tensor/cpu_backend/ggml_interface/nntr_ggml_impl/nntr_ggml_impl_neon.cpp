@@ -2162,13 +2162,13 @@ void nntr_gemm_q8_0_q8_0_fp16(int n, _FP16 *__restrict s, size_t bs,
 // Interleaved (q8_0x4) SMMLA GEMM: both weight and activation are pre-packed to
 // block_q8_0x4 (4 rows interleaved, byte layout qs[32*sub + row*8 + c],
 // mirroring
-// __ggml_quantize_mat_q8_0_4x8 and the offline Python repack_q8_0). This is the
-// speed variant of nntr_gemm_q8_0_q8_0_fp16: the register-blocked 4x4 compute
-// is byte-for-byte the same, but each i8mm operand is now a single contiguous
-// vld1q_s8 instead of a vcombine of two scattered per-row vld1_s8 loads --
-// fewer load micro-ops and cache-friendly streaming, matching the proven Q4_0
-// x8 path. Requires nr % 4 == 0 (front-end pads the M-tail); nc%4 handled
-// scalar.
+// __ggml_quantize_mat_q8_0_4x8 and the C++ repack_q8_0 done at weight-export
+// time by Conv2DLayer::save). This is the speed variant of
+// nntr_gemm_q8_0_q8_0_fp16: the register-blocked 4x4 compute is byte-for-byte
+// the same, but each i8mm operand is now a single contiguous vld1q_s8 instead
+// of a vcombine of two scattered per-row vld1_s8 loads -- fewer load micro-ops
+// and cache-friendly streaming, matching the proven Q4_0 x8 path. Requires
+// nr % 4 == 0 (front-end pads the M-tail); nc%4 handled scalar.
 void nntr_gemm_q8_0_q8_0_4x4_fp16(int n, _FP16 *__restrict s, size_t bs,
                                   const void *__restrict vx,
                                   const void *__restrict vy, int nr, int nc) {

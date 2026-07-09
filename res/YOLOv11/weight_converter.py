@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-@file convert_weights.py
+@file weight_converter.py
 @brief Convert YOLOv11m ultralytics (.pt) weights into a single nntrainer-compatible
 safetensors file, with tensor names matching the nntrainer model's weight names
-(as built by Applications/CausalLM/models/YOLOv11/jni/main.cpp). The example
-then loads everything with one call: model->load(file, SAFETENSORS).
+(as built by the Yolov11Transformer Factory-registered model class,
+Applications/CausalLM/models/YOLOv11/yolov11_transformer.cpp). The model then
+loads everything with one call: model->load(file, SAFETENSORS).
 
 Inference-only: Conv+BatchNorm pairs are fused (ultralytics model.fuse()) so
 each Conv module exports a single biased convolution and no BatchNorm tensors.
@@ -20,7 +21,7 @@ Naming scheme (matches nntrainer Weight::getName()):
 (depthwise convolution is a grouped conv2d, groups == channels.)
 
 Usage:
-  python convert_weights.py --weights v11m_832rect_best.pt --out ../res/yolov11m.safetensors
+  python weight_converter.py --weights v11m_832rect_best.pt --out yolov11m.safetensors
 """
 import os
 import json

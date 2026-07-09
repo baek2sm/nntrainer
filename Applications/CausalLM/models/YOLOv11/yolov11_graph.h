@@ -4,21 +4,22 @@
  *
  * @file   yolov11_graph.h
  * @date   25 June 2026
+ * @see    https://github.com/nnstreamer/nntrainer
+ * @author Seungbaek Hong <sb92.hong@samsung.com>
+ * @bug    No known bugs except for NYI items
  * @brief  YOLOv11 graph block builders (inline, header-only).
  *
- * Extracted from main.cpp so the quantization-aware model class
- * (YOLOv11Model) can reuse the same graph construction without
- * duplicating code.
+ * Shared by the Yolov11Transformer model class so the Factory-registered,
+ * config-driven model and the quantizable-layer enumeration rebuild the same
+ * graph without duplicating code.
  *
  * Usage:
  *   #include "yolov11_graph.h"
  *   auto cfg = yolov11::ModelConfig::v11m();
- *   bool q40 = (std::getenv("YOLO_CONV_Q40") != nullptr);
+ *   bool q40 = (CONV_DTYPE_STR == "Q4_0");  // set from nntr_config.json
  *   Tensor m4, m6;
  *   auto m10 = yolov11::buildBackbone(input, m4, m6, cfg, q40);
  *   auto outputs = yolov11::buildHead(m4, m6, m10, nc, cfg, q40);
- *
- * @author Seungbaek Hong <sb92.hong@samsung.com>
  */
 
 #ifndef __YOLOV11_GRAPH_H__
@@ -30,19 +31,32 @@
 #include <layer.h>
 #include <model.h>
 #include <tensor_api.h>
+#include <util_func.h> // nntrainer::withKey
 
 using ml::train::createLayer;
-using ml::train::LayerHandle;
 using ml::train::Tensor;
 
+// LayerHandle is imported inside namespace yolov11 (below) rather than at
+// global scope: a global `using LayerHandle = ...` here would collide with the
+// legacy global `using LayerHandle = std::shared_ptr<ml::train::Layer>` in
+// llm_util.hpp (a different type) when a TU includes both.
+
 namespace yolov11 {
+
+// Resolve the YOLO-graph layer handle type at *this* namespace scope only.
+// ml::train::LayerHandle (from tensor_api.h) is a distinct type from the
+// legacy global `using LayerHandle = std::shared_ptr<ml::train::Layer>` in
+// llm_util.hpp — importing it here (not at global scope) lets the graph
+// builders below use the short name without colliding with that alias when a
+// TU pulls in both headers.
+using ml::train::LayerHandle;
 
 // When set (non-null), the conv block builders append the layer name of every
 // Q4_0-eligible conv filter (out_ch and in_ch*k*k both 32-aligned) to this
 // sink. The offline quantizer (main.cpp --quantize mode) uses it to build the
 // per-layer dtype map for model->save() without enumerating the compiled
 // graph. Default null = no collection. Eligibility here MUST match the
-// conv_q40 gate below and quantize_q4_0_conv.py.
+// conv_q40 gate below and Conv2DLayer::save's Q4_0/Q8_0 block-alignment guard.
 inline std::vector<std::string> *&quantConvSink() {
   static std::vector<std::string> *sink = nullptr;
   return sink;
@@ -121,7 +135,7 @@ struct ModelConfig {
  * @param input     Input symbolic tensor
  * @param conv_q40  If true, eligible convs get weight_dtype=Q4_0.
  *                  Eligibility: groups==1 && out_ch>1 && out_ch%32==0 &&
- *                  (in_ch*k*k)%32==0 (must match quantize_q4_0_conv.py).
+ *                  (in_ch*k*k)%32==0 (must match Conv2DLayer::save's guard).
  * @return Output symbolic tensor after conv+SiLU
  */
 inline Tensor convBnSilu(const std::string &name, int in_ch, int out_ch, int k,

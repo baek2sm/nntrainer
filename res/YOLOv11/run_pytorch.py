@@ -13,7 +13,8 @@ Examples:
 
 It writes the preprocessed input to --save-input (default ../res/input_run.bin)
 and prints detections [x1,y1,x2,y2,conf,cls] (xyxy pixels at the 832 scale).
-Run the nntrainer side on the SAME input with:  ./run_nntrainer.sh ../res/input_run.bin
+Run the nntrainer side on the SAME input with:
+  nntr_causallm <model_dir>   # pass input_run.bin as the prompt path in nntr_config.json
 """
 import argparse
 import os

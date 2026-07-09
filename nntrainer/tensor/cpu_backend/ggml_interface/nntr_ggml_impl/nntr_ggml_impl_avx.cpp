@@ -22,6 +22,7 @@
 #include <cstring>
 #include <math.h>
 #include <stddef.h>
+#include <stdexcept>
 #include <stdint.h>
 #include <tensor_dim.h>
 
@@ -3757,3 +3758,29 @@ void nntr_gemv_q8_0_q8_0(int n, float *__restrict s, size_t bs,
   (void)nr;
   nntr_gemm_q8_0_q8_0(n, s, bs, vx, vy, 1, nc);
 }
+
+#ifdef ENABLE_FP16
+// ============================================================================
+// Q8_0 x Q8_0 GEMM, FP16 output (register-blocked 4x4 SMMLA). The real kernel
+// is NEON-only (nntr_ggml_impl_neon.cpp); on x86 there is no FP16 int8 path.
+// This stub resolves the link reference from ggml_interface_fp16.cpp so the
+// FP16 build links on x86; callers gate execution on the
+// supports_gemm_q8_0_indirect_conv_* hooks, which return false on x86, so the
+// stub is never reached at runtime. Mirrors the FP32 nntr_gemm_q8_0_q8_0
+// surface above and the fallback NYI pattern (nntr_ggml_impl_fallback.cpp).
+// ============================================================================
+void nntr_gemm_q8_0_q8_0_4x4_fp16(int n, NNTR_GGML_FP16 *__restrict s,
+                                  size_t bs, const void *__restrict vx,
+                                  const void *__restrict vy, int nr, int nc) {
+  (void)n;
+  (void)s;
+  (void)bs;
+  (void)vx;
+  (void)vy;
+  (void)nr;
+  (void)nc;
+  throw std::runtime_error(
+    "NYI: nntr_gemm_q8_0_q8_0_4x4_fp16 on x86 - FP16 Q8_0 GEMM is ARM/NEON "
+    "only; callers must gate on supports_gemm_q8_0_indirect_conv_q8_0()");
+}
+#endif // ENABLE_FP16

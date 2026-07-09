@@ -837,13 +837,13 @@ void __ggml_q8_0_q8_0_indirect_GEMM_fp16(const unsigned int M,
   /// Interleaved (q8_0x4) SMMLA path, mirroring the proven Q4_0 x8 FP16
   /// indirect GEMM. The activation is gathered in 4-row tiles and quantized to
   /// the interleaved block_q8_0x4 layout (same __ggml_quantize_mat_q8_0_4x8 the
-  /// Q4_0 path uses), and the weight is consumed pre-interleaved to q8_0x4
-  /// offline (Python repack_q8_0). A q8_0x4 super-block is exactly 4 plain
-  /// block_q8_0 rows of bytes, so the per-column weight stride B_step =
-  /// nb*sizeof(block_q8_0) lands on 4-col super-block boundaries -- identical
-  /// addressing trick to the Q4_0 path. Both operands then feed the
-  /// register-blocked 4x4 SMMLA kernel with single contiguous loads (see
-  /// nntr_gemm_q8_0_q8_0_4x4_fp16).
+  /// Q4_0 path uses), and the weight is consumed pre-interleaved to q8_0x4 by
+  /// the C++ quantizer (Conv2DLayer::save calls repack_q8_0 at weight-export
+  /// time). A q8_0x4 super-block is exactly 4 plain block_q8_0 rows of bytes,
+  /// so the per-column weight stride B_step = nb*sizeof(block_q8_0) lands on
+  /// 4-col super-block boundaries -- identical addressing trick to the Q4_0
+  /// path. Both operands then feed the register-blocked 4x4 SMMLA kernel with
+  /// single contiguous loads (see nntr_gemm_q8_0_q8_0_4x4_fp16).
   auto &tm = ThreadManager::Global();
   (void)ldb;
   (void)ldc;

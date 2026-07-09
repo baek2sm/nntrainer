@@ -149,11 +149,11 @@ void ConcatLayer::forwarding(RunLayerContext &context, bool training) {
 
   const TensorDim out_dim = output.getDim();
 
-  // NHWC path: channel is physical-innermost, so a channel-axis concat (the
-  // only concat YOLOv11 uses) interleaves per-pixel channel runs. The NCHW
-  // reshape-helper path below assumes channel-major planes and would copy
-  // into the wrong physical offsets, so handle NHWC separately. Only the
-  // channel axis (logical 1) is supported here, matching the graph usage.
+  // NHWC path: channel is physical-innermost, so a channel-axis concat
+  // interleaves per-pixel channel runs. The NCHW reshape-helper path below
+  // assumes channel-major planes and would copy into the wrong physical
+  // offsets, so handle NHWC separately. Only the channel axis (logical 1) is
+  // supported here, matching the graph usage.
   if (out_dim.getFormat() == ml::train::TensorDim::Format::NHWC &&
       concat_dimension_cache == 1) {
     const unsigned int B = out_dim.batch();

@@ -15,13 +15,9 @@ subdir('qwen3_slim_moe')
 subdir('gemma3')
 subdir('timm_vit')
 subdir('gemma4')
+subdir('YOLOv11')
 if get_option('platform') != 'windows'
     subdir('bert')
     subdir('gpt_oss_cached_slim')
     subdir('qwen3_cached_slim_moe')
-endif
-
-# YOLOv11 inference harness
-if get_option('enable-app')
-    subdir('YOLOv11/jni')
 endif

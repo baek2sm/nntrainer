@@ -913,7 +913,7 @@ void Manager::finalizeTensorPool(TensorPool &pool, unsigned int start,
     /**
      * Opt-in (compile time -DENABLE_MEMORY_PLANNER_V3, meson
      * -Dmemory-planner=v3 or ndk-build ENABLE_MEMORY_PLANNER_V3=1) lower
-     * peak-memory planner. The YOLOv11 inference build enables it.
+     * peak-memory planner. The Android CausalLM inference build enables it.
      */
     pool.finalize(OptimizedV3Planner(), start, end);
 #elif defined(ENABLE_MEMORY_PLANNER_V2)

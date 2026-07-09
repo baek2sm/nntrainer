@@ -168,6 +168,25 @@ public:
               ml::train::ISA target_isa = ml::train::ISA::DEFAULT);
 
   /**
+   * @brief Names of layers whose weights the offline quantizer should convert.
+   *
+   * The standard CausalLM quantizer (nntr_quantize) builds a per-layer
+   * {name -> target DataType} map and hands it to model->save_weight(). For
+   * LLM backbones the FC/embedding names follow a "layerN_<role>" convention
+   * the quantizer enumerates from config; vision models whose conv layers are
+   * named dynamically by the graph builder instead surface them here. The
+   * default empty vector means "no model-driven layers; use the config-driven
+   * name map only", preserving existing LLM behavior.
+   *
+   * @return Layer names (as set in createLayer) eligible for weight
+   *         quantization. Must be exactly the layers the model's Conv2DLayer::
+   *         save / FC save will be asked to convert.
+   */
+  virtual std::vector<std::string> getQuantizableLayerNames() const {
+    return {};
+  }
+
+  /**
    * @brief run the Transformer model
    */
   virtual void run(const WSTR prompt, bool do_sample = false,

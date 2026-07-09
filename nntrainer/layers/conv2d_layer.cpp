@@ -22,6 +22,7 @@
 #include <vector>
 
 #include <conv2d_layer.h>
+#include <conv_indirect.h> // repack_q8_0 (q8_0x4 weight interleave for the indirect conv kernel)
 #include <cpu_backend.h>
 #include <layer_context.h>
 #include <lazy_tensor.h>
@@ -56,7 +57,7 @@ static inline void convApplySwishInplace(T *data, size_t n) {
   const size_t chunk = (n + nthreads - 1) / nthreads;
 
   static const bool use_approx = []() {
-    if (const char *env_p = std::getenv("YOLO_APPROX_SILU")) {
+    if (const char *env_p = std::getenv("NNTR_APPROX_SILU")) {
       return std::string(env_p) == "1";
     }
     return false;
@@ -892,6 +893,9 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
     // Q8_0 activation scratch for NHWC W4A8 path: pre-allocated once so
     // forwarding never calls malloc. Size = max(owoh, in_h*in_w) * nb blocks,
     // stored as a plain float buffer and reinterpret-cast to block_q8_0*.
+    // Sized per batch so concurrent batch slices (ParallelBatch with batch>1)
+    // each get an isolated region — a single shared buffer would let one slice
+    // overwrite another's q8_0 bytes mid-GEMM.
     // FORWARD_INFER_LIFESPAN (LongTerm) is used instead of
     // FORWARD_FUNC_LIFESPAN (ShortTerm) because ShortTerm scratch shares memory
     // with activation tensors in the pool. Writing Q8_0 bytes there corrupts
@@ -909,7 +913,8 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
         // block_q8_0 = 34 bytes; use scratch_type (FP16=2 bytes) for compat.
         const unsigned int n_elems =
           (max_sp * nb * 34 + 1) / 2; // round up to FP16 elements
-        TensorDim q8dim(1, 1, 1, n_elems, scratch_type);
+        // One independent scratch region per batch slot.
+        TensorDim q8dim(in_dim.batch(), 1, 1, n_elems, scratch_type);
         wt_idx[ConvParams::q8act_scratch] =
           context.requestTensor(q8dim, "q8act", Initializer::NONE, false,
                                 TensorLifespan::FORWARD_INFER_LIFESPAN);
@@ -1018,6 +1023,19 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     Tensor *qgemm_scratch =
       weight_is_quant ? &context.getTensor(wt_idx[ConvParams::qgemm_scratch])
                       : nullptr;
+    // Q8_0 activation scratch is sized per batch (see finalize) and shared by
+    // reference here; each batch slice b takes its own region via
+    // getBatchSlice(b, 1) so concurrent ParallelBatch slices never alias.
+    const bool has_q8act_scratch =
+#ifdef ENABLE_FP16
+      weight_is_quant && wt_idx[ConvParams::q8act_scratch] !=
+                           std::numeric_limits<unsigned int>::max();
+#else
+      false;
+#endif
+    Tensor *q8act_scratch =
+      has_q8act_scratch ? &context.getTensor(wt_idx[ConvParams::q8act_scratch])
+                        : nullptr;
     if (col_scratch != nullptr) {
       col_scratch->setZero();
     }
@@ -1047,15 +1065,17 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             const bool can_q8act = (in_ch_i % 32 == 0) &&
                                    (std::getenv("NNTR_CONV_Q8ACT") != nullptr);
             // Pre-allocated Q8_0 scratch (no per-forward malloc).
+            // Take this batch's own slice (q8act_scratch is batch-sized) so
+            // concurrent ParallelBatch slices don't race on the q8_0 bytes.
             // Only consumed under ENABLE_FP16 (Q8_0 activation path); guard the
             // declaration too so non-FP16 builds don't trip
             // -Werror=unused-but-set-variable.
 #ifdef ENABLE_FP16
             ::nntrainer::block_q8_0 *q8_buf = nullptr;
-            if (can_q8act && wt_idx[ConvParams::q8act_scratch] !=
-                               std::numeric_limits<unsigned int>::max()) {
-              q8_buf = reinterpret_cast<::nntrainer::block_q8_0 *>(
-                context.getTensor(wt_idx[ConvParams::q8act_scratch]).getData());
+            if (can_q8act && q8act_scratch != nullptr) {
+              Tensor q8act_b = q8act_scratch->getBatchSlice(b, 1);
+              q8_buf =
+                reinterpret_cast<::nntrainer::block_q8_0 *>(q8act_b.getData());
             }
 #endif
             if (is_1x1_s1 && !weight_is_q8) {
@@ -1311,9 +1331,15 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       const int dh = static_cast<int>(dilation[0].get());
       const int dw_ = static_cast<int>(dilation[1].get());
       const unsigned int fhfw = fh * fw;
-      const float *filt = filter_kernel.getData<float>();
+      // The filter dtype follows the requested weight dtype
+      // (context.getWeightDataType(), see finalize()), which may be FP16 for
+      // FP16-FP16 / FP16-FP32 modes while the activation is FP16. Read the
+      // filter through the matching type so we do not reinterpret half bytes
+      // as float.
+      const auto filt_dt = filter_kernel.getDataType();
 
-      auto run = [&]<typename T>(const T *in, T *out) {
+      auto run = [&]<typename T, typename F>(const T *in, T *out,
+                                             const F *filt) {
         std::vector<float> acc(C);
         for (unsigned int b = 0; b < B; ++b) {
           const T *inb = in + static_cast<size_t>(b) * IH * IW * C;
@@ -1330,10 +1356,11 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                   if (iw < 0 || iw >= IW)
                     continue;
                   const T *id = inb + (static_cast<size_t>(ih) * IW + iw) * C;
-                  const float *fk = filt + kh * fw + kw;
+                  const F *fk = filt + kh * fw + kw;
                   for (unsigned int c = 0; c < C; ++c)
-                    acc[c] += static_cast<float>(id[c]) *
-                              fk[static_cast<size_t>(c) * fhfw];
+                    acc[c] +=
+                      static_cast<float>(id[c]) *
+                      static_cast<float>(fk[static_cast<size_t>(c) * fhfw]);
                 }
               }
               T *od = outb + (static_cast<size_t>(oh) * OW + ow) * C;
@@ -1344,11 +1371,25 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
         }
       };
 
-      if (in_dim.getDataType() == nntrainer::Tdatatype::FP32)
-        run(input_.getData<float>(), hidden_.getData<float>());
+      if (in_dim.getDataType() == nntrainer::Tdatatype::FP32) {
+        if (filt_dt == nntrainer::Tdatatype::FP32)
+          run(input_.getData<float>(), hidden_.getData<float>(),
+              filter_kernel.getData<float>());
 #ifdef ENABLE_FP16
-      else
-        run(input_.getData<_FP16>(), hidden_.getData<_FP16>());
+        else
+          run(input_.getData<float>(), hidden_.getData<float>(),
+              filter_kernel.getData<_FP16>());
+#endif
+      }
+#ifdef ENABLE_FP16
+      else {
+        if (filt_dt == nntrainer::Tdatatype::FP32)
+          run(input_.getData<_FP16>(), hidden_.getData<_FP16>(),
+              filter_kernel.getData<float>());
+        else
+          run(input_.getData<_FP16>(), hidden_.getData<_FP16>(),
+              filter_kernel.getData<_FP16>());
+      }
 #endif
     } else if (is_true_depthwise &&
                in_dim.getDataType() == nntrainer::Tdatatype::FP32) {
@@ -1369,7 +1410,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       // FP32 (BN-folded), so this is FP16 input/output x FP32 kernel. Keep it
       // on the tight channel-parallel direct-loop kernel instead of falling
       // into the generic grouped else-branch (per-channel im2col + FP16 GEMV),
-      // which was ~2x slower for YOLOv11's detect-head depthwise convs.
+      // which is ~2x slower for many-channel depthwise convs.
       nntrainer::getComputeOps()->depthwise_conv2d_fp16(
         input_.getData<_FP16>(), filter_kernel.getData<float>(),
         hidden_.getData<_FP16>(), in_dim.batch(), filter_size, in_dim.height(),
@@ -1459,7 +1500,7 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   // conv, apply SiLU in-place on the freshly written output instead of
   // materializing a separate Activation layer (which would read the conv
   // output back from memory and write a second full tensor). Only SiLU is
-  // fused here (YOLOv11's conv activation); any other activation type is left
+  // fused here (the swish conv activation); any other activation type is left
   // to a dedicated Activation layer in the graph.
   if (auto &act = std::get<props::FusedActivation>(conv_props);
       !act.empty() && act.get() == ActivationType::ACT_SWISH) {
@@ -1677,25 +1718,29 @@ void Conv2DLayer::save(std::ofstream &file, RunLayerContext &run_context,
       continue;
     }
 
-    NNTR_THROW_IF(dtype != TensorDim::DataType::Q4_0, std::runtime_error)
-      << "[Conv2D] save: unsupported quantization dtype";
+    NNTR_THROW_IF(dtype != TensorDim::DataType::Q4_0 &&
+                    dtype != TensorDim::DataType::Q8_0,
+                  std::runtime_error)
+      << "[Conv2D] save: unsupported quantization dtype (expected Q4_0 or "
+         "Q8_0).";
     NNTR_THROW_IF(weight.getDataType() != TensorDim::DataType::FP32,
                   std::runtime_error)
-      << "[Conv2D] Q4_0 save only supports FP32 source weight.";
+      << "[Conv2D] quantized save only supports an FP32 source weight.";
 
     // A conv FP32 filter is [out_ch, in_ch, kh, kw] in NCHW, i.e. already
     // row-major [out_ch, CRS] (CRS = in_ch*kh*kw) = [N rows, K cols]. This is
-    // exactly the layout quantize_q4_0 consumes (N rows of K), so no transpose
-    // is needed (the FC path in the base class transposes because its weight is
-    // stored [K, N]). The bias and any non-matmul weight (CRS == 1 or
-    // out_ch == 1) are kept FP32.
+    // exactly the layout quantize_q4_0/quantize_q8_0 consume (N rows of K), so
+    // no transpose is needed (the FC path in the base class transposes because
+    // its weight is stored [K, N]). The bias and any non-matmul weight (CRS ==
+    // 1 or out_ch == 1) are kept FP32.
     const TensorDim dim = weight.getDim();
     const unsigned int out_ch = dim.batch();
     const unsigned int CRS = dim.channel() * dim.height() * dim.width();
 
+    // Q4_0 and Q8_0 both block on QK=32, so the same block-alignment guard
+    // applies. Non-eligible weights (bias, block-misaligned) stay FP32 so the
+    // saved tensor still matches what the runtime layer allocates for it.
     if (out_ch <= 1 || CRS <= 1 || out_ch % 32 != 0 || CRS % 32 != 0) {
-      // Not Q4_0-eligible (bias, or block-misaligned): keep FP32 so the saved
-      // tensor still matches what the runtime layer allocates for it.
       weight.save(file);
       continue;
     }
@@ -1705,9 +1750,27 @@ void Conv2DLayer::save(std::ofstream &file, RunLayerContext &run_context,
     Tensor quant_weight(1, 1, CRS, out_ch, {Tformat::NCHW, dtype});
     std::vector<char> tmp(quant_weight.size());
 
-    quantize_q4_0(weight.getData<float>(), tmp.data(), out_ch, CRS, nullptr);
-    repack_q4_0(quant_weight.getData<uint8_t>(), tmp.data(),
-                quant_weight.size(), out_ch, CRS, target_isa);
+    if (dtype == TensorDim::DataType::Q4_0) {
+      // Q4_0 weights are ISA-repacked at save time (the runtime Q4_0 kernels
+      // expect the interleaved layout: x4 on ARM, x8 on x86).
+      quantize_q4_0(weight.getData<float>(), tmp.data(), out_ch, CRS, nullptr);
+      repack_q4_0(quant_weight.getData<uint8_t>(), tmp.data(),
+                  quant_weight.size(), out_ch, CRS, target_isa);
+    } else {
+      // Q8_0: quantize to plain block_q8_0 (2B fp16 d + 32 int8 qs per block),
+      // d = max(|x|)/127, qs = round(x/d) clipped to [-128,127], matching
+      // ggml's quantize_row_q8_0_ref. The plain stream is then repacked to the
+      // block_q8_0x4 layout the FP16 q8_0×q8_0 indirect-conv kernel consumes
+      // (4 weight columns interleaved per super-block). Without this repack the
+      // kernel reads plain-block bytes as q8_0x4 and produces garbage/NaN.
+      // The q8_0x4 layout is a logical byte interleave (ISA-independent); the
+      // kernel decodes it, so the repacked file is portable across ISAs (unlike
+      // Q4_0, whose kernel ISA-specific interleaving is dispatched at save).
+      quantize_q8_0(weight.getData<float>(), tmp.data(),
+                    static_cast<int64_t>(out_ch), static_cast<int64_t>(CRS),
+                    nullptr);
+      repack_q8_0(quant_weight.getData<uint8_t>(), tmp.data(), out_ch, CRS);
+    }
     quant_weight.save(file);
   }
 }

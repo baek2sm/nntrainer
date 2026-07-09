@@ -49,6 +49,7 @@
 #if !defined(_WIN32)
 #include "qwen3_cached_slim_moe_causallm.h"
 #endif
+#include "YOLOv11/yolov11_transformer.h"
 #include "qwen3_causallm.h"
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
@@ -202,6 +203,10 @@ std::string resolve_architecture(std::string model_type,
     return "TimmViT";
   }
 
+  if (architecture == "YOLOv11ForDetection") {
+    return "YOLOv11ForDetection";
+  }
+
   if (architecture == "Gemma4ForConditionalGeneration") {
     return "Gemma4ForCausalLM";
   }
@@ -306,6 +311,11 @@ int main(int argc, char *argv[]) {
       return std::make_unique<causallm::TimmViTTransformer>(cfg, generation_cfg,
                                                             nntr_cfg);
     });
+  causallm::Factory::Instance().registerModel(
+    "YOLOv11ForDetection", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<causallm::Yolov11Transformer>(cfg, generation_cfg,
+                                                            nntr_cfg);
+    });
 
   // Validate arguments
   if (argc < 2) {
@@ -335,6 +345,11 @@ int main(int argc, char *argv[]) {
     resolveNntrConfigPath(nntr_cfg, "tokenizer_file", model_path);
     resolveNntrConfigPath(nntr_cfg, "embedding_file_name", model_path);
     resolveNntrConfigPath(nntr_cfg, "ple_file_name", model_path);
+    // Vision/detection models (e.g. YOLOv11) carry bin paths to the input
+    // image and reference tensors alongside the weights; resolve them against
+    // the model directory the same way as the tokenizer/embedding paths.
+    resolveNntrConfigPath(nntr_cfg, "sample_input", model_path);
+    resolveNntrConfigPath(nntr_cfg, "yolo_ref_dir", model_path);
 
     if (nntr_cfg.contains("system_prompt")) {
       system_head_prompt =

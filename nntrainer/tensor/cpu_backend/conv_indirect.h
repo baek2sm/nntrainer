@@ -291,6 +291,59 @@ inline void gather_conv_act_rows_q8_0_single(void *vy, const void *vx,
   }
 }
 
+/**
+ * @brief Repack plain block_q8_0 conv weights to the block_q8_0x4 layout the
+ *        q8_0×q8_0 indirect-conv GEMM kernel consumes.
+ *
+ * The FP16 indirect-conv kernel (nntr_gemm_q8_0_q8_0_4x4_fp16) reads both
+ * operands as block_q8_0x4: 4 columns interleaved per super-block, laid out as
+ *   d[4]; qs[32*sub + 8*row + lane], sub=0..3 (8-elem chunk), row=0..3 (col),
+ *   lane=0..7.
+ * The plain (quantize_q8_0) layout is [N, nb=K/32] row-major block_q8_0
+ * { uint16_t d; int8_t qs[32]; }. A super-block holds one K-block (32 elems)
+ * across 4 weight columns, so the total super-block count is (N/4) * nb and a
+ * super-block's storage is exactly 4 plain blocks' worth (d[4]=8B + qs[128]).
+ *
+ * This is a platform-agnostic byte rewrite (no SIMD), mirroring how the
+ * activation gather (gather_conv_act_rows_q8_0) produces the same q8_0x4
+ * layout, so the repacked weight is byte-identical in logical content to the
+ * plain weight and is ISA-independent (the kernel decodes the interleaving, not
+ * the saver's ISA). N and K must be multiples of 32 (the Q-eligibility guard's
+ * block-alignment requirement), guaranteeing N is also a multiple of 4.
+ *
+ * @param dst destination buffer (block_q8_0x4 stream, sized N*nb*34 bytes)
+ * @param src source plain block_q8_0 stream ([N][nb], same total byte count)
+ * @param N   number of weight rows (out_ch)
+ * @param K   reduction dim (CRS = in_ch*kh*kw); nb = K/32
+ */
+inline void repack_q8_0(void *dst, const void *src, unsigned int N,
+                        unsigned int K) {
+  struct local_block_q8_0 {
+    uint16_t d;
+    int8_t qs[32];
+  };
+  struct local_block_q8_0x4 {
+    uint16_t d[4];
+    int8_t qs[128];
+  };
+
+  const local_block_q8_0 *in = static_cast<const local_block_q8_0 *>(src);
+  local_block_q8_0x4 *out = static_cast<local_block_q8_0x4 *>(dst);
+  const unsigned int nb = K / 32;
+
+  for (unsigned int sc = 0; sc < N / 4; ++sc) {
+    for (unsigned int j = 0; j < nb; ++j) {
+      local_block_q8_0x4 &sb = out[sc * nb + j];
+      for (unsigned int r = 0; r < 4; ++r) {
+        const local_block_q8_0 &p = in[(sc * 4 + r) * nb + j];
+        sb.d[r] = p.d;
+        for (unsigned int sub = 0; sub < 4; ++sub)
+          std::memcpy(&sb.qs[32 * sub + 8 * r], &p.qs[8 * sub], 8);
+      }
+    }
+  }
+}
+
 } // namespace nntrainer
 
 #endif /* __NNTR_CONV_INDIRECT_H__ */

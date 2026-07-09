@@ -1148,6 +1148,36 @@ extern void gemm_q4_0_indirect_conv_fp16(
   const unsigned int M, const unsigned int N, const unsigned int K,
   const _FP16 *in, const nntrainer::ConvGatherParams &geom, const void *B,
   const unsigned int ldb, _FP16 *C, const unsigned int ldc);
+
+/**
+ * @brief Q8_0-activation q4_0 conv GEMM (ARM-only; x86 NYI stub). Callers
+ * gate on supports_gemm_q4_0_indirect_conv_q8_0().
+ *
+ * @param in batch-sliced contiguous NCHW q8_0-packed input
+ * @param C  _FP16* output [M, N]
+ */
+extern void gemm_q4_0_indirect_conv_q8_0(
+  const unsigned int M, const unsigned int N, const unsigned int K,
+  const void *in, const nntrainer::ConvGatherParams &geom, const void *B,
+  const unsigned int ldb, _FP16 *C, const unsigned int ldc);
+
+/**
+ * @brief Q8_0-activation q8_0 conv GEMM, Q8_0 weight (ARM-only; x86 NYI
+ * stub). Callers gate on supports_gemm_q8_0_indirect_conv_q8_0().
+ */
+extern void gemm_q8_0_indirect_conv_q8_0(
+  const unsigned int M, const unsigned int N, const unsigned int K,
+  const void *in, const nntrainer::ConvGatherParams &geom, const void *B,
+  const unsigned int ldb, _FP16 *C, const unsigned int ldc);
+
+/**
+ * @brief FP16-activation q8_0 conv GEMM, Q8_0 weight / W8A16 (ARM-only; x86
+ * NYI stub). Callers gate on supports_gemm_q8_0_indirect_conv_fp16().
+ */
+extern void gemm_q8_0_indirect_conv_fp16(
+  const unsigned int M, const unsigned int N, const unsigned int K,
+  const _FP16 *in, const nntrainer::ConvGatherParams &geom, const void *B,
+  const unsigned int ldb, _FP16 *C, const unsigned int ldc);
 #endif
 
 /**
