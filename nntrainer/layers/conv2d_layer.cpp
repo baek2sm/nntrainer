@@ -1234,8 +1234,18 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                                   fnchw_type);
               TensorDim cdim_nchw(result.batch(), result.channel(),
                                   result.height(), result.width(), cnchw_type);
-              Tensor filt_nchw = Tensor::Map<float>(
-                filter_kernel.getData<float>(), filter_kernel.bytes(), fdim_nchw);
+
+              Tensor filt_nchw;
+              if (filter_kernel.getDataType() == nntrainer::Tdatatype::FP32) {
+                filt_nchw = Tensor::Map<float>(
+                  filter_kernel.getData<float>(), filter_kernel.bytes(), fdim_nchw);
+              }
+#ifdef ENABLE_FP16
+              else {
+                filt_nchw = Tensor::Map<_FP16>(
+                  filter_kernel.getData<_FP16>(), filter_kernel.bytes(), fdim_nchw);
+              }
+#endif
 
               if (out.getDataType() == nntrainer::Tdatatype::FP32) {
                 Tensor col_nchw = Tensor::Map<float>(result.getData<float>(),
@@ -1280,8 +1290,19 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                                   fnchw_type);
               TensorDim cdim_nchw(result.batch(), result.channel(),
                                   result.height(), result.width(), cnchw_type);
-              Tensor filt_nchw = Tensor::Map<float>(
-                filter_kernel.getData<float>(), filter_kernel.bytes(), fdim_nchw);
+
+              Tensor filt_nchw;
+              if (filter_kernel.getDataType() == nntrainer::Tdatatype::FP32) {
+                filt_nchw = Tensor::Map<float>(
+                  filter_kernel.getData<float>(), filter_kernel.bytes(), fdim_nchw);
+              }
+#ifdef ENABLE_FP16
+              else {
+                filt_nchw = Tensor::Map<_FP16>(
+                  filter_kernel.getData<_FP16>(), filter_kernel.bytes(), fdim_nchw);
+              }
+#endif
+
               if (out.getDataType() == nntrainer::Tdatatype::FP32) {
                 Tensor col_nchw = Tensor::Map<float>(result.getData<float>(),
                                                      result.bytes(), cdim_nchw);
