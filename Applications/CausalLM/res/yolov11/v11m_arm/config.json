@@ -1,0 +1,4 @@
+{
+    "architectures": ["YOLOv11ForDetection"],
+    "model_type": "Model"
+}

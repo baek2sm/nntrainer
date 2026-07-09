@@ -1,0 +1,30 @@
+{
+    "model_type": "Model",
+    "model_tensor_type": "FP32-FP16",
+    "model_file_name": "yolov11m_q8_0_w8a16.safetensors",
+
+    "fc_layer_dtype": "FP32",
+    "embedding_dtype": "FP32",
+    "conv_dtype": "Q8_0",
+
+    "batch_size": 1,
+    "init_seq_len": 1,
+    "max_seq_len": 1,
+    "num_to_generate": 0,
+    "skip_tokenizer": true,
+
+    "imgsz": 832,
+    "nc": 1,
+    "yolo_variant": "v11m",
+    "yolo_reg_max": 16,
+    "input_format": "NHWC",
+    "nms_conf": 0.25,
+    "nms_iou": 0.70,
+
+    "yolo_verify": false,
+    "yolo_dump_raw": false,
+    "yolo_bench_iters": 10,
+    "yolo_ref_dir": ".",
+
+    "sample_input": ""
+}
