@@ -938,6 +938,150 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
 
   Tensor &filter_kernel = context.getWeight(wt_idx[ConvParams::weight]);
 
+#if defined(__ARM_NEON) && defined(ENABLE_FP16)
+  if (context.getName() == "conv0" &&
+      hidden_.getDataType() == nntrainer::Tdatatype::FP16 &&
+      input_.getDataType() == nntrainer::Tdatatype::FP16 &&
+      filter_kernel.getDataType() == nntrainer::Tdatatype::FP16) {
+
+    // Repack weights on first run into [3, 3, 3, 64]
+    if (repacked_conv0_weights_fp16.empty()) {
+      repacked_conv0_weights_fp16.resize(3 * 3 * 3 * 64);
+      const _FP16 *filt = filter_kernel.getData<_FP16>();
+      for (unsigned int kh = 0; kh < 3; ++kh) {
+        for (unsigned int kw = 0; kw < 3; ++kw) {
+          for (unsigned int ic = 0; ic < 3; ++ic) {
+            for (unsigned int oc = 0; oc < 64; ++oc) {
+              repacked_conv0_weights_fp16[kh * 192 + kw * 64 + ic * 64 + oc] =
+                filt[oc * 27 + ic * 9 + kh * 3 + kw];
+            }
+          }
+        }
+      }
+    }
+
+    const _FP16 *in = input_.getData<_FP16>();
+    _FP16 *out = hidden_.getData<_FP16>();
+    Tensor &bias_kernel = context.getWeight(wt_idx[ConvParams::bias]);
+    const _FP16 *bias = bias_kernel.getData<_FP16>();
+    const _FP16 *r_weight = repacked_conv0_weights_fp16.data();
+
+    ThreadManager::Global().parallel_for(0, 416, [&](size_t oh) {
+      int hs = -(int)1 + (int)oh * 2;
+      _FP16 *out_row = out + (size_t)oh * 416 * 64;
+
+      for (int ow = 0; ow < 416; ++ow) {
+        int ws = -(int)1 + (int)ow * 2;
+        _FP16 *out_pixel = out_row + (size_t)ow * 64;
+
+        float16x8_t vacc0 = vld1q_f16(reinterpret_cast<const __fp16 *>(bias + 0));
+        float16x8_t vacc1 = vld1q_f16(reinterpret_cast<const __fp16 *>(bias + 8));
+        float16x8_t vacc2 = vld1q_f16(reinterpret_cast<const __fp16 *>(bias + 16));
+        float16x8_t vacc3 = vld1q_f16(reinterpret_cast<const __fp16 *>(bias + 24));
+        float16x8_t vacc4 = vld1q_f16(reinterpret_cast<const __fp16 *>(bias + 32));
+        float16x8_t vacc5 = vld1q_f16(reinterpret_cast<const __fp16 *>(bias + 40));
+        float16x8_t vacc6 = vld1q_f16(reinterpret_cast<const __fp16 *>(bias + 48));
+        float16x8_t vacc7 = vld1q_f16(reinterpret_cast<const __fp16 *>(bias + 56));
+
+        for (int kh = 0; kh < 3; ++kh) {
+          int ih = hs + kh;
+          if (ih < 0 || ih >= 832) continue;
+
+          for (int kw = 0; kw < 3; ++kw) {
+            int iw = ws + kw;
+            if (iw < 0 || iw >= 832) continue;
+
+            const _FP16 *in_pixel = in + ((size_t)ih * 832 + iw) * 3;
+            float16x8_t vin0 = vdupq_n_f16(in_pixel[0]);
+            float16x8_t vin1 = vdupq_n_f16(in_pixel[1]);
+            float16x8_t vin2 = vdupq_n_f16(in_pixel[2]);
+
+            const _FP16 *w_base = r_weight + kh * 192 + kw * 64;
+
+            vacc0 = vfmaq_f16(vacc0, vin0, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 0 * 64 + 0)));
+            vacc1 = vfmaq_f16(vacc1, vin0, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 0 * 64 + 8)));
+            vacc2 = vfmaq_f16(vacc2, vin0, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 0 * 64 + 16)));
+            vacc3 = vfmaq_f16(vacc3, vin0, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 0 * 64 + 24)));
+            vacc4 = vfmaq_f16(vacc4, vin0, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 0 * 64 + 32)));
+            vacc5 = vfmaq_f16(vacc5, vin0, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 0 * 64 + 40)));
+            vacc6 = vfmaq_f16(vacc6, vin0, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 0 * 64 + 48)));
+            vacc7 = vfmaq_f16(vacc7, vin0, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 0 * 64 + 56)));
+
+            vacc0 = vfmaq_f16(vacc0, vin1, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 1 * 64 + 0)));
+            vacc1 = vfmaq_f16(vacc1, vin1, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 1 * 64 + 8)));
+            vacc2 = vfmaq_f16(vacc2, vin1, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 1 * 64 + 16)));
+            vacc3 = vfmaq_f16(vacc3, vin1, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 1 * 64 + 24)));
+            vacc4 = vfmaq_f16(vacc4, vin1, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 1 * 64 + 32)));
+            vacc5 = vfmaq_f16(vacc5, vin1, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 1 * 64 + 40)));
+            vacc6 = vfmaq_f16(vacc6, vin1, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 1 * 64 + 48)));
+            vacc7 = vfmaq_f16(vacc7, vin1, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 1 * 64 + 56)));
+
+            vacc0 = vfmaq_f16(vacc0, vin2, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 2 * 64 + 0)));
+            vacc1 = vfmaq_f16(vacc1, vin2, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 2 * 64 + 8)));
+            vacc2 = vfmaq_f16(vacc2, vin2, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 2 * 64 + 16)));
+            vacc3 = vfmaq_f16(vacc3, vin2, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 2 * 64 + 24)));
+            vacc4 = vfmaq_f16(vacc4, vin2, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 2 * 64 + 32)));
+            vacc5 = vfmaq_f16(vacc5, vin2, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 2 * 64 + 40)));
+            vacc6 = vfmaq_f16(vacc6, vin2, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 2 * 64 + 48)));
+            vacc7 = vfmaq_f16(vacc7, vin2, vld1q_f16(reinterpret_cast<const __fp16 *>(w_base + 2 * 64 + 56)));
+          }
+        }
+
+        vst1q_f16(reinterpret_cast<__fp16 *>(out_pixel + 0), vacc0);
+        vst1q_f16(reinterpret_cast<__fp16 *>(out_pixel + 8), vacc1);
+        vst1q_f16(reinterpret_cast<__fp16 *>(out_pixel + 16), vacc2);
+        vst1q_f16(reinterpret_cast<__fp16 *>(out_pixel + 24), vacc3);
+        vst1q_f16(reinterpret_cast<__fp16 *>(out_pixel + 32), vacc4);
+        vst1q_f16(reinterpret_cast<__fp16 *>(out_pixel + 40), vacc5);
+        vst1q_f16(reinterpret_cast<__fp16 *>(out_pixel + 48), vacc6);
+        vst1q_f16(reinterpret_cast<__fp16 *>(out_pixel + 56), vacc7);
+      }
+    });
+
+    // Fused activation epilogue for conv0 SiLU (Swish)
+    if (auto &act = std::get<props::FusedActivation>(conv_props);
+        !act.empty() && act.get() == ActivationType::ACT_SWISH) {
+      const size_t n = hidden_.size();
+      _FP16 *data = out;
+      const float32x4_t v_three = vdupq_n_f32(3.0f);
+      const float32x4_t v_six_inv = vdupq_n_f32(1.0f / 6.0f);
+      const float32x4_t v_zero = vdupq_n_f32(0.0f);
+      const float32x4_t v_six = vdupq_n_f32(6.0f);
+
+      for (size_t i = 0; i + 7 < n; i += 8) {
+        float16x8_t vx = vld1q_f16(reinterpret_cast<const __fp16 *>(&data[i]));
+
+        float32x4_t vx_low = vcvt_f32_f16(vget_low_f16(vx));
+        float32x4_t vx_high = vcvt_f32_f16(vget_high_f16(vx));
+
+        float32x4_t v_low_add = vaddq_f32(vx_low, v_three);
+        float32x4_t v_high_add = vaddq_f32(vx_high, v_three);
+
+        float32x4_t v_low_min = vminq_f32(vmaxq_f32(v_low_add, v_zero), v_six);
+        float32x4_t v_high_min = vminq_f32(vmaxq_f32(v_high_add, v_zero), v_six);
+
+        float32x4_t v_low_mul = vmulq_f32(vx_low, v_low_min);
+        float32x4_t v_high_mul = vmulq_f32(vx_high, v_high_min);
+
+        float32x4_t v_low_res = vmulq_f32(v_low_mul, v_six_inv);
+        float32x4_t v_high_res = vmulq_f32(v_high_mul, v_six_inv);
+
+        float16x4_t v_out_low = vcvt_f16_f32(v_low_res);
+        float16x4_t v_out_high = vcvt_f16_f32(v_high_res);
+
+        float16x8_t v_res = vcombine_f16(v_out_low, v_out_high);
+        vst1q_f16(reinterpret_cast<__fp16 *>(&data[i]), v_res);
+      }
+      for (size_t i = (n / 8) * 8; i < n; ++i) {
+        float x = (float)data[i];
+        float silu = x * (std::min(std::max(x + 3.0f, 0.0f), 6.0f) / 6.0f);
+        data[i] = (_FP16)silu;
+      }
+    }
+    return;
+  }
+#endif
+
   /** Calculate Convolution 2D
    *
    * This is the 2D Matrix Shape [ height ] x [ width ]
