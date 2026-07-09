@@ -1478,19 +1478,57 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       if (hidden_.getDataType() == nntrainer::Tdatatype::FP32) {
         float *d = hidden_.getData<float>();
         const float *bias = bias_kernel.getData<float>();
+#if defined(__ARM_NEON)
+        const unsigned int C_aligned = (C / 4) * 4;
+        for (unsigned int b = 0; b < B; ++b) {
+          for (unsigned int p = 0; p < HW; ++p) {
+            float *curr_d = d + ((size_t)b * HW + p) * C;
+            unsigned int c = 0;
+            for (; c < C_aligned; c += 4) {
+              float32x4_t v_d = vld1q_f32(curr_d + c);
+              float32x4_t v_b = vld1q_f32(bias + c);
+              float32x4_t v_res = vaddq_f32(v_d, v_b);
+              vst1q_f32(curr_d + c, v_res);
+            }
+            for (; c < C; ++c) {
+              curr_d[c] += bias[c];
+            }
+          }
+        }
+#else
         for (unsigned int b = 0; b < B; ++b)
           for (unsigned int p = 0; p < HW; ++p)
             for (unsigned int c = 0; c < C; ++c)
               d[((size_t)b * HW + p) * C + c] += bias[c];
+#endif
       }
 #ifdef ENABLE_FP16
       else if (hidden_.getDataType() == nntrainer::Tdatatype::FP16) {
         _FP16 *d = hidden_.getData<_FP16>();
         const _FP16 *bias = bias_kernel.getData<_FP16>();
+#if defined(__ARM_NEON)
+        const unsigned int C_aligned = (C / 8) * 8;
+        for (unsigned int b = 0; b < B; ++b) {
+          for (unsigned int p = 0; p < HW; ++p) {
+            _FP16 *curr_d = d + ((size_t)b * HW + p) * C;
+            unsigned int c = 0;
+            for (; c < C_aligned; c += 8) {
+              float16x8_t v_d = vld1q_f16(reinterpret_cast<const __fp16 *>(curr_d + c));
+              float16x8_t v_b = vld1q_f16(reinterpret_cast<const __fp16 *>(bias + c));
+              float16x8_t v_res = vaddq_f16(v_d, v_b);
+              vst1q_f16(reinterpret_cast<__fp16 *>(curr_d + c), v_res);
+            }
+            for (; c < C; ++c) {
+              curr_d[c] += bias[c];
+            }
+          }
+        }
+#else
         for (unsigned int b = 0; b < B; ++b)
           for (unsigned int p = 0; p < HW; ++p)
             for (unsigned int c = 0; c < C; ++c)
               d[((size_t)b * HW + p) * C + c] += bias[c];
+#endif
       }
 #endif
     }
