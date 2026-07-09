@@ -1217,69 +1217,100 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
           } else {
             // NHWC: out's physical layout is [OH,OW,C] (channel innermost), so
             // a dot writing [out_ch, OH*OW] NCHW-order would land in the wrong
-            // physical cells. Compute into a plain NCHW-order buffer (format
-            // NCHW so dot writes channel-major), then scatter channel c of
-            // spatial r to out[r*out_ch + c] (NHWC physical).
-            // Compute into a plain NCHW-order buffer (same result feeding as
-            // the NCHW path above — do NOT reshape result, im2col already laid
-            // it out as the dot expects). nchw_out is format NCHW so dot writes
-            // channel-major [out_ch, OH*OW]; then scatter channel c of spatial
-            // r to out[r*out_ch + c] (NHWC physical).
-            auto nchw_type = out.getTensorType();
-            nchw_type.format = ml::train::TensorDim::Format::NCHW;
-            // nchw_out holds the GEMM result [out_ch, OH*OW] in channel-major
-            // (NCHW) order. Shape it [1, 1, out_ch, OH*OW] so width()==OH*OW is
-            // the row stride the GEMM writes with (ldc); a [1,out_ch,OH*OW,1]
-            // shape would give width()==1 and stride the output wrong.
-            TensorDim nchw_dim({1, 1, filter_size, owoh}, nchw_type);
-            Tensor nchw_out(nchw_dim, true);
-            // filter_kernel (weight [out_ch, CRS]) and result (im2col columns
-            // [OH*OW, CRS]) are plain 2D matmul matrices whose image format is
-            // irrelevant to this GEMM. dot() derives the contraction axis from
-            // the tensor format: their inherited NHWC tag makes it contract
-            // over channel() (==1) instead of width() (==CRS) -> zero output.
-            // Re-map the same bytes as NCHW-format views (no copy) so the GEMM
-            // contracts over CRS==width(). getSharedDataTensor can't relabel
-            // format (it enforces a match), so use Tensor::Map.
-            auto fnchw_type = filter_kernel.getTensorType();
-            fnchw_type.format = ml::train::TensorDim::Format::NCHW;
-            auto cnchw_type = result.getTensorType();
-            cnchw_type.format = ml::train::TensorDim::Format::NCHW;
-            TensorDim fdim_nchw(filter_kernel.batch(), filter_kernel.channel(),
-                                filter_kernel.height(), filter_kernel.width(),
-                                fnchw_type);
-            TensorDim cdim_nchw(result.batch(), result.channel(),
-                                result.height(), result.width(), cnchw_type);
-            Tensor filt_nchw = Tensor::Map<float>(
-              filter_kernel.getData<float>(), filter_kernel.bytes(), fdim_nchw);
-            if (out.getDataType() == nntrainer::Tdatatype::FP32) {
-              Tensor col_nchw = Tensor::Map<float>(result.getData<float>(),
-                                                   result.bytes(), cdim_nchw);
-              filt_nchw.dot(col_nchw, nchw_out, false, true);
-            }
+            // physical cells.
+            if (filter_size == 1) {
+              // If out_ch == 1, NCHW and NHWC layouts are identical [OH*OW, 1] == [1, OH*OW].
+              // We can compute directly into out (mapped as NCHW-format view) without temporary allocation.
+              auto onchw_type = out.getTensorType();
+              onchw_type.format = ml::train::TensorDim::Format::NCHW;
+              TensorDim odim_nchw({1, 1, 1, owoh}, onchw_type);
+
+              auto fnchw_type = filter_kernel.getTensorType();
+              fnchw_type.format = ml::train::TensorDim::Format::NCHW;
+              auto cnchw_type = result.getTensorType();
+              cnchw_type.format = ml::train::TensorDim::Format::NCHW;
+              TensorDim fdim_nchw(filter_kernel.batch(), filter_kernel.channel(),
+                                  filter_kernel.height(), filter_kernel.width(),
+                                  fnchw_type);
+              TensorDim cdim_nchw(result.batch(), result.channel(),
+                                  result.height(), result.width(), cnchw_type);
+              Tensor filt_nchw = Tensor::Map<float>(
+                filter_kernel.getData<float>(), filter_kernel.bytes(), fdim_nchw);
+
+              if (out.getDataType() == nntrainer::Tdatatype::FP32) {
+                Tensor col_nchw = Tensor::Map<float>(result.getData<float>(),
+                                                     result.bytes(), cdim_nchw);
+                Tensor out_mapped = Tensor::Map<float>(out.getData<float>(),
+                                                       out.bytes(), odim_nchw);
+                filt_nchw.dot(col_nchw, out_mapped, false, true);
+              }
 #ifdef ENABLE_FP16
-            else {
-              Tensor col_nchw = Tensor::Map<_FP16>(result.getData<_FP16>(),
-                                                   result.bytes(), cdim_nchw);
-              filt_nchw.dot(col_nchw, nchw_out, false, true);
-            }
+              else {
+                Tensor col_nchw = Tensor::Map<_FP16>(result.getData<_FP16>(),
+                                                     result.bytes(), cdim_nchw);
+                Tensor out_mapped = Tensor::Map<_FP16>(out.getData<_FP16>(),
+                                                       out.bytes(), odim_nchw);
+                filt_nchw.dot(col_nchw, out_mapped, false, true);
+              }
 #endif
-            if (out.getDataType() == nntrainer::Tdatatype::FP32) {
-              const float *s = nchw_out.getData<float>();
-              float *d = out.getData<float>();
-              for (unsigned int oc = 0; oc < filter_size; ++oc)
-                for (unsigned int r = 0; r < owoh; ++r)
-                  d[r * filter_size + oc] = s[oc * owoh + r];
-            }
+            } else {
+              // Standard path for filter_size > 1: Compute into NCHW temporary buffer and scatter.
+              auto nchw_type = out.getTensorType();
+              nchw_type.format = ml::train::TensorDim::Format::NCHW;
+              // nchw_out holds the GEMM result [out_ch, OH*OW] in channel-major
+              // (NCHW) order. Shape it [1, 1, out_ch, OH*OW] so width()==OH*OW is
+              // the row stride the GEMM writes with (ldc); a [1,out_ch,OH*OW,1]
+              // shape would give width()==1 and stride the output wrong.
+              TensorDim nchw_dim({1, 1, filter_size, owoh}, nchw_type);
+              Tensor nchw_out(nchw_dim, true);
+              // filter_kernel (weight [out_ch, CRS]) and result (im2col columns
+              // [OH*OW, CRS]) are plain 2D matmul matrices whose image format is
+              // irrelevant to this GEMM. dot() derives the contraction axis from
+              // the tensor format: their inherited NHWC tag makes it contract
+              // over channel() (==1) instead of width() (==CRS) -> zero output.
+              // Re-map the same bytes as NCHW-format views (no copy) so the GEMM
+              // contracts over CRS==width(). getSharedDataTensor can't relabel
+              // format (it enforces a match), so use Tensor::Map.
+              auto fnchw_type = filter_kernel.getTensorType();
+              fnchw_type.format = ml::train::TensorDim::Format::NCHW;
+              auto cnchw_type = result.getTensorType();
+              cnchw_type.format = ml::train::TensorDim::Format::NCHW;
+              TensorDim fdim_nchw(filter_kernel.batch(), filter_kernel.channel(),
+                                  filter_kernel.height(), filter_kernel.width(),
+                                  fnchw_type);
+              TensorDim cdim_nchw(result.batch(), result.channel(),
+                                  result.height(), result.width(), cnchw_type);
+              Tensor filt_nchw = Tensor::Map<float>(
+                filter_kernel.getData<float>(), filter_kernel.bytes(), fdim_nchw);
+              if (out.getDataType() == nntrainer::Tdatatype::FP32) {
+                Tensor col_nchw = Tensor::Map<float>(result.getData<float>(),
+                                                     result.bytes(), cdim_nchw);
+                filt_nchw.dot(col_nchw, nchw_out, false, true);
+              }
 #ifdef ENABLE_FP16
-            else if (out.getDataType() == nntrainer::Tdatatype::FP16) {
-              const _FP16 *s = nchw_out.getData<_FP16>();
-              _FP16 *d = out.getData<_FP16>();
-              for (unsigned int oc = 0; oc < filter_size; ++oc)
-                for (unsigned int r = 0; r < owoh; ++r)
-                  d[r * filter_size + oc] = s[oc * owoh + r];
-            }
+              else {
+                Tensor col_nchw = Tensor::Map<_FP16>(result.getData<_FP16>(),
+                                                     result.bytes(), cdim_nchw);
+                filt_nchw.dot(col_nchw, nchw_out, false, true);
+              }
 #endif
+              if (out.getDataType() == nntrainer::Tdatatype::FP32) {
+                const float *s = nchw_out.getData<float>();
+                float *d = out.getData<float>();
+                for (unsigned int oc = 0; oc < filter_size; ++oc)
+                  for (unsigned int r = 0; r < owoh; ++r)
+                    d[r * filter_size + oc] = s[oc * owoh + r];
+              }
+#ifdef ENABLE_FP16
+              else if (out.getDataType() == nntrainer::Tdatatype::FP16) {
+                const _FP16 *s = nchw_out.getData<_FP16>();
+                _FP16 *d = out.getData<_FP16>();
+                for (unsigned int oc = 0; oc < filter_size; ++oc)
+                  for (unsigned int r = 0; r < owoh; ++r)
+                    d[r * filter_size + oc] = s[oc * owoh + r];
+              }
+#endif
+            }
           }
         }
       }
