@@ -456,7 +456,7 @@ void __fallback_transpose_matrix(const unsigned int M, const unsigned int N,
 bool __fallback_isValid(const unsigned int N, const _FP16 *X) {
   for (size_t i = 0; i < N; ++i) {
     /// @todo check for inf
-    if (*X != *X)
+    if (std::isnan(static_cast<float>(*X)))
       return false;
     ++X;
   }
