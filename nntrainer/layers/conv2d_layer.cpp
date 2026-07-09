@@ -1357,14 +1357,58 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
                     continue;
                   const T *id = inb + (static_cast<size_t>(ih) * IW + iw) * C;
                   const F *fk = filt + kh * fw + kw;
-                  for (unsigned int c = 0; c < C; ++c)
+                  unsigned int c = 0;
+#if defined(__ARM_NEON)
+                  const unsigned int C_aligned = (C / 4) * 4;
+                  for (; c < C_aligned; c += 4) {
+                    float32x4_t v_id;
+                    if constexpr (std::is_same_v<T, _FP16>) {
+                      float16x4_t v_id_h = vld1_f16(reinterpret_cast<const __fp16 *>(id + c));
+                      v_id = vcvt_f32_f16(v_id_h);
+                    } else {
+                      v_id = vld1q_f32(reinterpret_cast<const float *>(id + c));
+                    }
+
+                    float32x4_t v_fk = {
+                      static_cast<float>(fk[c * fhfw]),
+                      static_cast<float>(fk[(c + 1) * fhfw]),
+                      static_cast<float>(fk[(c + 2) * fhfw]),
+                      static_cast<float>(fk[(c + 3) * fhfw])
+                    };
+
+                    float32x4_t v_acc = vld1q_f32(&acc[c]);
+                    v_acc = vmlaq_f32(v_acc, v_id, v_fk);
+                    vst1q_f32(&acc[c], v_acc);
+                  }
+#endif
+                  for (; c < C; ++c)
                     acc[c] +=
                       static_cast<float>(id[c]) *
                       static_cast<float>(fk[static_cast<size_t>(c) * fhfw]);
                 }
               }
               T *od = outb + (static_cast<size_t>(oh) * OW + ow) * C;
-              for (unsigned int c = 0; c < C; ++c)
+              unsigned int c = 0;
+#if defined(__ARM_NEON)
+              if constexpr (std::is_same_v<T, _FP16>) {
+                const unsigned int C_aligned = (C / 8) * 8;
+                for (; c < C_aligned; c += 8) {
+                  float32x4_t v_acc0 = vld1q_f32(&acc[c]);
+                  float32x4_t v_acc1 = vld1q_f32(&acc[c + 4]);
+                  float16x4_t v_out0 = vcvt_f16_f32(v_acc0);
+                  float16x4_t v_out1 = vcvt_f16_f32(v_acc1);
+                  float16x8_t v_res = vcombine_f16(v_out0, v_out1);
+                  vst1q_f16(reinterpret_cast<__fp16 *>(od + c), v_res);
+                }
+              } else {
+                const unsigned int C_aligned_f32 = (C / 4) * 4;
+                for (; c < C_aligned_f32; c += 4) {
+                  float32x4_t v_acc = vld1q_f32(&acc[c]);
+                  vst1q_f32(reinterpret_cast<float *>(od + c), v_acc);
+                }
+              }
+#endif
+              for (; c < C; ++c)
                 od[c] = static_cast<T>(acc[c]);
             }
           }
