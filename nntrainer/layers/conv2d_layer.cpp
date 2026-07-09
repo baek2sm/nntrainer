@@ -18,6 +18,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,31 @@ static constexpr size_t SINGLE_INOUT_IDX = 0;
 
 namespace {
 
+#ifdef ENABLE_FP16
+static const _FP16 *get_silu_lut_fp16() {
+  static std::vector<_FP16> lut;
+  static std::once_flag init_flag;
+  std::call_once(init_flag, []() {
+    lut.resize(65536);
+    for (uint32_t i = 0; i < 65536; ++i) {
+      uint16_t u = static_cast<uint16_t>(i);
+      _FP16 x = *reinterpret_cast<const _FP16*>(&u);
+      float x_f = static_cast<float>(x);
+      if (std::isnan(x_f)) {
+        lut[i] = x;
+      } else if (std::isinf(x_f)) {
+        if (x_f > 0.0f) lut[i] = x;
+        else lut[i] = (_FP16)0.0f;
+      } else {
+        float silu = x_f / (1.0f + std::exp(-x_f));
+        lut[i] = static_cast<_FP16>(silu);
+      }
+    }
+  });
+  return lut.data();
+}
+#endif
+
 /**
  * @brief In-place SiLU / swish (x * sigmoid(x)) over a contiguous buffer.
  */
@@ -55,6 +81,42 @@ static inline void convApplySwishInplace(T *data, size_t n) {
   auto &tm = ThreadManager::Global();
   const size_t nthreads = std::max<size_t>(1, tm.getComputeThreadCount());
   const size_t chunk = (n + nthreads - 1) / nthreads;
+
+#ifdef ENABLE_FP16
+  if constexpr (std::is_same_v<T, _FP16>) {
+    const _FP16 *lut = get_silu_lut_fp16();
+    tm.parallel_for(0, nthreads, [&](size_t t) {
+      const size_t start = t * chunk;
+      if (start >= n)
+        return;
+      const size_t end = std::min(start + chunk, n);
+      size_t i = start;
+      for (; i + 7 < end; i += 8) {
+        uint16_t u0 = *reinterpret_cast<const uint16_t*>(&data[i + 0]);
+        uint16_t u1 = *reinterpret_cast<const uint16_t*>(&data[i + 1]);
+        uint16_t u2 = *reinterpret_cast<const uint16_t*>(&data[i + 2]);
+        uint16_t u3 = *reinterpret_cast<const uint16_t*>(&data[i + 3]);
+        uint16_t u4 = *reinterpret_cast<const uint16_t*>(&data[i + 4]);
+        uint16_t u5 = *reinterpret_cast<const uint16_t*>(&data[i + 5]);
+        uint16_t u6 = *reinterpret_cast<const uint16_t*>(&data[i + 6]);
+        uint16_t u7 = *reinterpret_cast<const uint16_t*>(&data[i + 7]);
+        data[i + 0] = lut[u0];
+        data[i + 1] = lut[u1];
+        data[i + 2] = lut[u2];
+        data[i + 3] = lut[u3];
+        data[i + 4] = lut[u4];
+        data[i + 5] = lut[u5];
+        data[i + 6] = lut[u6];
+        data[i + 7] = lut[u7];
+      }
+      for (; i < end; ++i) {
+        uint16_t u = *reinterpret_cast<const uint16_t*>(&data[i]);
+        data[i] = lut[u];
+      }
+    });
+    return;
+  }
+#endif
 
   static const bool use_approx = []() {
     if (const char *env_p = std::getenv("NNTR_APPROX_SILU")) {
@@ -1038,45 +1100,45 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       }
     });
 
-    // Fused activation epilogue for conv0 SiLU (Swish)
+    // Fused activation epilogue for conv0 SiLU (Swish) using LUT!
     if (auto &act = std::get<props::FusedActivation>(conv_props);
         !act.empty() && act.get() == ActivationType::ACT_SWISH) {
       const size_t n = hidden_.size();
       _FP16 *data = out;
-      const float32x4_t v_three = vdupq_n_f32(3.0f);
-      const float32x4_t v_six_inv = vdupq_n_f32(1.0f / 6.0f);
-      const float32x4_t v_zero = vdupq_n_f32(0.0f);
-      const float32x4_t v_six = vdupq_n_f32(6.0f);
+      const _FP16 *lut = get_silu_lut_fp16();
+      auto &tm = ThreadManager::Global();
+      const size_t nthreads = std::max<size_t>(1, tm.getComputeThreadCount());
+      const size_t chunk = (n + nthreads - 1) / nthreads;
 
-      for (size_t i = 0; i + 7 < n; i += 8) {
-        float16x8_t vx = vld1q_f16(reinterpret_cast<const __fp16 *>(&data[i]));
-
-        float32x4_t vx_low = vcvt_f32_f16(vget_low_f16(vx));
-        float32x4_t vx_high = vcvt_f32_f16(vget_high_f16(vx));
-
-        float32x4_t v_low_add = vaddq_f32(vx_low, v_three);
-        float32x4_t v_high_add = vaddq_f32(vx_high, v_three);
-
-        float32x4_t v_low_min = vminq_f32(vmaxq_f32(v_low_add, v_zero), v_six);
-        float32x4_t v_high_min = vminq_f32(vmaxq_f32(v_high_add, v_zero), v_six);
-
-        float32x4_t v_low_mul = vmulq_f32(vx_low, v_low_min);
-        float32x4_t v_high_mul = vmulq_f32(vx_high, v_high_min);
-
-        float32x4_t v_low_res = vmulq_f32(v_low_mul, v_six_inv);
-        float32x4_t v_high_res = vmulq_f32(v_high_mul, v_six_inv);
-
-        float16x4_t v_out_low = vcvt_f16_f32(v_low_res);
-        float16x4_t v_out_high = vcvt_f16_f32(v_high_res);
-
-        float16x8_t v_res = vcombine_f16(v_out_low, v_out_high);
-        vst1q_f16(reinterpret_cast<__fp16 *>(&data[i]), v_res);
-      }
-      for (size_t i = (n / 8) * 8; i < n; ++i) {
-        float x = (float)data[i];
-        float silu = x * (std::min(std::max(x + 3.0f, 0.0f), 6.0f) / 6.0f);
-        data[i] = (_FP16)silu;
-      }
+      tm.parallel_for(0, nthreads, [&](size_t t) {
+        const size_t start = t * chunk;
+        if (start >= n)
+          return;
+        const size_t end = std::min(start + chunk, n);
+        size_t i = start;
+        for (; i + 7 < end; i += 8) {
+          uint16_t u0 = *reinterpret_cast<const uint16_t*>(&data[i + 0]);
+          uint16_t u1 = *reinterpret_cast<const uint16_t*>(&data[i + 1]);
+          uint16_t u2 = *reinterpret_cast<const uint16_t*>(&data[i + 2]);
+          uint16_t u3 = *reinterpret_cast<const uint16_t*>(&data[i + 3]);
+          uint16_t u4 = *reinterpret_cast<const uint16_t*>(&data[i + 4]);
+          uint16_t u5 = *reinterpret_cast<const uint16_t*>(&data[i + 5]);
+          uint16_t u6 = *reinterpret_cast<const uint16_t*>(&data[i + 6]);
+          uint16_t u7 = *reinterpret_cast<const uint16_t*>(&data[i + 7]);
+          data[i + 0] = lut[u0];
+          data[i + 1] = lut[u1];
+          data[i + 2] = lut[u2];
+          data[i + 3] = lut[u3];
+          data[i + 4] = lut[u4];
+          data[i + 5] = lut[u5];
+          data[i + 6] = lut[u6];
+          data[i + 7] = lut[u7];
+        }
+        for (; i < end; ++i) {
+          uint16_t u = *reinterpret_cast<const uint16_t*>(&data[i]);
+          data[i] = lut[u];
+        }
+      });
     }
     return;
   }
