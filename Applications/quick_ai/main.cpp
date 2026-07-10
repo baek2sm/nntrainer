@@ -51,6 +51,7 @@
 #include "qwen3_cached_slim_moe_causallm.h"
 #endif
 #include "qwen3_causallm.h"
+#include "YOLOv11/yolov11.h"
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
@@ -206,6 +207,10 @@ std::string resolve_architecture(std::string model_type,
     return "TimmViT";
   }
 
+  if (architecture == "YOLOv11ForDetection") {
+    return "YOLOv11ForDetection";
+  }
+
   if (architecture == "Gemma4ForConditionalGeneration") {
     return "Gemma4ForCausalLM";
   }
@@ -316,6 +321,11 @@ int main(int argc, char *argv[]) {
     "TimmViT", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<quick_ai::TimmViTTransformer>(cfg, generation_cfg,
                                                             nntr_cfg);
+    });
+  quick_ai::Factory::Instance().registerModel(
+    "YOLOv11ForDetection", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<quick_ai::Yolov11>(cfg, generation_cfg,
+                                                 nntr_cfg);
     });
 
   // Validate arguments
