@@ -1107,6 +1107,15 @@ extern void gemm_q4_0(const unsigned int M, const unsigned int N,
                       const unsigned int ldc);
 
 /**
+ * @brief q8_0 GEMM : A (M,K) * W.T (N,K) = O (M,N)
+ */
+template <typename T = float>
+extern void gemm_q8_0(const unsigned int M, const unsigned int N,
+                      const unsigned int K, const T *A, const unsigned int lda,
+                      const void *B, const unsigned int ldb, T *C,
+                      const unsigned int ldc);
+
+/**
  * @brief q4_0 GEMM against several weights : A (M,K) * Ws[i].T (Ns[i],K)
  *
  * Quantizes A to q8_0 once and walks every weight inside a single parallel

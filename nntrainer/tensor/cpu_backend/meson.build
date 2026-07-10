@@ -1,6 +1,7 @@
 cpu_backend_headers = [
   'cpu_backend.h',
   'compute_ops.h',
+  'conv_indirect.h',
   'cpu_ops_table.h',
 ]
 

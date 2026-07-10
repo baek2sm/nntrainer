@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <vector>
 
+#include <conv_indirect.h>
 #ifdef ENABLE_FP16
 #include <tensor_dim.h>
 #endif
@@ -158,6 +159,15 @@ public:
                               const unsigned int lda, const void *B,
                               const unsigned int ldb, float *C,
                               const unsigned int ldc);
+  virtual void gemm_q8_0_fp32(const unsigned int M, const unsigned int N,
+                              const unsigned int K, const float *A,
+                              const unsigned int lda, const void *B,
+                              const unsigned int ldb, float *C,
+                              const unsigned int ldc);
+  ///@brief quantize a row of float data to q8_0 (layer-boundary cast)
+  virtual void quantize_row_q8_0(const float *src, void *dst, int64_t k);
+  ///@brief dequantize a row of q8_0 data to float (layer-boundary cast)
+  virtual void dequantize_row_q8_0(const void *x, float *y, int64_t k);
   virtual void gemm_q4_K_fp32(const unsigned int M, const unsigned int N,
                               const unsigned int K, const float *A,
                               const unsigned int lda, const void *B,
@@ -226,6 +236,17 @@ public:
   virtual void gemm_q4_0_accel_fp32(void *matAdata, float *matBdata,
                                     float *matCdata, unsigned int M,
                                     unsigned int N, unsigned int K);
+
+  // q4_0 GEMM with im2col gather fused into the activation packing; the FP32
+  // col buffer is never materialized (gather happens row-by-row directly from
+  // the NCHW input as it is quantized to q8_0). supports_*() lets the caller
+  // fall back to materialized im2col + gemm_q4_0_fp32 when unavailable.
+  virtual bool supports_gemm_q4_0_indirect_conv_fp32() const { return false; }
+  virtual void gemm_q4_0_indirect_conv_fp32(unsigned int M, unsigned int N,
+                                            unsigned int K, const float *in,
+                                            const ConvGatherParams &geom,
+                                            const void *B, unsigned int ldb,
+                                            float *C, unsigned int ldc);
 
   virtual bool supports_gemv_int4_batch_fp32() const { return false; }
   virtual void gemv_int4_batch_fp32(std::vector<void *> weights,
@@ -372,6 +393,37 @@ public:
                               const unsigned int lda, const void *B,
                               const unsigned int ldb, _FP16 *C,
                               const unsigned int ldc);
+  // q4_0 GEMM with im2col gather fused into the activation packing; the FP16
+  // col buffer is never materialized (gather happens row-by-row directly from
+  // the NCHW _FP16 input as it is quantized to q8_0). FP16-activation mirror of
+  // gemm_q4_0_indirect_conv_fp32; used by HalfTensor::convQ4_0Indirect so a
+  // quant-weight conv can consume an FP16 activation without falling back to a
+  // materialized FP16 im2col (preserving the indirect path memory win for
+  // W4A16). supports_*() lets the caller fall back when unavailable.
+  virtual bool supports_gemm_q4_0_indirect_conv_fp16() const { return false; }
+  virtual void gemm_q4_0_indirect_conv_fp16(unsigned int M, unsigned int N,
+                                            unsigned int K, const _FP16 *in,
+                                            const ConvGatherParams &geom,
+                                            const void *B, unsigned int ldb,
+                                            _FP16 *C, unsigned int ldc);
+  virtual bool supports_gemm_q4_0_indirect_conv_q8_0() const { return false; }
+  virtual void gemm_q4_0_indirect_conv_q8_0(unsigned int M, unsigned int N,
+                                            unsigned int K, const void *in,
+                                            const ConvGatherParams &geom,
+                                            const void *B, unsigned int ldb,
+                                            _FP16 *C, unsigned int ldc);
+  virtual bool supports_gemm_q8_0_indirect_conv_q8_0() const { return false; }
+  virtual void gemm_q8_0_indirect_conv_q8_0(unsigned int M, unsigned int N,
+                                            unsigned int K, const void *in,
+                                            const ConvGatherParams &geom,
+                                            const void *B, unsigned int ldb,
+                                            _FP16 *C, unsigned int ldc);
+  virtual bool supports_gemm_q8_0_indirect_conv_fp16() const { return false; }
+  virtual void gemm_q8_0_indirect_conv_fp16(unsigned int M, unsigned int N,
+                                            unsigned int K, const _FP16 *in,
+                                            const ConvGatherParams &geom,
+                                            const void *B, unsigned int ldb,
+                                            _FP16 *C, unsigned int ldc);
   virtual void gemm_q6_K_fp16(const unsigned int M, const unsigned int N,
                               const unsigned int K, const _FP16 *A,
                               const unsigned int lda, const void *B,
