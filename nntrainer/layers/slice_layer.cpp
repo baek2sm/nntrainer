@@ -17,6 +17,7 @@
 #include <node_exporter.h>
 #include <slice_layer.h>
 #include <stdexcept>
+#include <thread_manager.h>
 #include <util_func.h>
 
 #include <cstring>
@@ -126,11 +127,12 @@ static void sliceForwardT(const Tensor &input, Tensor &output,
         std::memcpy(out + (size_t)b * out_hwc,
                     in + (size_t)(b + start) * in_hwc, out_hwc * elt);
     } else if (axis == 1) {
+      auto &tm = ThreadManager::Global();
       for (unsigned int b = 0; b < B; ++b) {
-        for (unsigned int hw = 0; hw < Ho * Wo; ++hw) {
+        tm.parallel_for(0, Ho * Wo, [&](size_t hw) {
           std::memcpy(out + ((size_t)b * Ho * Wo + hw) * Co,
                       in + ((size_t)b * Hi * Wi + hw) * Ci + start, Co * elt);
-        }
+        });
       }
     } else if (axis == 2) {
       for (unsigned int b = 0; b < B; ++b) {
@@ -139,12 +141,13 @@ static void sliceForwardT(const Tensor &input, Tensor &output,
                     (size_t)Ho * Wi * Co * elt);
       }
     } else if (axis == 3) {
+      auto &tm = ThreadManager::Global();
       for (unsigned int b = 0; b < B; ++b) {
-        for (unsigned int h = 0; h < Ho; ++h) {
+        tm.parallel_for(0, Ho, [&](size_t h) {
           std::memcpy(out + ((size_t)b * Ho + h) * Wo * Co,
                       in + ((size_t)b * Hi + h) * Wi * Ci + (size_t)start * Ci,
                       (size_t)Wo * Co * elt);
-        }
+        });
       }
     }
     return;
