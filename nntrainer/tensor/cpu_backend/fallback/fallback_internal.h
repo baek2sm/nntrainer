@@ -916,6 +916,15 @@ void __fallback_gemm_q4_0(const unsigned int M, const unsigned int N,
                           const unsigned int ldb, T *C, const unsigned int ldc);
 
 /**
+ * @brief q8_0 GEMM (scalar reference) : A (M,K) * W.T (N,K) = O (M,N)
+ */
+template <typename T = float>
+void __fallback_gemm_q8_0(const unsigned int M, const unsigned int N,
+                          const unsigned int K, const T *A,
+                          const unsigned int lda, const void *B,
+                          const unsigned int ldb, T *C, const unsigned int ldc);
+
+/**
  * @brief q4_K GEMM : A (M,K) * W.T (N,K) = O (M,N)
  *
  * @param M Original row size of output
@@ -1266,6 +1275,7 @@ void __fallback_clamp(const T *input, T *output, size_t length,
  */
 void __fallback_create_q4_0_weights(const uint8_t *int4_weight,
                                     uint8_t *q4_0_weight);
+
 
 /**
  * @brief Transform data from in-memory layout osv32_isv2 to block_q4_0x8 or
