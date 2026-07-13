@@ -50,6 +50,7 @@
 #if !defined(_WIN32)
 #include "qwen3_cached_slim_moe_causallm.h"
 #endif
+#include "YOLOv11/yolov11.h"
 #include "qwen3_causallm.h"
 #include "YOLOv11/yolov11.h"
 #include "qwen3_embedding.h"
