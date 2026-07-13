@@ -43,8 +43,7 @@ namespace quick_ai {
  * from YOLO_* env vars. Standard fields (model_tensor_type, batch_size) are
  * consumed by the base Transformer; YOLO-specific fields are stored here.
  */
-void Yolov11::setupParameters(json &cfg, json &generation_cfg,
-                                         json &nntr_cfg) {
+void Yolov11::setupParameters(json &cfg, json &generation_cfg, json &nntr_cfg) {
   (void)generation_cfg;
   (void)cfg; // YOLOv11 architecture is fixed; widths come from the variant.
 
@@ -96,8 +95,7 @@ void Yolov11::setupParameters(json &cfg, json &generation_cfg,
  *
  * @return {input, {P3, P4, P5}}.
  */
-std::pair<Tensor, std::vector<Tensor>>
-Yolov11::constructYoloModel() const {
+std::pair<Tensor, std::vector<Tensor>> Yolov11::constructYoloModel() const {
   // Activation dtype from the "weight-act" pair in model_tensor_type.
   const std::string &mtt = MODEL_TENSOR_TYPE;
   const auto dash = mtt.find('-');
@@ -215,9 +213,8 @@ void Yolov11::registerCustomLayers() {
  * yolo_postprocess.h. The Model::inference contract takes float* inputs; FP16
  * activations are produced internally by the framework from the FP32 feed.
  */
-void Yolov11::run(const WSTR prompt, bool do_sample,
-                             const WSTR system_prompt, const WSTR tail_prompt,
-                             bool log_output) {
+void Yolov11::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
+                  const WSTR tail_prompt, bool log_output) {
   (void)do_sample;
   (void)system_prompt;
   (void)tail_prompt;

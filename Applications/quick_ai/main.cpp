@@ -52,7 +52,6 @@
 #endif
 #include "YOLOv11/yolov11.h"
 #include "qwen3_causallm.h"
-#include "YOLOv11/yolov11.h"
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
 #include "qwen3_slim_moe_causallm.h"
@@ -325,8 +324,7 @@ int main(int argc, char *argv[]) {
     });
   quick_ai::Factory::Instance().registerModel(
     "YOLOv11ForDetection", [](json cfg, json generation_cfg, json nntr_cfg) {
-      return std::make_unique<quick_ai::Yolov11>(cfg, generation_cfg,
-                                                 nntr_cfg);
+      return std::make_unique<quick_ai::Yolov11>(cfg, generation_cfg, nntr_cfg);
     });
 
   // Validate arguments

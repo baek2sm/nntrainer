@@ -407,11 +407,10 @@ void registerAllModels() {
                             cfg, generation_cfg, nntr_cfg);
                         });
 #endif
-  factory.registerModel("YOLOv11ForDetection",
-                        [](json cfg, json generation_cfg, json nntr_cfg) {
-                          return std::make_unique<quick_ai::Yolov11>(
-                            cfg, generation_cfg, nntr_cfg);
-                        });
+  factory.registerModel(
+    "YOLOv11ForDetection", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<quick_ai::Yolov11>(cfg, generation_cfg, nntr_cfg);
+    });
 }
 
 /**
