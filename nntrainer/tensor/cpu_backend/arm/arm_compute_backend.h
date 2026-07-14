@@ -12,6 +12,13 @@
  */
 #ifndef __ARM_COMPUTE_BACKEND_H__
 #define __ARM_COMPUTE_BACKEND_H__
+
+#if defined(__GNUC__) || defined(__clang__)
+#define NNTR_VISIBILITY __attribute__((visibility("default")))
+#else
+#define NNTR_VISIBILITY
+#endif
+
 #ifdef __cplusplus
 
 #include <cfloat>
@@ -1440,6 +1447,44 @@ void dequantize_row_q8_0(const void *x_raw, T *y, int64_t k);
 void rms_norm_wrt_width_fp32_intrinsic(const float *__restrict X,
                                        float *__restrict Y, size_t H, size_t W,
                                        float epsilon);
+
+/**
+ * @brief Causal depthwise Conv1D prefill for kernel size 3.
+ *
+ * Computes output[b, t, c] = w0[c] * x[b, t, c] +
+ *                            w1[c] * x[b, t - 1, c] +
+ *                            w2[c] * x[b, t - 2, c] + bias[c].
+ * Missing causal history for t < 2 is treated as zero.
+ *
+ * @param input input tensor in contiguous [B, H, W] order
+ * @param packed_weight packed weights [w0 | w1 | w2], each W floats
+ * @param bias optional bias, W floats, can be nullptr
+ * @param output output tensor in contiguous [B, H, W] order
+ * @param B batch size
+ * @param H sequence length
+ * @param W feature width / channel count
+ */
+void causal_depthwise_conv1d_k3(const float *input, const float *packed_weight,
+                                const float *bias, float *output,
+                                unsigned int B, unsigned int H, unsigned int W);
+
+/**
+ * @brief Single-token decode step for causal depthwise Conv1D kernel size 3.
+ *
+ * Uses state[0..W-1] as x_{t-2} and state[W..2W-1] as x_{t-1},
+ * computes y_cur = w0*x_cur + w1*x_{t-1} + w2*x_{t-2}, then updates
+ * the state in-place to [x_{t-1} | x_t].
+ *
+ * @param x_cur current token features, W floats
+ * @param packed_weight packed weights [w0 | w1 | w2], each W floats
+ * @param state rolling causal state, 2 * W floats, updated in-place
+ * @param y_cur output for the current token, W floats
+ * @param W feature width / channel count
+ */
+void causal_depthwise_conv1d_k3_decode(const float *x_cur,
+                                       const float *packed_weight, float *state,
+                                       float *y_cur, unsigned int W);
+
 #ifdef ENABLE_FP16
 /**
  * @brief rms normalization computation w.r.t. width in H*W matrix input
@@ -1560,9 +1605,10 @@ void transform_int4_osv32_isv2_to_q4_0(size_t N, size_t K,
  * @param[out] rhs_scales_f32 matrix quant scale after quantization
  * @param[in] is_nxk true if the quantized matrix in stored in nxk format
  */
-__attribute__((visibility("default"))) void quant_qs4cx_f32(size_t n, size_t k, void *rhs_native_mtx_f32,
-                     void *rhs_native_mtx_qs4cx, void *rhs_scales_f32,
-                     bool is_nxk);
+NNTR_VISIBILITY void quant_qs4cx_f32(size_t n, size_t k,
+                                     void *rhs_native_mtx_f32,
+                                     void *rhs_native_mtx_qs4cx,
+                                     void *rhs_scales_f32, bool is_nxk);
 
 /**
  * @brief get size of memory to allocate for packed rhs from nxk qs4cxs1s0 to

@@ -97,7 +97,7 @@ TEST(Q8_0_Tensor, rejects_invalid_dim) {
 }
 
 TEST(Q8_0_Tensor, allocate_and_size_accounting) {
-  nntrainer::Q8_0_Tensor t(q80_dim(), /*alloc_now=*/true);
+  nntrainer::Q8_0_Tensor t(q80_dim(), true);
   EXPECT_EQ(t.size(), EXPECTED_BYTES);
   EXPECT_EQ(t.getMemoryBytes(), EXPECTED_BYTES);
 
@@ -122,7 +122,7 @@ TEST(Q8_0_Tensor, factory_dispatch_creates_q8_0_tensor) {
   // Going through nntrainer::Tensor (not Q8_0_Tensor directly) should still
   // produce a Q8_0-backed tensor that reports size()/getMemoryBytes() in
   // packed-Q8_0 units.
-  nntrainer::Tensor t(q80_dim(), /*alloc_now=*/true);
+  nntrainer::Tensor t(q80_dim(), true);
   EXPECT_EQ(t.getDataType(), nntrainer::TensorDim::DataType::Q8_0);
   EXPECT_EQ(t.size(), EXPECTED_BYTES);
   EXPECT_EQ(t.getMemoryBytes(), EXPECTED_BYTES);

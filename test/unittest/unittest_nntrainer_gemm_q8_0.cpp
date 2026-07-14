@@ -76,10 +76,18 @@ static void gemm_fp32_ref(unsigned int M, unsigned int N, unsigned int K,
   }
 }
 
+/**
+ * @struct Shape
+ * @brief GEMM dimensions shape parameter.
+ */
 struct Shape {
   unsigned int M, N, K;
 };
 
+/**
+ * @class GemmQ8_0Param
+ * @brief Parameterized test fixture for Q8_0 GEMM.
+ */
 class GemmQ8_0Param : public ::testing::TestWithParam<Shape> {};
 
 } // namespace
