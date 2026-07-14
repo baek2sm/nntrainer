@@ -69,10 +69,8 @@ private:
     PROJ_OUT = 4 ///< [B*nh, 1, N, vd] attention output before scatter
   };
 
-  unsigned int dim_; ///< input channels (= 512)
+  unsigned int dim_; ///< input channels
   static constexpr unsigned int NUM_HEADS = 4;
-  static constexpr unsigned int KD = 32; ///< key dim per head
-  static constexpr unsigned int VD = 64; ///< val dim per head
 
   std::array<unsigned int, 5> scratch_idx_; ///< scratch slot handles
   nntrainer::ActiFunc sm;                   ///< softmax (dtype-aware)

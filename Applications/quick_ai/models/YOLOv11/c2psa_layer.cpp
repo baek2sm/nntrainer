@@ -28,17 +28,17 @@ void PSAAttentionLayer::finalize(nntrainer::InitLayerContext &context) {
   const nntrainer::TensorDim &in_dim = context.getInputDimensions()[0];
   dim_ = in_dim.channel();
 
-  const unsigned int expected = NUM_HEADS * KD * 2 + NUM_HEADS * VD; // 512
-  NNTR_THROW_IF(dim_ != expected, std::invalid_argument)
-    << "PSAAttentionLayer expects " << expected << " input channels, got "
-    << dim_;
+  // Validate that input channels is a multiple of NUM_HEADS * 4.
+  NNTR_THROW_IF(dim_ % (NUM_HEADS * 4) != 0, std::invalid_argument)
+    << "PSAAttentionLayer expects input channels to be a multiple of "
+    << (NUM_HEADS * 4) << ", got " << dim_;
 
   const unsigned int B = in_dim.batch();
   const unsigned int N = in_dim.height() * in_dim.width();
   const unsigned int nh = NUM_HEADS;
-  const unsigned int kd = KD;
-  const unsigned int vd = VD;
-  const unsigned int v_ch = nh * vd; // 256
+  const unsigned int kd = dim_ / 16;
+  const unsigned int vd = dim_ / 8;
+  const unsigned int v_ch = nh * vd;
 
   nntrainer::TensorDim out_dim = in_dim;
   out_dim.channel(v_ch);
@@ -124,9 +124,9 @@ void PSAAttentionLayer::forwarding(nntrainer::RunLayerContext &context,
   const unsigned int W = in_t.width();
   const unsigned int N = H * W;
   const unsigned int nh = NUM_HEADS;
-  const unsigned int kd = KD;
-  const unsigned int vd = VD;
-  const unsigned int v_ch = nh * vd; // 256
+  const unsigned int kd = dim_ / 16;
+  const unsigned int vd = dim_ / 8;
+  const unsigned int v_ch = nh * vd;
 
   // Ultralytics per-head interleaved qkv layout: channel h*128 + [0:32]=Q,
   // [32:64]=K, [64:128]=V. Gather into head-major planar scratch tensors

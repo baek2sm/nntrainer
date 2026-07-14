@@ -98,23 +98,34 @@ inline int chAxis() { return 1; }
 struct ModelConfig {
   int w[5];    ///< backbone widths per stage (0=stem, 1, 2=P3, 3=P4, 4=P5)
   bool c3k[8]; ///< c3k flag per C3k2 block (m2,m4,m6,m8,m13,m16,m19,m22)
+  int n[8];    ///< number of bottlenecks per C3k2 block
 
-  /** Construct from a 5-element width array + 8 c3k flags. */
+  /** Construct from a 5-element width array, 8 c3k flags, and 8 bottleneck
+   * counts. */
   constexpr ModelConfig(int w0, int w1, int w2, int w3, int w4, bool c0,
                         bool c1, bool c2, bool c3, bool c4, bool c5, bool c6,
-                        bool c7) :
-    w{w0, w1, w2, w3, w4}, c3k{c0, c1, c2, c3, c4, c5, c6, c7} {}
+                        bool c7, int n0, int n1, int n2, int n3, int n4, int n5,
+                        int n6, int n7) :
+    w{w0, w1, w2, w3, w4}, c3k{c0, c1, c2, c3, c4, c5, c6, c7}, n{n0, n1, n2,
+                                                                  n3, n4, n5,
+                                                                  n6, n7} {}
 
   /** v11m preset (default): all C3k2 blocks use C3k. */
   static constexpr ModelConfig v11m() {
-    return {64,   128,  256,  512,  512,  true, true,
-            true, true, true, true, true, true};
+    return {64,   128,  256, 512, 512, true, true, true, true, true, true,
+            true, true, 2,   2,   2,   2,    2,    2,    2,    2};
   }
 
   /** v11s preset: C3k only for backbone m6/m8 and head m22. */
   static constexpr ModelConfig v11s() {
-    return {32,   64,   128,   256,   512,   false, false,
-            true, true, false, false, false, true};
+    return {32,    64,   128, 256, 512, false, false, true, true, false, false,
+            false, true, 1,   1,   1,   1,     1,     1,    1,    1};
+  }
+
+  /** v11n preset: C3k only for backbone m6/m8 and head m22. */
+  static constexpr ModelConfig v11n() {
+    return {16,    32,   64, 128, 256, false, false, true, true, false, false,
+            false, true, 1,  1,   1,   1,     1,     1,    1,    1};
   }
 };
 
@@ -182,12 +193,15 @@ inline Tensor bottleneck(const std::string &name, int ch, int inner_ch,
  * @brief Build a C3k sub-graph.
  */
 inline Tensor c3kBlock(const std::string &name, int in_ch, int inner_ch,
-                       int out_ch, Tensor input, bool conv_q40 = false) {
+                       int out_ch, Tensor input, bool conv_q40 = false,
+                       int n = 2) {
   auto inner =
     convBnSilu(name + "/cv1", in_ch, inner_ch, 1, 1, 0, input, conv_q40);
   // C3k inner bottlenecks use expansion=1.0 (inner_ch → inner_ch → inner_ch)
-  inner = bottleneck(name + "/inner0", inner_ch, inner_ch, inner, conv_q40);
-  inner = bottleneck(name + "/inner1", inner_ch, inner_ch, inner, conv_q40);
+  for (int i = 0; i < n; ++i) {
+    inner = bottleneck(name + "/inner" + std::to_string(i), inner_ch, inner_ch,
+                       inner, conv_q40);
+  }
   auto skip =
     convBnSilu(name + "/cv2", in_ch, inner_ch, 1, 1, 0, input, conv_q40);
 
@@ -208,7 +222,8 @@ inline Tensor c3kBlock(const std::string &name, int in_ch, int inner_ch,
  *             c3k=True when c >= c3k_threshold (typically 256).
  */
 inline Tensor c3k2Block(const std::string &name, int in_ch, int out_ch, int c,
-                        Tensor input, bool conv_q40 = false, bool c3k = false) {
+                        Tensor input, bool conv_q40 = false, bool c3k = false,
+                        int n = 2) {
   auto y = convBnSilu(name + "/cv1", in_ch, 2 * c, 1, 1, 0, input, conv_q40);
 
   LayerHandle sliceA(
@@ -227,7 +242,7 @@ inline Tensor c3k2Block(const std::string &name, int in_ch, int out_ch, int c,
 
   Tensor y_c;
   if (c3k) {
-    y_c = c3kBlock(name + "/m0", c, c / 2, c, y_b, conv_q40);
+    y_c = c3kBlock(name + "/m0", c, c / 2, c, y_b, conv_q40, n);
   } else {
     // Plain Bottleneck: cv1(3x3) + cv2(3x3) + residual add
     // Expansion=0.5: inner channels = c/2
@@ -502,18 +517,18 @@ inline Tensor buildBackbone(Tensor xIn, Tensor &m4_out, Tensor &m6_out,
   auto h = yolov11::convBnSilu("conv0", 3, cfg.w[0], 3, 2, 1, xIn, conv_q40);
   h = yolov11::convBnSilu("conv1", cfg.w[0], cfg.w[1], 3, 2, 1, h, conv_q40);
   h = yolov11::c3k2Block("m2", cfg.w[1], cfg.w[2], cfg.w[0], h, conv_q40,
-                         cfg.c3k[0]);
+                         cfg.c3k[0], cfg.n[0]);
   h = yolov11::convBnSilu("conv3", cfg.w[2], cfg.w[2], 3, 2, 1, h, conv_q40);
   m4_out = yolov11::c3k2Block("m4", cfg.w[2], cfg.w[3], cfg.w[1], h, conv_q40,
-                              cfg.c3k[1]);
+                              cfg.c3k[1], cfg.n[1]);
   h =
     yolov11::convBnSilu("conv5", cfg.w[3], cfg.w[3], 3, 2, 1, m4_out, conv_q40);
   m6_out = yolov11::c3k2Block("m6", cfg.w[3], cfg.w[3], cfg.w[2], h, conv_q40,
-                              cfg.c3k[2]);
+                              cfg.c3k[2], cfg.n[2]);
   h =
     yolov11::convBnSilu("conv7", cfg.w[3], cfg.w[4], 3, 2, 1, m6_out, conv_q40);
   h = yolov11::c3k2Block("m8", cfg.w[4], cfg.w[4], cfg.w[4] / 2, h, conv_q40,
-                         cfg.c3k[3]);
+                         cfg.c3k[3], cfg.n[3]);
   h = yolov11::sppfBlock("m9", cfg.w[4], h, conv_q40);
   return buildC2PSA("m10", h, cfg, conv_q40);
 }
@@ -539,25 +554,29 @@ inline std::vector<Tensor> buildHead(Tensor m4, Tensor m6, Tensor m10, int nc,
   // m22: in = w[3]+w[4], out = w[4], c = w[4]/2
   auto m11 = upsampleX2("m11", m10);
   auto m12 = concatCh("m12", {m11, m6});
-  auto m13 = yolov11::c3k2Block("m13", cfg.w[4] + cfg.w[3], cfg.w[3],
-                                cfg.w[3] / 2, m12, conv_q40, cfg.c3k[4]);
+  auto m13 =
+    yolov11::c3k2Block("m13", cfg.w[4] + cfg.w[3], cfg.w[3], cfg.w[3] / 2, m12,
+                       conv_q40, cfg.c3k[4], cfg.n[4]);
 
   auto m14 = upsampleX2("m14", m13);
   auto m15 = concatCh("m15", {m14, m4});
-  auto m16 = yolov11::c3k2Block("m16", cfg.w[3] + cfg.w[2], cfg.w[2],
-                                cfg.w[2] / 2, m15, conv_q40, cfg.c3k[5]);
+  auto m16 =
+    yolov11::c3k2Block("m16", cfg.w[3] + cfg.w[2], cfg.w[2], cfg.w[2] / 2, m15,
+                       conv_q40, cfg.c3k[5], cfg.n[5]);
 
   auto m17 =
     yolov11::convBnSilu("m17", cfg.w[2], cfg.w[2], 3, 2, 1, m16, conv_q40);
   auto m18 = concatCh("m18", {m17, m13});
-  auto m19 = yolov11::c3k2Block("m19", cfg.w[2] + cfg.w[3], cfg.w[3],
-                                cfg.w[3] / 2, m18, conv_q40, cfg.c3k[6]);
+  auto m19 =
+    yolov11::c3k2Block("m19", cfg.w[2] + cfg.w[3], cfg.w[3], cfg.w[3] / 2, m18,
+                       conv_q40, cfg.c3k[6], cfg.n[6]);
 
   auto m20 =
     yolov11::convBnSilu("m20", cfg.w[3], cfg.w[3], 3, 2, 1, m19, conv_q40);
   auto m21 = concatCh("m21", {m20, m10});
-  auto m22 = yolov11::c3k2Block("m22", cfg.w[3] + cfg.w[4], cfg.w[4],
-                                cfg.w[4] / 2, m21, conv_q40, cfg.c3k[7]);
+  auto m22 =
+    yolov11::c3k2Block("m22", cfg.w[3] + cfg.w[4], cfg.w[4], cfg.w[4] / 2, m21,
+                       conv_q40, cfg.c3k[7], cfg.n[7]);
 
   // Detect head: pi_ch = w[2] for P3, w[3] for P4, w[4] for P5
   // cls_ch = w[2] (256 for v11m, 128 for v11s)

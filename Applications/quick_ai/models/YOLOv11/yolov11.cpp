@@ -81,6 +81,8 @@ void Yolov11::setupParameters(json &cfg, json &generation_cfg, json &nntr_cfg) {
 
   if (YOLO_VARIANT == "v11s" || YOLO_VARIANT == "V11S") {
     cfg_ = yolov11::ModelConfig::v11s();
+  } else if (YOLO_VARIANT == "v11n" || YOLO_VARIANT == "V11N") {
+    cfg_ = yolov11::ModelConfig::v11n();
   } else {
     cfg_ = yolov11::ModelConfig::v11m();
   }
