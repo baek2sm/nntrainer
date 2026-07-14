@@ -21,3 +21,8 @@ if get_option('platform') != 'windows'
     subdir('gpt_oss_cached_slim')
     subdir('qwen3_cached_slim_moe')
 endif
+
+# PFLD face landmark inference example
+if get_option('enable-app')
+    subdir('PFLD/jni')
+endif
