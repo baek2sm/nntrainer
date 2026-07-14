@@ -33,7 +33,7 @@ public:
    * once
    * @return Instance to singleton class reference
    */
-  static T &Global() {
+  __attribute__((visibility("default"))) static T &Global() {
     static T instance;
     instance.initializeOnce();
     return instance;

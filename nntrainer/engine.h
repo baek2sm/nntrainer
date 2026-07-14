@@ -48,7 +48,7 @@ namespace {} // namespace
  * @class Engine contains user-dependent configuration
  * @brief App
  */
-class Engine : public Singleton<Engine> {
+class __attribute__((visibility("default"))) Engine : public Singleton<Engine> {
 protected:
   static const int RegisterContextMax = 16;
   static nntrainer::Context *nntrainerRegisteredContext[RegisterContextMax];
