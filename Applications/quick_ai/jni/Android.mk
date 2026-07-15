@@ -30,6 +30,7 @@ CAUSALLM_COMMON_INCLUDES := \
     $(LOCAL_PATH)/../models/timm_vit \
     $(LOCAL_PATH)/../models/deberta_v2 \
     $(LOCAL_PATH)/../models/gemma4 \
+    $(LOCAL_PATH)/../models/ResNet/jni \
     $(LOCAL_PATH)/../models/xlm_roberta \
     $(LOCAL_PATH)/../third_party/minja/include \
     $(LOCAL_PATH)/../third_party \
@@ -107,6 +108,8 @@ LOCAL_SRC_FILES := \
     ../models/deberta_v2/deberta_v2.cpp \
     ../models/bert/bert_transformer.cpp \
     ../models/xlm_roberta/xlm_roberta.cpp \
+    ../models/ResNet/resnet.cpp \
+    ../models/ResNet/jni/prelu_layer.cpp \
     ../layers/deberta_attention_layer.cpp \
     ../layers/shared_fully_connected_layer.cpp \
     ../api/streamer.cpp \
@@ -244,6 +247,8 @@ LOCAL_SRC_FILES := ../quantize.cpp \
     ../models/deberta_v2/deberta_v2.cpp \
     ../models/bert/bert_transformer.cpp \
     ../models/xlm_roberta/xlm_roberta.cpp \
+    ../models/ResNet/resnet.cpp \
+    ../models/ResNet/jni/prelu_layer.cpp \
     ../layers/deberta_attention_layer.cpp \
     ../layers/shared_fully_connected_layer.cpp \
     ../api/streamer.cpp
@@ -266,6 +271,7 @@ LOCAL_C_INCLUDES += $(NNTRAINER_INCLUDES) \
     $(LOCAL_PATH)/../models/bert \
     $(LOCAL_PATH)/../models/deberta_v2 \
     $(LOCAL_PATH)/../models/gemma4 \
+    $(LOCAL_PATH)/../models/ResNet/jni \
     $(LOCAL_PATH)/../models/xlm_roberta \
     $(LOCAL_PATH)/../models/timm_vit
 

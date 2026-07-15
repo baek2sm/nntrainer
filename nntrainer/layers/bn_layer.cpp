@@ -73,11 +73,7 @@ void BatchNormalizationLayer::finalize(InitLayerContext &context) {
   auto const &in_dim = context.getInputDimensions()[0];
   context.setOutputDimensions(context.getInputDimensions());
 
-  TensorDim dim(context.getFormat(), context.getWeightDataType());
-
-  if (context.getExecutionMode() == ml::train::ExecutionMode::TRAIN) {
-    dim.setDataType(TensorDim::DataType::FP32);
-  }
+  TensorDim dim(context.getFormat(), TensorDim::DataType::FP32);
 
   /// @note this logic cannot tell channel is actually 1 or it is just not used.
   auto &axis_prop = std::get<props::Axis>(bn_props);
@@ -253,7 +249,21 @@ void BatchNormalizationLayer::forwarding(RunLayerContext &context,
     input_.subtract(mu, deviation);
     /** @todo do below 2 lines only for first iteration */
     var.add(epsilon, invstd);
+    if (std::getenv("NNTR_DEBUG_FORWARD") != nullptr) {
+      std::cout << "[debug_bn] layer: " << mu.getName()
+                << " epsilon: " << epsilon << std::endl;
+      std::cout << "  mu min/max: " << mu.minValue() << " / " << mu.maxValue()
+                << std::endl;
+      std::cout << "  var min/max: " << var.minValue() << " / "
+                << var.maxValue() << std::endl;
+      std::cout << "  invstd before pow min/max: " << invstd.minValue() << " / "
+                << invstd.maxValue() << std::endl;
+    }
     invstd.pow_i(-0.5f);
+    if (std::getenv("NNTR_DEBUG_FORWARD") != nullptr) {
+      std::cout << "  invstd after pow min/max: " << invstd.minValue() << " / "
+                << invstd.maxValue() << std::endl;
+    }
   }
 
   deviation.multiply(invstd, hidden_);
@@ -455,7 +465,8 @@ void BatchNormalizationLayer::read(std::ifstream &file,
           T_read.read(file);
           run_context.getWeight(i).copyData(T_read);
         } else {
-          run_context.getWeight(i).read(file, start_offset);
+          run_context.getWeight(i).read(file, start_offset, read_from_offset,
+                                        file_fd);
         }
 
         if (run_context.isMixedPrecision(i) && trainable &&
@@ -501,7 +512,8 @@ void BatchNormalizationLayer::read(ReadSource src, RunLayerContext &run_context,
           T_read.read(src);
           run_context.getWeight(i).copyData(T_read);
         } else {
-          run_context.getWeight(i).read(src, start_offset);
+          run_context.getWeight(i).read(src, start_offset, read_from_offset,
+                                        file_fd);
         }
 
         if (run_context.isMixedPrecision(i) && trainable &&

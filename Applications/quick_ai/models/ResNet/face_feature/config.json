@@ -1,0 +1,4 @@
+{
+    "architectures": ["ResNet"],
+    "model_type": "Model"
+}

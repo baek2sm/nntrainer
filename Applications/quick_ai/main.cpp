@@ -50,6 +50,7 @@
 #if !defined(_WIN32)
 #include "qwen3_cached_slim_moe_causallm.h"
 #endif
+#include "ResNet/resnet.h"
 #include "qwen3_causallm.h"
 #include "qwen3_embedding.h"
 #include "qwen3_moe_causallm.h"
@@ -316,6 +317,10 @@ int main(int argc, char *argv[]) {
     "TimmViT", [](json cfg, json generation_cfg, json nntr_cfg) {
       return std::make_unique<quick_ai::TimmViTTransformer>(cfg, generation_cfg,
                                                             nntr_cfg);
+    });
+  quick_ai::Factory::Instance().registerModel(
+    "ResNet", [](json cfg, json generation_cfg, json nntr_cfg) {
+      return std::make_unique<quick_ai::ResNet>(cfg, generation_cfg, nntr_cfg);
     });
 
   // Validate arguments

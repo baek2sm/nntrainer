@@ -77,6 +77,10 @@ void TensorBase::read(std::ifstream &file, size_t start_offset,
     << "read size: " << bytes()
     << " is too big. It cannot be represented by std::streamsize";
 
+  if (getData() == nullptr) {
+    return;
+  }
+
   checkedRead(file, (char *)getData(), sz, "[Tensor::read] operation failed",
               start_offset, read_from_offset);
   putData();
@@ -92,6 +96,15 @@ void TensorBase::read(ReadSource src, size_t start_offset,
   NNTR_THROW_IF(sz < 0, std::invalid_argument)
     << "read size: " << bytes()
     << " is too big. It cannot be represented by std::streamsize";
+
+  if (getData() == nullptr) {
+    return;
+  }
+
+  if (std::getenv("NNTR_DEBUG_FORWARD") != nullptr) {
+    std::cout << "[debug_read] tensor: " << getName()
+              << " offset: " << start_offset << " bytes: " << sz << std::endl;
+  }
 
   checkedRead(src, (char *)getData(), sz, "[Tensor::read] operation failed",
               start_offset, read_from_offset);

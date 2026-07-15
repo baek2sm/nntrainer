@@ -1,0 +1,25 @@
+{
+    "model_type": "Model",
+    "model_tensor_type": "FP32-FP32",
+    "model_file_name": "face_feature_q8_0.safetensors",
+
+    "fc_layer_dtype": "FP32",
+    "embedding_dtype": "FP32",
+    "conv_dtype": "Q8_0",
+
+    "batch_size": 1,
+    "init_seq_len": 1,
+    "max_seq_len": 1,
+    "num_to_generate": 0,
+    "skip_tokenizer": true,
+
+    "imgsz": 112,
+    "use_mona": 0.0,
+
+    "yolo_verify": true,
+    "yolo_dump_raw": true,
+    "yolo_bench_iters": 100,
+    "yolo_ref_dir": ".",
+
+    "sample_input": "input.raw"
+}

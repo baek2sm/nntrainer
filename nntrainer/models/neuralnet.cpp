@@ -486,6 +486,49 @@ sharedConstTensors NeuralNetwork::forwarding(
       model_graph.inActive(f);
       model_graph.LoadTensors(f + lookahead);
     }
+
+    if (std::getenv("NNTR_DEBUG_FORWARD") != nullptr) {
+      std::cout << "[debug_forward] node: " << node->getName() << " type: " << node->getType() << std::endl;
+      for (unsigned int i = 0; i < node->getNumOutputs(); ++i) {
+        auto &t = node->getOutput(i);
+        if (t.getDataType() == ml::train::TensorDim::DataType::FP32 || t.getDataType() == ml::train::TensorDim::DataType::FP16) {
+          const void *d_ptr = t.getData();
+          float sum = 0.0f;
+          float max = -1e9f;
+          float min = 1e9f;
+          unsigned int nan_count = 0;
+          size_t len = t.getDim().getDataLen();
+          if (t.getDataType() == ml::train::TensorDim::DataType::FP32) {
+            const float *d = reinterpret_cast<const float *>(d_ptr);
+            for (size_t k = 0; k < len; ++k) {
+              float val = d[k];
+              if (std::isnan(val)) {
+                nan_count++;
+              } else {
+                sum += val;
+                if (val > max) max = val;
+                if (val < min) min = val;
+              }
+            }
+          } else {
+#ifdef ENABLE_FP16
+            const _FP16 *d = reinterpret_cast<const _FP16 *>(d_ptr);
+            for (size_t k = 0; k < len; ++k) {
+              float val = (float)d[k];
+              if (std::isnan(val)) {
+                nan_count++;
+              } else {
+                sum += val;
+                if (val > max) max = val;
+                if (val < min) min = val;
+              }
+            }
+#endif
+          }
+          std::cout << "  out[" << i << "] shape: " << t.getDim() << " sum: " << sum << " min: " << min << " max: " << max << " nan_count: " << nan_count << std::endl;
+        }
+      }
+    }
   };
 
   return model_graph.forwarding(training, forwarding_op, stop_cb, userdata);
@@ -1271,6 +1314,9 @@ void NeuralNetwork::load(const std::string &file_path,
           continue;
         const std::string &name = weight->getName();
         auto it = name_offset_map.find(name);
+        if (std::getenv("NNTR_DEBUG_FORWARD") != nullptr) {
+          std::cout << "  Weight name in NNTrainer: " << name << " matched: " << (it != name_offset_map.end()) << std::endl;
+        }
         if (it == name_offset_map.end())
           continue;
         const size_t file_off = data_base + it->second.first;

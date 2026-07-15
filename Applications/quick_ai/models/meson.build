@@ -15,6 +15,7 @@ subdir('qwen3_slim_moe')
 subdir('gemma3')
 subdir('timm_vit')
 subdir('gemma4')
+subdir('ResNet')
 if get_option('platform') != 'windows'
     subdir('bert')
     subdir('xlm_roberta')
