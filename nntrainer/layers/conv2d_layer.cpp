@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include <acti_func.h>
 #include <conv2d_layer.h>
 #include <conv_indirect.h> // repack_q8_0 (q8_0x4 weight interleave for the indirect conv kernel)
 #include <cpu_backend.h>
@@ -47,138 +48,6 @@ namespace nntrainer {
 static constexpr size_t SINGLE_INOUT_IDX = 0;
 
 namespace {
-
-#ifdef ENABLE_FP16
-static const _FP16 *get_silu_lut_fp16() {
-  static std::vector<_FP16> lut;
-  static std::once_flag init_flag;
-  std::call_once(init_flag, []() {
-    lut.resize(65536);
-    for (uint32_t i = 0; i < 65536; ++i) {
-      uint16_t u = static_cast<uint16_t>(i);
-      _FP16 x = *reinterpret_cast<const _FP16 *>(&u);
-      float x_f = static_cast<float>(x);
-      if (std::isnan(x_f)) {
-        lut[i] = x;
-      } else if (std::isinf(x_f)) {
-        if (x_f > 0.0f)
-          lut[i] = x;
-        else
-          lut[i] = (_FP16)0.0f;
-      } else {
-        float silu = x_f / (1.0f + std::exp(-x_f));
-        lut[i] = static_cast<_FP16>(silu);
-      }
-    }
-  });
-  return lut.data();
-}
-#endif
-
-/**
- * @brief In-place SiLU / swish (x * sigmoid(x)) over a contiguous buffer.
- */
-template <typename T>
-static inline void convApplySwishInplace(T *data, size_t n) {
-  auto &tm = ThreadManager::Global();
-  const size_t nthreads = std::max<size_t>(1, tm.getComputeThreadCount());
-  const size_t chunk = (n + nthreads - 1) / nthreads;
-
-#ifdef ENABLE_FP16
-  if constexpr (std::is_same_v<T, _FP16>) {
-    const _FP16 *lut = get_silu_lut_fp16();
-    tm.parallel_for(0, nthreads, [&](size_t t) {
-      const size_t start = t * chunk;
-      if (start >= n)
-        return;
-      const size_t end = std::min(start + chunk, n);
-      size_t i = start;
-      for (; i + 7 < end; i += 8) {
-        uint16_t u0 = *reinterpret_cast<const uint16_t *>(&data[i + 0]);
-        uint16_t u1 = *reinterpret_cast<const uint16_t *>(&data[i + 1]);
-        uint16_t u2 = *reinterpret_cast<const uint16_t *>(&data[i + 2]);
-        uint16_t u3 = *reinterpret_cast<const uint16_t *>(&data[i + 3]);
-        uint16_t u4 = *reinterpret_cast<const uint16_t *>(&data[i + 4]);
-        uint16_t u5 = *reinterpret_cast<const uint16_t *>(&data[i + 5]);
-        uint16_t u6 = *reinterpret_cast<const uint16_t *>(&data[i + 6]);
-        uint16_t u7 = *reinterpret_cast<const uint16_t *>(&data[i + 7]);
-        data[i + 0] = lut[u0];
-        data[i + 1] = lut[u1];
-        data[i + 2] = lut[u2];
-        data[i + 3] = lut[u3];
-        data[i + 4] = lut[u4];
-        data[i + 5] = lut[u5];
-        data[i + 6] = lut[u6];
-        data[i + 7] = lut[u7];
-      }
-      for (; i < end; ++i) {
-        uint16_t u = *reinterpret_cast<const uint16_t *>(&data[i]);
-        data[i] = lut[u];
-      }
-    });
-    return;
-  }
-#endif
-
-  static const bool use_approx = []() {
-    if (const char *env_p = std::getenv("NNTR_APPROX_SILU")) {
-      return std::string(env_p) == "1";
-    }
-    return false;
-  }();
-
-  tm.parallel_for(0, nthreads, [&](size_t t) {
-    const size_t start = t * chunk;
-    if (start >= n)
-      return;
-    const size_t end = std::min(start + chunk, n);
-    size_t i = start;
-
-    if (use_approx) {
-#if defined(__ARM_NEON) && defined(ENABLE_FP16)
-      if constexpr (std::is_same_v<T, _FP16>) {
-        const float32x4_t v_three = vdupq_n_f32(3.0f);
-        const float32x4_t v_six_inv = vdupq_n_f32(1.0f / 6.0f);
-        const float32x4_t v_zero = vdupq_n_f32(0.0f);
-        const float32x4_t v_six = vdupq_n_f32(6.0f);
-
-        for (; i + 7 < end; i += 8) {
-          float16x8_t vx =
-            vld1q_f16(reinterpret_cast<const __fp16 *>(&data[i]));
-
-          float32x4_t vx_lo = vcvt_f32_f16(vget_low_f16(vx));
-          float32x4_t v_add_lo = vaddq_f32(vx_lo, v_three);
-          float32x4_t v_relu6_lo =
-            vminq_f32(vmaxq_f32(v_add_lo, v_zero), v_six);
-          float32x4_t vres_lo =
-            vmulq_f32(vmulq_f32(vx_lo, v_relu6_lo), v_six_inv);
-
-          float32x4_t vx_hi = vcvt_f32_f16(vget_high_f16(vx));
-          float32x4_t v_add_hi = vaddq_f32(vx_hi, v_three);
-          float32x4_t v_relu6_hi =
-            vminq_f32(vmaxq_f32(v_add_hi, v_zero), v_six);
-          float32x4_t vres_hi =
-            vmulq_f32(vmulq_f32(vx_hi, v_relu6_hi), v_six_inv);
-
-          vst1q_f16(reinterpret_cast<__fp16 *>(&data[i]),
-                    vcombine_f16(vcvt_f16_f32(vres_lo), vcvt_f16_f32(vres_hi)));
-        }
-      }
-#endif
-      for (; i < end; ++i) {
-        const float x = static_cast<float>(data[i]);
-        float relu6 = std::max(0.0f, std::min(x + 3.0f, 6.0f));
-        data[i] = static_cast<T>(x * relu6 / 6.0f);
-      }
-    } else {
-      // EXACT original bca91663 baseline loop!
-      for (; i < end; ++i) {
-        const float x = static_cast<float>(data[i]);
-        data[i] = static_cast<T>(x / (1.0f + std::exp(-x)));
-      }
-    }
-  });
-}
 
 static TensorDim calcCol2ImOutputDim(const TensorDim &out,
                                      const TensorDim &kdim) {
@@ -871,11 +740,11 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     });
 
     // Fused activation epilogue for conv0 SiLU (Swish). Reuses the shared
-    // convApplySwishInplace helper (LUT-based for FP16) rather than duplicating
+    // applySwishInplace helper (LUT-based for FP16) rather than duplicating
     // the LUT lookup loop here.
     if (auto &act = std::get<props::FusedActivation>(conv_props);
         !act.empty() && act.get() == ActivationType::ACT_SWISH) {
-      convApplySwishInplace(out, hidden_.size());
+      applySwishInplace(out, hidden_.size());
     }
     return;
   }
@@ -1026,17 +895,12 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             if (is_1x1_s1 && !weight_is_q8) {
 #ifdef ENABLE_FP16
               if (can_q8act && q8_buf) {
-                // Fused: quantize NHWC activation directly into the
-                // block_q8_0x4 SMMLA layout and run the prepacked GEMM. This
-                // replaces the two passes (quantize -> block_q8_0, then dot()
-                // repacks to x4 with a per-call malloc) with one; output is
-                // bit-identical.
-                Q8_0_Tensor::quantize_nhwc_q8_0x4_rows(in_sub.getData<_FP16>(),
-                                                       in_ch_i, owoh, q8_buf);
-                Q8_0_Tensor::dot_prepacked_x4(
-                  (unsigned)owoh, (unsigned)in_ch_i, filter_size, q8_buf,
-                  filter_kernel.getData(), out_flat.getData<_FP16>(),
-                  filter_size);
+                // Fused NHWC 1x1 Q8_0-activation conv: the activation
+                // quantization + prepacked GEMM now live in Q8_0_Tensor, so
+                // conv2d only hands over the batch slice scratch and tensors.
+                Q8_0_Tensor::conv_nhwc_q8act_1x1(
+                  in_ch_i, (int)owoh, (int)filter_size, in_sub.getData<_FP16>(),
+                  q8_buf, filter_kernel, out_flat.getData<_FP16>());
               } else {
 #endif
                 Tensor act = in_sub;
@@ -1063,14 +927,11 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
               geom.out_w = out_dim.width();
 #ifdef ENABLE_FP16
               if (can_q8act && q8_buf) {
-                const int n_sp = geom.in_h * geom.in_w;
-                Q8_0_Tensor::quantize_nhwc_q8_0_rows(in_sub.getData<_FP16>(),
-                                                     n_sp, in_ch_i, q8_buf);
-                TensorDim q8dim({1, 1, (unsigned)n_sp, (unsigned)in_ch_i},
-                                {ml::train::TensorDim::Format::NCHW,
-                                 nntrainer::Tdatatype::Q8_0});
-                Q8_0_Tensor q8act(q8dim, q8_buf);
-                q8act.convQ4_0Indirect(filter_kernel, out_flat, geom);
+                // Fused NHWC non-1x1 Q8_0-activation indirect conv: activation
+                // quantization + indirect GEMM now live in Q8_0_Tensor.
+                Q8_0_Tensor::conv_nhwc_q8act_indirect(
+                  geom, in_sub.getData<_FP16>(), q8_buf, filter_kernel,
+                  out_flat);
               } else {
 #endif
                 geom.is_nhwc = true;
@@ -1088,10 +949,6 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             // path; the NCHW quant matmul/indirect fallbacks below assume a
             // Q4_0 weight operand, so reject Q8_0 here instead of silently
             // dispatching to the Q4_0 kernels.
-            // TODO(conv-generalization): the Q8_0 activation scratch ownership,
-            // NNTR_CONV_Q8ACT dispatch, and the raw block_q8_0* reinterpret
-            // still live in conv2d_layer. Move the full Q8_0 NHWC conv into a
-            // Q8_0_Tensor conv op so conv2d stays layout/dtype-general.
             if (weight_is_q8) {
               throw std::runtime_error(
                 "Q8_0 conv weights require the NHWC indirect path.");
@@ -1615,11 +1472,11 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
     const size_t n = hidden_.size();
 #ifdef ENABLE_FP16
     if (hidden_.getDataType() == nntrainer::Tdatatype::FP16) {
-      convApplySwishInplace(hidden_.getData<_FP16>(), n);
+      applySwishInplace(hidden_.getData<_FP16>(), n);
     } else
 #endif
     {
-      convApplySwishInplace(hidden_.getData<float>(), n);
+      applySwishInplace(hidden_.getData<float>(), n);
     }
   }
 }

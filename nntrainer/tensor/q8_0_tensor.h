@@ -210,6 +210,52 @@ public:
                                         void *dst);
 
   /**
+   * @brief Fused NHWC 1x1 Q8_0-activation convolution for the W8A8 path.
+   *
+   * Quantizes the NHWC FP16 activation (in_ch-innermost, [owoh, in_ch])
+   * directly into the block_q8_0x4 SMMLA layout in @a qa_buf (single pass) and
+   * runs the prepacked Q8_0 x Q8_0 / Q4_0 GEMM, writing FP16 [owoh, out_ch]
+   * into @a out. Encapsulates the quantize_nhwc_q8_0x4_rows + dot_prepacked_x4
+   * pair so conv layers stay layout/dtype-general and do not own
+   * activation-quantization logic. Requires in_ch % 32 == 0 and ENABLE_FP16; @a
+   * qa_buf must hold the full block_q8_0x4 region (owoh/4 * 136 B) plus the
+   * owoh%4 remainder.
+   *
+   * @param in_ch   input channel count (must be divisible by 32)
+   * @param owoh    output spatial count (M)
+   * @param out_ch  output channel count (N == filter_size)
+   * @param act_nhwc FP16 NHWC activation, [owoh, in_ch] row-major
+   * @param qa_buf  caller-owned scratch (one batch slice) as block_q8_0 bytes
+   * @param weight  quantized weight tensor (Q8_0 or Q4_0) as [in_ch, out_ch]
+   * @param out     FP16 output, [1,1,owoh,out_ch] (NCHW flat)
+   */
+  static void conv_nhwc_q8act_1x1(int in_ch, int owoh, int out_ch,
+                                  const _FP16 *act_nhwc, void *qa_buf,
+                                  Tensor const &weight, _FP16 *out);
+
+  /**
+   * @brief Fused NHWC non-1x1 Q8_0-activation convolution via indirect GEMM.
+   *
+   * Quantizes the NHWC FP16 activation into plain block_q8_0 (n_spatial rows),
+   * wraps it as a Q8_0_Tensor view over @a qa_buf, and runs the indirect conv
+   * GEMM (im2col gather folded in) against @a weight, writing FP16 [owoh,
+   * out_ch] into @a out. Encapsulates quantize_nhwc_q8_0_rows +
+   * convQ4_0Indirect so conv layers do not handle activation quantization or
+   * raw block_q8_0 casting. Requires in_ch % 32 == 0 and ENABLE_FP16; @a qa_buf
+   * must hold n_spatial * (in_ch/32) block_q8_0 bytes.
+   *
+   * @param geom     indirect-conv geometry
+   * (in_ch/in_h/in_w/kernel/pad/stride/...)
+   * @param act_nhwc FP16 NHWC activation, [n_spatial, in_ch] row-major
+   * @param qa_buf   caller-owned scratch (one batch slice) as block_q8_0 bytes
+   * @param weight   quantized weight tensor (Q8_0 or Q4_0)
+   * @param out      FP16 output, [1,1,owoh,out_ch] (NCHW flat)
+   */
+  static void conv_nhwc_q8act_indirect(const ConvGatherParams &geom,
+                                       const _FP16 *act_nhwc, void *qa_buf,
+                                       Tensor const &weight, Tensor &out);
+
+  /**
    * @brief Transpose-and-quantize FP16 NCHW [in_ch, owoh] -> Q8_0 [owoh, in_ch]
    *        in a single fused pass (no intermediate transpose copy).
    *

@@ -482,6 +482,52 @@ void Q8_0_Tensor::quantize_nhwc_q8_0x4_rows(const _FP16 *src, int in_ch,
   }
 }
 
+void Q8_0_Tensor::conv_nhwc_q8act_1x1(int in_ch, int owoh, int out_ch,
+                                      const _FP16 *act_nhwc, void *qa_buf,
+                                      Tensor const &weight, _FP16 *out) {
+#ifdef ENABLE_FP16
+  // Quantize NHWC activation [owoh, in_ch] directly into block_q8_0x4 SMMLA
+  // layout, then run the prepacked GEMM. Single fused pass; bit-identical to
+  // the prior two-pass (quantize -> block_q8_0, then dot() repacks to x4).
+  quantize_nhwc_q8_0x4_rows(act_nhwc, in_ch, owoh, qa_buf);
+  dot_prepacked_x4((unsigned)owoh, (unsigned)in_ch, (unsigned)out_ch, qa_buf,
+                   weight.getData(), out, (unsigned)out_ch);
+#else
+  (void)in_ch;
+  (void)owoh;
+  (void)out_ch;
+  (void)act_nhwc;
+  (void)qa_buf;
+  (void)weight;
+  (void)out;
+  throw std::runtime_error(
+    "Q8_0_Tensor::conv_nhwc_q8act_1x1 requires ENABLE_FP16.");
+#endif
+}
+
+void Q8_0_Tensor::conv_nhwc_q8act_indirect(const ConvGatherParams &geom,
+                                           const _FP16 *act_nhwc, void *qa_buf,
+                                           Tensor const &weight, Tensor &out) {
+#ifdef ENABLE_FP16
+  const int n_sp = geom.in_h * geom.in_w;
+  quantize_nhwc_q8_0_rows(act_nhwc, n_sp, geom.in_ch,
+                          reinterpret_cast<block_q8_0 *>(qa_buf));
+  TensorDim q8dim(
+    {1, 1, (unsigned)n_sp, (unsigned)geom.in_ch},
+    {ml::train::TensorDim::Format::NCHW, nntrainer::Tdatatype::Q8_0});
+  Q8_0_Tensor q8act(q8dim, reinterpret_cast<block_q8_0 *>(qa_buf));
+  q8act.convQ4_0Indirect(weight, out, geom);
+#else
+  (void)geom;
+  (void)act_nhwc;
+  (void)qa_buf;
+  (void)weight;
+  (void)out;
+  throw std::runtime_error(
+    "Q8_0_Tensor::conv_nhwc_q8act_indirect requires ENABLE_FP16.");
+#endif
+}
+
 void Q8_0_Tensor::transpose_quantize_q8_0_act(const _FP16 *src, int in_ch,
                                               int owoh, void *dst) {
   struct local_block_q8_0 {
