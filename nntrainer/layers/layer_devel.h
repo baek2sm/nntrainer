@@ -441,18 +441,26 @@ public:
               TensorDim dim = weight.getDim();
               unsigned int K = dim.height();
               unsigned int N = dim.width();
-              NNTR_THROW_IF(N % 32 != 0 || K % 32 != 0, std::invalid_argument)
-                << "Q8_0 weight quantization requires dimensions to be "
-                   "divisible by 32, but got height="
-                << K << ", width=" << N;
 
-              Tensor weight_t = weight.transpose("0:2:1");
-              Tensor quant_weight(dim.batch(), dim.channel(), K, N,
-                                  {Tformat::NCHW, dtype});
+              // Skip quantization for bias-like tensors (1D with height == 1)
+              // as they are not suitable for Q8_0 block quantization (mirrors
+              // the Q4_0 path above).
+              if (K == 1) {
+                weight.save(file);
+              } else {
+                NNTR_THROW_IF(N % 32 != 0 || K % 32 != 0, std::invalid_argument)
+                  << "Q8_0 weight quantization requires dimensions to be "
+                     "divisible by 32, but got height="
+                  << K << ", width=" << N;
 
-              quantize_q8_0(weight_t.getData<float>(),
-                            quant_weight.getData<uint8_t>(), N, K, nullptr);
-              quant_weight.save(file);
+                Tensor weight_t = weight.transpose("0:2:1");
+                Tensor quant_weight(dim.batch(), dim.channel(), K, N,
+                                    {Tformat::NCHW, dtype});
+
+                quantize_q8_0(weight_t.getData<float>(),
+                              quant_weight.getData<uint8_t>(), N, K, nullptr);
+                quant_weight.save(file);
+              }
             } else {
               NNTR_THROW_IF(true, std::runtime_error)
                 << "This dtype is not supported in save with quantization";

@@ -181,6 +181,16 @@ void Pooling2DLayer::calcDerivative(RunLayerContext &context) {
   int height = in_dim.height();
   int width = in_dim.width();
 
+  /// @note NHWC backward is not yet supported. The forward NHWC max path
+  /// records argmax indices in pool_helper for future NHWC backward use, but
+  /// this derivative still assumes NCHW layout; reject NHWC explicitly so a
+  /// silent wrong-gradient path is never taken.
+  NNTR_THROW_IF(result.getFormat() == Tformat::NHWC ||
+                  deriv.getFormat() == Tformat::NHWC,
+                std::runtime_error)
+    << "Pooling2D backward (calcDerivative) for NHWC layout is not supported "
+       "yet.";
+
   auto pt = padding[0];
   auto pl = padding[2];
   unsigned int p_height = pool_size[0];
@@ -359,6 +369,13 @@ void Pooling2DLayer::pooling2d(Tensor &in, bool training, Tensor &output,
         const int sh = stride[0].get(), sw = stride[1].get();
         const int ph = patch_height, pw = patch_width;
         const int pt_val = pt, pl_val = pl;
+        // For training, record the winning input index per output element so
+        // that calcDerivative (NHWC support TBD) can route gradients. The
+        // helper is laid out [channel][Ho*Wo] per batch slice (same shape as
+        // the output), and each entry stores the NHWC linear offset
+        // ((ih*Wi+iw)*Co + c) of the argmax input element; -1 marks a
+        // padding-only patch.
+        int *helper_data = training ? pool_helper.getData<int>() : nullptr;
 
         auto job = [&](unsigned int oh_start, unsigned int oh_end, unsigned int,
                        void *) {
@@ -367,6 +384,8 @@ void Pooling2DLayer::pooling2d(Tensor &in, bool training, Tensor &output,
               T *out_ptr = out_data + (size_t)(oh * Wo + ow) * Co;
               for (int c = 0; c < Co; ++c) {
                 out_ptr[c] = std::numeric_limits<T>::lowest();
+                if (helper_data)
+                  helper_data[c * (Ho * Wo) + oh * Wo + ow] = -1;
               }
               const int h0 = oh * sh - pt_val;
               const int w0 = ow * sw - pl_val;
@@ -382,6 +401,9 @@ void Pooling2DLayer::pooling2d(Tensor &in, bool training, Tensor &output,
                   for (int c = 0; c < Co; ++c) {
                     if (in_ptr[c] > out_ptr[c]) {
                       out_ptr[c] = in_ptr[c];
+                      if (helper_data)
+                        helper_data[c * (Ho * Wo) + oh * Wo + ow] =
+                          (int)((size_t)(ih * Wi + iw) * Co + c);
                     }
                   }
                 }
@@ -407,6 +429,83 @@ void Pooling2DLayer::pooling2d(Tensor &in, bool training, Tensor &output,
 #ifdef ENABLE_FP16
       else if (in.getDataType() == ml::train::TensorDim::DataType::FP16) {
         run_nhwc.template operator()<_FP16>();
+        return;
+      }
+#endif
+    } else if (pooling_type == props::PoolingTypeInfo::Enum::average ||
+               pooling_type == props::PoolingTypeInfo::Enum::global_average) {
+      auto run_nhwc_avg = [&]<typename T>() {
+        const T *in_data = in.getData<T>();
+        T *out_data = output.getData<T>();
+        const int Ho = (int)output.height(), Wo = (int)output.width();
+        const int Hi = in_height, Wi = in_width;
+        const int Co = channel;
+        const int sh = stride[0].get(), sw = stride[1].get();
+        const int ph = patch_height, pw = patch_width;
+        const int pt_val = pt, pl_val = pl;
+        // For training, record the effective patch count per output element
+        // (matches the NCHW pool_fn_average helper contract) so a future NHWC
+        // backward can divide gradients correctly.
+        int *helper_data = training ? pool_helper.getData<int>() : nullptr;
+        // global_average collapses the full input map; use the whole tensor.
+        const bool is_global =
+          (pooling_type == props::PoolingTypeInfo::Enum::global_average);
+        const int patch_h_use = is_global ? Hi : ph;
+        const int patch_w_use = is_global ? Wi : pw;
+
+        auto job = [&](unsigned int oh_start, unsigned int oh_end, unsigned int,
+                       void *) {
+          for (int oh = (int)oh_start; oh < (int)oh_end; ++oh) {
+            const int h0 = is_global ? 0 : oh * sh - pt_val;
+            for (int ow = 0; ow < Wo; ++ow) {
+              T *out_ptr = out_data + (size_t)(oh * Wo + ow) * Co;
+              const int w0 = is_global ? 0 : ow * sw - pl_val;
+              int cnt = 0;
+              for (int c = 0; c < Co; ++c)
+                out_ptr[c] = static_cast<T>(0.0f);
+              for (int kh = 0; kh < patch_h_use; ++kh) {
+                const int ih = h0 + kh;
+                if (ih < 0 || ih >= Hi)
+                  continue;
+                for (int kw = 0; kw < patch_w_use; ++kw) {
+                  const int iw = w0 + kw;
+                  if (iw < 0 || iw >= Wi)
+                    continue;
+                  const T *in_ptr = in_data + (size_t)(ih * Wi + iw) * Co;
+                  for (int c = 0; c < Co; ++c)
+                    out_ptr[c] += in_ptr[c];
+                  ++cnt;
+                }
+              }
+              if (cnt > 0) {
+                for (int c = 0; c < Co; ++c)
+                  out_ptr[c] /= static_cast<T>(cnt);
+              }
+              if (helper_data) {
+                for (int c = 0; c < Co; ++c)
+                  helper_data[c * (Ho * Wo) + oh * Wo + ow] = cnt;
+              }
+            }
+          }
+        };
+
+        if (!training) {
+          auto workers = ParallelBatch(job, is_global ? 1 : Ho, nullptr);
+          if (workers.getNumWorkers() > 1) {
+            workers.run();
+            return;
+          }
+        }
+        job(0, is_global ? 1 : Ho, 0, nullptr);
+      };
+
+      if (in.getDataType() == ml::train::TensorDim::DataType::FP32) {
+        run_nhwc_avg.template operator()<float>();
+        return;
+      }
+#ifdef ENABLE_FP16
+      else if (in.getDataType() == ml::train::TensorDim::DataType::FP16) {
+        run_nhwc_avg.template operator()<_FP16>();
         return;
       }
 #endif

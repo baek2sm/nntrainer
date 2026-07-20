@@ -710,11 +710,13 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       hidden_.getDataType() == nntrainer::Tdatatype::FP16 &&
       input_.getDataType() == nntrainer::Tdatatype::FP16 &&
       filter_kernel.getDataType() == nntrainer::Tdatatype::FP16 &&
-      input_.channel() == 3 && hidden_.channel() == 64 &&
-      input_.height() == 832 && input_.width() == 832 &&
-      kernel_size[0].get() == 3 && kernel_size[1].get() == 3 &&
-      stride[0].get() == 2 && stride[1].get() == 2 && padding[0] == 1 &&
-      padding[1] == 1 && padding[2] == 1 && padding[3] == 1) {
+      input_.getFormat() == Tformat::NHWC &&
+      hidden_.getFormat() == Tformat::NHWC && input_.channel() == 3 &&
+      hidden_.channel() == 64 && input_.height() == 832 &&
+      input_.width() == 832 && kernel_size[0].get() == 3 &&
+      kernel_size[1].get() == 3 && stride[0].get() == 2 &&
+      stride[1].get() == 2 && padding[0] == 1 && padding[1] == 1 &&
+      padding[2] == 1 && padding[3] == 1) {
 
     // Repack weights on first run into [3, 3, 3, 64]
     if (repacked_conv0_weights_fp16.empty()) {
@@ -868,45 +870,12 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
       }
     });
 
-    // Fused activation epilogue for conv0 SiLU (Swish) using LUT!
+    // Fused activation epilogue for conv0 SiLU (Swish). Reuses the shared
+    // convApplySwishInplace helper (LUT-based for FP16) rather than duplicating
+    // the LUT lookup loop here.
     if (auto &act = std::get<props::FusedActivation>(conv_props);
         !act.empty() && act.get() == ActivationType::ACT_SWISH) {
-      const size_t n = hidden_.size();
-      _FP16 *data = out;
-      const _FP16 *lut = get_silu_lut_fp16();
-      auto &tm = ThreadManager::Global();
-      const size_t nthreads = std::max<size_t>(1, tm.getComputeThreadCount());
-      const size_t chunk = (n + nthreads - 1) / nthreads;
-
-      tm.parallel_for(0, nthreads, [&](size_t t) {
-        const size_t start = t * chunk;
-        if (start >= n)
-          return;
-        const size_t end = std::min(start + chunk, n);
-        size_t i = start;
-        for (; i + 7 < end; i += 8) {
-          uint16_t u0 = *reinterpret_cast<const uint16_t *>(&data[i + 0]);
-          uint16_t u1 = *reinterpret_cast<const uint16_t *>(&data[i + 1]);
-          uint16_t u2 = *reinterpret_cast<const uint16_t *>(&data[i + 2]);
-          uint16_t u3 = *reinterpret_cast<const uint16_t *>(&data[i + 3]);
-          uint16_t u4 = *reinterpret_cast<const uint16_t *>(&data[i + 4]);
-          uint16_t u5 = *reinterpret_cast<const uint16_t *>(&data[i + 5]);
-          uint16_t u6 = *reinterpret_cast<const uint16_t *>(&data[i + 6]);
-          uint16_t u7 = *reinterpret_cast<const uint16_t *>(&data[i + 7]);
-          data[i + 0] = lut[u0];
-          data[i + 1] = lut[u1];
-          data[i + 2] = lut[u2];
-          data[i + 3] = lut[u3];
-          data[i + 4] = lut[u4];
-          data[i + 5] = lut[u5];
-          data[i + 6] = lut[u6];
-          data[i + 7] = lut[u7];
-        }
-        for (; i < end; ++i) {
-          uint16_t u = *reinterpret_cast<const uint16_t *>(&data[i]);
-          data[i] = lut[u];
-        }
-      });
+      convApplySwishInplace(out, hidden_.size());
     }
     return;
   }
@@ -1119,6 +1088,10 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
             // path; the NCHW quant matmul/indirect fallbacks below assume a
             // Q4_0 weight operand, so reject Q8_0 here instead of silently
             // dispatching to the Q4_0 kernels.
+            // TODO(conv-generalization): the Q8_0 activation scratch ownership,
+            // NNTR_CONV_Q8ACT dispatch, and the raw block_q8_0* reinterpret
+            // still live in conv2d_layer. Move the full Q8_0 NHWC conv into a
+            // Q8_0_Tensor conv op so conv2d stays layout/dtype-general.
             if (weight_is_q8) {
               throw std::runtime_error(
                 "Q8_0 conv weights require the NHWC indirect path.");
