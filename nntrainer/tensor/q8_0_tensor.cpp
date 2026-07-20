@@ -15,6 +15,10 @@
 #include <tensor.h>
 #include <thread_manager.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
 /**
  * @brief Namespace for nntrainer core components
  */
@@ -361,6 +365,251 @@ void Q8_0_Tensor::dot_prepacked_x4(unsigned int M, unsigned int K,
     for (unsigned int ii = 0; ii < rem; ++ii)
       for (unsigned int jj = 0; jj < N; ++jj)
         C[(M4 * 4 + ii) * ldc + jj] = (_FP16)tail32[ii * N + jj];
+  }
+}
+#endif
+
+#ifdef ENABLE_FP16
+void Q8_0_Tensor::quantize_nhwc_q8_0_rows(const _FP16 *src, int n_spatial,
+                                          int in_ch, block_q8_0 *dst) {
+  const int nb = in_ch / 32;
+  auto &tm = ThreadManager::Global();
+  const unsigned int chunk = 512;
+  const size_t loops = ((size_t)n_spatial + chunk - 1) / chunk;
+  tm.parallel_for(0, loops, [=](size_t idx) {
+    unsigned r0 = (unsigned)idx * chunk;
+    unsigned r1 = std::min(r0 + chunk, (unsigned)n_spatial);
+    for (unsigned r = r0; r < r1; ++r) {
+      const _FP16 *row = src + (size_t)r * in_ch;
+      for (int b = 0; b < nb; ++b) {
+        const _FP16 *blk = row + b * 32;
+        float amax = 0.f;
+        for (int j = 0; j < 32; ++j) {
+          float v = std::abs(static_cast<float>(blk[j]));
+          if (v > amax)
+            amax = v;
+        }
+        const float d = amax / 127.f;
+        const float id = d ? 1.f / d : 0.f;
+        _FP16 d_h = static_cast<_FP16>(d);
+        uint16_t d_u16;
+        std::memcpy(&d_u16, &d_h, 2);
+        block_q8_0 &out_blk = dst[(size_t)r * nb + b];
+        out_blk.d = d_u16;
+        for (int j = 0; j < 32; ++j)
+          out_blk.qs[j] = (int8_t)std::roundf(static_cast<float>(blk[j]) * id);
+      }
+    }
+  });
+}
+
+void Q8_0_Tensor::quantize_nhwc_q8_0x4_rows(const _FP16 *src, int in_ch,
+                                            int owoh, void *dst) {
+  struct local_block_q8_0 {
+    uint16_t d;
+    int8_t qs[32];
+  };
+  struct local_block_q8_0x4 {
+    uint16_t d[4];
+    int8_t qs[128];
+  };
+  const int qk = 32;
+  const int nb = in_ch / qk;
+  const int M4 = owoh / 4;
+  const int rem = owoh % 4;
+  local_block_q8_0x4 *y4 = static_cast<local_block_q8_0x4 *>(dst);
+  const size_t qa_4_rows_size = sizeof(local_block_q8_0x4) * nb;
+
+  auto &tm = ThreadManager::Global();
+  const unsigned int chunk = 256; // groups of 4 rows per task
+  const size_t loops = (M4 + chunk - 1) / chunk;
+  tm.parallel_for(0, loops, [=](size_t idx) {
+    unsigned int g0 = idx * chunk;
+    unsigned int g1 = std::min(g0 + chunk, (unsigned int)M4);
+    for (unsigned int g = g0; g < g1; ++g) {
+      unsigned int r0 = g * 4;
+      for (int b = 0; b < nb; ++b) {
+        local_block_q8_0x4 &dst_b = y4[g * nb + b];
+        for (unsigned int row = 0; row < 4; ++row) {
+          const _FP16 *blk = src + (size_t)(r0 + row) * in_ch + b * qk;
+          float amax = 0.0f;
+          for (int j = 0; j < qk; ++j) {
+            float val = std::abs(static_cast<float>(blk[j]));
+            if (val > amax)
+              amax = val;
+          }
+          const float d = amax / ((1 << 7) - 1);
+          const float id = d ? 1.0f / d : 0.0f;
+          _FP16 d_half = static_cast<_FP16>(d);
+          uint16_t d_u16;
+          std::memcpy(&d_u16, &d_half, 2);
+          dst_b.d[row] = d_u16;
+          for (int j = 0; j < qk; ++j) {
+            // qs[32*(j/8) + 8*row + (j%8)] — matches the SMMLA x4 layout.
+            dst_b.qs[32 * (j / 8) + 8 * row + (j % 8)] =
+              static_cast<int8_t>(std::roundf(static_cast<float>(blk[j]) * id));
+          }
+        }
+      }
+    }
+  });
+
+  // Remainder rows (owoh % 4): plain block_q8_0 for the GEMV tail.
+  if (rem > 0) {
+    local_block_q8_0 *yrem = reinterpret_cast<local_block_q8_0 *>(
+      reinterpret_cast<char *>(dst) + (size_t)M4 * qa_4_rows_size);
+    for (int i = 0; i < rem; ++i) {
+      unsigned int r = M4 * 4 + i;
+      for (int b = 0; b < nb; ++b) {
+        const _FP16 *blk = src + (size_t)r * in_ch + b * qk;
+        float amax = 0.0f;
+        for (int j = 0; j < qk; ++j) {
+          float val = std::abs(static_cast<float>(blk[j]));
+          if (val > amax)
+            amax = val;
+        }
+        const float d = amax / ((1 << 7) - 1);
+        const float id = d ? 1.0f / d : 0.0f;
+        _FP16 d_half = static_cast<_FP16>(d);
+        uint16_t d_u16;
+        std::memcpy(&d_u16, &d_half, 2);
+        yrem[i * nb + b].d = d_u16;
+        for (int j = 0; j < qk; ++j)
+          yrem[i * nb + b].qs[j] =
+            static_cast<int8_t>(std::roundf(static_cast<float>(blk[j]) * id));
+      }
+    }
+  }
+}
+
+void Q8_0_Tensor::transpose_quantize_q8_0_act(const _FP16 *src, int in_ch,
+                                              int owoh, void *dst) {
+  struct local_block_q8_0 {
+    uint16_t d;
+    int8_t qs[32];
+  };
+  local_block_q8_0 *y = static_cast<local_block_q8_0 *>(dst);
+  const int qk = 32;
+  const int nb = in_ch / qk;
+
+  auto &tm = ThreadManager::Global();
+  const unsigned int chunk = 1024;
+  const size_t loops = (owoh + chunk - 1) / chunk;
+  tm.parallel_for(0, loops, [=](size_t idx) {
+    unsigned int r0 = idx * chunk;
+    unsigned int r1 = std::min(r0 + chunk, (unsigned int)owoh);
+    for (unsigned int r = r0; r < r1; ++r) {
+      for (int b = 0; b < nb; ++b) {
+        float amax = 0.0f;
+        for (int j = 0; j < qk; ++j) {
+          int c = b * qk + j;
+          float val = std::abs(static_cast<float>(src[c * owoh + r]));
+          if (val > amax)
+            amax = val;
+        }
+        const float d = amax / ((1 << 7) - 1);
+        const float id = d ? 1.0f / d : 0.0f;
+        _FP16 d_half = static_cast<_FP16>(d);
+        uint16_t d_u16;
+        std::memcpy(&d_u16, &d_half, 2);
+        y[r * nb + b].d = d_u16;
+        for (int j = 0; j < qk; ++j) {
+          int c = b * qk + j;
+          float x0 = static_cast<float>(src[c * owoh + r]) * id;
+          y[r * nb + b].qs[j] = std::roundf(x0);
+        }
+      }
+    }
+  });
+}
+
+void Q8_0_Tensor::transpose_quantize_q8_0x4_act(const _FP16 *src, int in_ch,
+                                                int owoh, void *dst) {
+  struct local_block_q8_0 {
+    uint16_t d;
+    int8_t qs[32];
+  };
+  struct local_block_q8_0x4 {
+    uint16_t d[4];
+    int8_t qs[128];
+  };
+  const int qk = 32;
+  const int nb = in_ch / qk;
+  const int M4 = owoh / 4;
+  const int rem = owoh % 4;
+  local_block_q8_0x4 *y4 = static_cast<local_block_q8_0x4 *>(dst);
+  const size_t qa_4_rows_size = sizeof(local_block_q8_0x4) * nb;
+
+  auto &tm = ThreadManager::Global();
+  const unsigned int chunk = 256; // groups of 4 rows per task
+  const size_t loops = (M4 + chunk - 1) / chunk;
+  tm.parallel_for(0, loops, [=](size_t idx) {
+    unsigned int g0 = idx * chunk;
+    unsigned int g1 = std::min(g0 + chunk, (unsigned int)M4);
+    for (unsigned int g = g0; g < g1; ++g) {
+      unsigned int r0 = g * 4;
+      for (int b = 0; b < nb; ++b) {
+        local_block_q8_0x4 &dst_b = y4[g * nb + b];
+        for (unsigned int row = 0; row < 4; ++row) {
+          unsigned int r = r0 + row;
+          float amax = 0.0f;
+          for (int j = 0; j < qk; ++j) {
+            int c = b * qk + j;
+            float val = std::abs(static_cast<float>(src[c * owoh + r]));
+            if (val > amax)
+              amax = val;
+          }
+          const float d = amax / ((1 << 7) - 1);
+          const float id = d ? 1.0f / d : 0.0f;
+          _FP16 d_half = static_cast<_FP16>(d);
+          uint16_t d_u16;
+          std::memcpy(&d_u16, &d_half, 2);
+          dst_b.d[row] = d_u16;
+          for (int j = 0; j < qk; ++j) {
+            int c = b * qk + j;
+            float x0 = static_cast<float>(src[c * owoh + r]) * id;
+            // qs[32*chunk + 8*row + lane], chunk = j/8, lane = j%8
+            dst_b.qs[32 * (j / 8) + 8 * row + (j % 8)] =
+              static_cast<int8_t>(std::roundf(x0));
+          }
+        }
+      }
+    }
+  });
+
+  // Remainder rows (owoh % 4): plain block_q8_0 for the GEMV tail.
+  if (rem > 0) {
+    local_block_q8_0 *yrem = reinterpret_cast<local_block_q8_0 *>(
+      reinterpret_cast<char *>(dst) + (size_t)M4 * qa_4_rows_size);
+    const unsigned int rchunk = 1024;
+    const size_t rloops = (rem + rchunk - 1) / rchunk;
+    tm.parallel_for(0, rloops, [=](size_t idx) {
+      unsigned int i0 = idx * rchunk;
+      unsigned int i1 = std::min(i0 + rchunk, (unsigned int)rem);
+      for (unsigned int i = i0; i < i1; ++i) {
+        unsigned int r = M4 * 4 + i;
+        for (int b = 0; b < nb; ++b) {
+          float amax = 0.0f;
+          for (int j = 0; j < qk; ++j) {
+            int c = b * qk + j;
+            float val = std::abs(static_cast<float>(src[c * owoh + r]));
+            if (val > amax)
+              amax = val;
+          }
+          const float d = amax / ((1 << 7) - 1);
+          const float id = d ? 1.0f / d : 0.0f;
+          _FP16 d_half = static_cast<_FP16>(d);
+          uint16_t d_u16;
+          std::memcpy(&d_u16, &d_half, 2);
+          yrem[i * nb + b].d = d_u16;
+          for (int j = 0; j < qk; ++j) {
+            int c = b * qk + j;
+            float x0 = static_cast<float>(src[c * owoh + r]) * id;
+            yrem[i * nb + b].qs[j] = static_cast<int8_t>(std::roundf(x0));
+          }
+        }
+      }
+    });
   }
 }
 #endif
