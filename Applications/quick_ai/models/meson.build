@@ -16,6 +16,7 @@ subdir('gemma3')
 subdir('timm_vit')
 subdir('gemma4')
 subdir('FastViT/jni')
+subdir('FastViTKeyword/jni')
 if get_option('platform') != 'windows'
     subdir('bert')
     subdir('xlm_roberta')
