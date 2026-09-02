@@ -555,7 +555,7 @@ void Int4QTensor::print(std::ostream &out) const {
 
 size_t Int4QTensor::getMemoryBytes() const {
   return ((size() + 1) / 2) * dim.getDataTypeSize() +
-         scale_size() * sizeof(uint16_t);
+         scale_size() * sizeof(float);
 }
 
 size_t Int4QTensor::scale_size() const {
