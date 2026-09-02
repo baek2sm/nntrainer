@@ -13,7 +13,8 @@
  *           - QINT8  : scale_size() == width()  (== kw)
  *           - QINT16 : scale_size() == height() (== kh)
  *           - QINT4  : scale_size() == height() * width() / group_size (32),
- *                      i.e. 0 for any real kernel (fewer than 32 taps)
+ *                      i.e. 0 for kernels up to 5x5 (< 32 taps), as used by
+ *                      every conv2d in the tracked .ini configs
  *         None equals the output channel count. forwarding() also never drives
  *         an int8 kernel (it only issues an FP dot, which throws on a quantized
  *         tensor). finalize() therefore rejects every quantized weight dtype;
