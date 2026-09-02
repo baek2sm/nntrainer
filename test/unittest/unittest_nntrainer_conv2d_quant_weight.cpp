@@ -58,7 +58,9 @@ std::string modelTensorType(DataType weight_type) {
   case DataType::QINT16:
     return "QINT16-QINT16";
   case DataType::FP16:
-    return "FP16-FP32";
+    // FP16-FP16 (not FP16-FP32): the guard is indifferent to the activation
+    // dtype, and W16A16 is the combination the suite already exercises in CI.
+    return "FP16-FP16";
   default:
     ADD_FAILURE() << "unmapped weight dtype in test helper";
     return "FP32-FP32";
