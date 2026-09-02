@@ -359,7 +359,11 @@ void Int4QTensor::read(std::ifstream &file, size_t start_offset,
   if (start_offset == std::numeric_limits<size_t>::max()) {
     start_offset = file_offset;
   }
+  /// @note the scale factor area is sized by the scheme held at creation, so
+  /// the scheme stored in the file must be that very same one.
+  QScheme created_qscheme = qscheme;
   read_quantization_info(file, start_offset, read_from_offset);
+  checkQSchemeFromStorage("[Int4QTensor::read]", qscheme, created_qscheme);
 
   std::streamsize sz = static_cast<std::streamsize>(getMemoryBytes());
 
@@ -382,7 +386,11 @@ void Int4QTensor::read(ReadSource src, size_t start_offset,
   if (start_offset == std::numeric_limits<size_t>::max()) {
     start_offset = file_offset;
   }
+  /// @note the scale factor area is sized by the scheme held at creation, so
+  /// the scheme stored in the source must be that very same one.
+  QScheme created_qscheme = qscheme;
   read_quantization_info(src, start_offset, read_from_offset);
+  checkQSchemeFromStorage("[Int4QTensor::read]", qscheme, created_qscheme);
 
   std::streamsize sz = static_cast<std::streamsize>(getMemoryBytes());
 

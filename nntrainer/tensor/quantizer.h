@@ -14,6 +14,7 @@
 
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 
 #include <tensor_dim.h>
@@ -46,6 +47,63 @@ enum class QScheme : uint16_t {
   CUSTOM_QUANTIZER_05 = 0x14,
   CUSTOM_QUANTIZER_06 = 0x15,
 };
+
+/**
+ * @brief Get a human readable name of a quantization scheme
+ *
+ * @param qscheme Quantization scheme to name
+ * @return std::string name of the scheme, or its numeric value if unnamed
+ */
+inline std::string qSchemeToString(QScheme qscheme) {
+  switch (qscheme) {
+  case QScheme::PER_TENSOR_AFFINE:
+    return "PER_TENSOR_AFFINE";
+  case QScheme::PER_CHANNEL_AFFINE:
+    return "PER_CHANNEL_AFFINE";
+  case QScheme::BINARY_CODE_BASED:
+    return "BINARY_CODE_BASED";
+  case QScheme::Q4_Kx8:
+    return "Q4_Kx8";
+  case QScheme::Q6_K:
+    return "Q6_K";
+  case QScheme::Q4_0:
+    return "Q4_0";
+  case QScheme::QS4CX:
+    return "QS4CX";
+  default:
+    return "UNKNOWN(" + std::to_string(static_cast<unsigned>(qscheme)) + ")";
+  }
+}
+
+/**
+ * @brief Validate the quantization scheme restored from storage against the one
+ * the tensor was created with
+ *
+ * @details The scale factor area of a quantized tensor is sized from its
+ * quantization scheme at construction time, so a scheme coming from storage
+ * cannot be adopted: it would change the number of scale factors after the
+ * buffer was allocated. On mismatch the tensor is left describing the buffer it
+ * actually owns, and the caller is told what did not match.
+ *
+ * @param where description of the calling operation, used for the error message
+ * @param qscheme scheme read from storage, restored on mismatch
+ * @param created scheme the tensor was created with
+ */
+inline void checkQSchemeFromStorage(const std::string &where, QScheme &qscheme,
+                                    QScheme created) {
+  if (qscheme == created)
+    return;
+
+  std::string file_qscheme = qSchemeToString(qscheme);
+  /// @note keep the scheme in sync with the allocated buffer, so that a tensor
+  /// whose read failed stays usable for anything sizing its scale factors.
+  qscheme = created;
+
+  throw std::invalid_argument(
+    where + " quantization scheme mismatch: storage holds " + file_qscheme +
+    " but the tensor was created as " + qSchemeToString(created) +
+    ", and its buffer is sized for the latter");
+}
 
 /**
  * @class Quantizer class
