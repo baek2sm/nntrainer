@@ -330,6 +330,25 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
   auto in_t_type = in_dim.getTensorType();
   in_t_type.data_type = context.getWeightDataType();
 
+  // Conv2D does not yet run a quantized weight: forwarding() only issues an
+  // FP dot, so a quantized weight never reaches a correct int path. Worse, the
+  // weight is requested as (filter_size, in_ch, kh, kw), so the axis that the
+  // per-channel scale vector keys on is not the output channel: for QINT8
+  // scale_size() == width() (== kw), for QINT16 scale_size() == height()
+  // (== kh), and QINT4 is group-based over h*w. None of these equals the
+  // output channel count, so the scale vector would be silently mis-sized.
+  // Reject every quantized weight dtype here — FP32/FP16 are the only accepted
+  // weight types — until the weight is requested channel-last (one scale per
+  // output channel in width()) and forwarding() drives an int8 kernel.
+  auto weight_data_type = context.getWeightDataType();
+  const bool is_float_weight = weight_data_type == TensorDim::DataType::FP32 ||
+                               weight_data_type == TensorDim::DataType::FP16;
+  NNTR_THROW_IF(!is_float_weight, std::invalid_argument)
+    << "[Conv2D] quantized conv2d weights are not supported yet: forwarding()"
+       " has no int kernel path, and with the weight requested as "
+       "(filter, in_ch, kh, kw) the per-channel scale axis would not be the "
+       "output channel. Use an FP32/FP16 weight.";
+
   TensorDim kernel_dim = TensorDim(filter_size, in_dim.channel(),
                                    kernel_size[0], kernel_size[1], in_t_type);
 
