@@ -884,6 +884,73 @@ TEST(nntrainer_Tensor, multiply_i_broadcast_01_fp16_p) {
   }
 }
 
+/**
+ * @brief NHWC x NHWC broadcast multiply, with the broadcast extent on the
+ * channel axis.
+ *
+ * The recursion in HalfTensor::apply_broadcast_util has to bound each axis by
+ * the same remapped axis computeBroadcastInfo() used for the strides; bounding
+ * it by the logical axis walked a [B,C,H,W] * [B,C,1,1] broadcast past both
+ * buffers, which faulted or folded unrelated memory into the result. NCHW
+ * leaves that remapping as the identity, so the NCHW case above never reached
+ * it.
+ *
+ * Both layouts are filled with the same logical values and scaled by the same
+ * logical per-(batch, channel) factors, so the NHWC result must equal the NCHW
+ * result read at the same logical index, and must also equal the product
+ * written out directly.
+ */
+TEST(nntrainer_Tensor, multiply_i_broadcast_nhwc_fp16_p) {
+  const int batch = 2, channel = 3, height = 4, width = 5;
+  auto logical = [](int b, int c, int h, int w) {
+    return static_cast<_FP16>(b * 7 + c * 3 + h * 2 + w);
+  };
+  auto scale = [](int b, int c) { return static_cast<_FP16>(b + c + 1); };
+
+  nntrainer::Tensor t_nhwc(batch, channel, height, width,
+                           nntrainer::Tformat::NHWC,
+                           nntrainer::Tdatatype::FP16);
+  nntrainer::Tensor t_nchw(batch, channel, height, width,
+                           nntrainer::Tformat::NCHW,
+                           nntrainer::Tdatatype::FP16);
+  nntrainer::Tensor s_nhwc(batch, channel, 1, 1, nntrainer::Tformat::NHWC,
+                           nntrainer::Tdatatype::FP16);
+  nntrainer::Tensor s_nchw(batch, channel, 1, 1, nntrainer::Tformat::NCHW,
+                           nntrainer::Tdatatype::FP16);
+  for (int b = 0; b < batch; ++b) {
+    for (int c = 0; c < channel; ++c) {
+      for (int h = 0; h < height; ++h) {
+        for (int w = 0; w < width; ++w) {
+          t_nhwc.setValue(b, c, h, w, logical(b, c, h, w));
+          t_nchw.setValue(b, c, h, w, logical(b, c, h, w));
+        }
+      }
+      s_nhwc.setValue(b, c, 0, 0, scale(b, c));
+      s_nchw.setValue(b, c, 0, 0, scale(b, c));
+    }
+  }
+
+  ASSERT_EQ(t_nchw.multiply_i(s_nchw), ML_ERROR_NONE);
+  ASSERT_EQ(t_nhwc.multiply_i(s_nhwc), ML_ERROR_NONE);
+  EXPECT_EQ(t_nhwc.getFormat(), nntrainer::Tformat::NHWC);
+
+  for (int b = 0; b < batch; ++b) {
+    for (int c = 0; c < channel; ++c) {
+      for (int h = 0; h < height; ++h) {
+        for (int w = 0; w < width; ++w) {
+          _FP16 expect = static_cast<_FP16>(
+            static_cast<float>(logical(b, c, h, w)) * scale(b, c));
+          EXPECT_EQ(t_nhwc.getValue<_FP16>(b, c, h, w), expect)
+            << "at (b " << b << ", c " << c << ", h " << h << ", w " << w
+            << ")";
+          EXPECT_EQ(t_nhwc.getValue<_FP16>(b, c, h, w),
+                    t_nchw.getValue<_FP16>(b, c, h, w));
+        }
+      }
+    }
+  }
+}
+
 TEST(nntrainer_Tensor, multiply_i_broadcast_not_supported_01_n) {
 
   nntrainer::Tensor target(3, 1, 3, 1, nntrainer::Tformat::NCHW,

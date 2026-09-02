@@ -1245,7 +1245,20 @@ void HalfTensor::apply_broadcast_util(
   }
 
   cur_axis++;
-  for (unsigned int i = 0; i < dim.getTensorDim(cur_axis); ++i) {
+  /// @note continuity[] must mirror FloatTensor::apply_broadcast_util:
+  /// computeBroadcastInfo fills e.strides/buffer_axis using the remapped axis,
+  /// so the recursion bound has to be remapped the same way. Without it the
+  /// loop bound used the raw axis while e.strides were computed with the
+  /// remapped one, producing out-of-bounds buf+/m_buf+ offsets and a SEGV in
+  /// the multiply on NHWC broadcast (e.g. [B,C,H,W] * [B,C,1,1]). NCHW leaves
+  /// continuity as {0,1,2,3} and is unaffected.
+  unsigned int continuity[4] = {0, 1, 2, 3};
+  if (getFormat() == Tformat::NHWC) {
+    continuity[1] = 2;
+    continuity[2] = 3;
+    continuity[3] = 1;
+  }
+  for (unsigned int i = 0; i < dim.getTensorDim(continuity[cur_axis]); ++i) {
     size_t next_offset = offset + i * strides[cur_axis];
     size_t next_m_offset = m_offset + i * e.strides[cur_axis];
     apply_broadcast_util(m, v_func, output, e, cur_axis, next_offset,
