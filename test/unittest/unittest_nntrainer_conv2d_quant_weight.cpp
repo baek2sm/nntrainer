@@ -185,6 +185,21 @@ TEST(ConvQuantWeightGuard, qint4ScaleSizeIsGroupBased) {
 }
 
 /**
+ * @brief A real conv kernel (3x3 = 9 taps) has fewer than the 32 taps a QINT4
+ * group spans, so the group-based scale_size() truncates to zero — the scale
+ * vector would not even exist. This pins the shape the guard actually rejects.
+ */
+TEST(ConvQuantWeightGuard, qint4ScaleSizeIsZeroForRealKernelShapes) {
+  nntrainer::Tensor weight(
+    TensorDim(8, 3, 3, 3, // (filter=8, in_ch=3, kh=3, kw=3) -> 9 taps < 32
+              TensorDim::TensorType(Format::NCHW, DataType::QINT4)),
+    true, nntrainer::Initializer::NONE, "w",
+    nntrainer::QScheme::PER_CHANNEL_AFFINE);
+
+  EXPECT_EQ(weight.scale_size(), 0u); // 9/32 == 0
+}
+
+/**
  * @brief finalize() rejects every quantized conv2d weight dtype, in both
  * model formats, rather than build a mis-sized per-channel scale vector.
  * Conv1DLayer delegates finalize() to an inner Conv2DLayer, so it is covered

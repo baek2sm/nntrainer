@@ -327,20 +327,22 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
   auto &dilation =
     std::get<std::array<props::Dilation, CONV2D_DIM>>(conv_props);
 
+  auto weight_data_type = context.getWeightDataType();
   auto in_t_type = in_dim.getTensorType();
-  in_t_type.data_type = context.getWeightDataType();
+  in_t_type.data_type = weight_data_type;
 
   // Conv2D does not yet run a quantized weight: forwarding() only issues an
   // FP dot, so a quantized weight never reaches a correct int path. Worse, the
   // weight is requested as (filter_size, in_ch, kh, kw), so the axis that the
-  // per-channel scale vector keys on is not the output channel: for QINT8
-  // scale_size() == width() (== kw), for QINT16 scale_size() == height()
-  // (== kh), and QINT4 is group-based over h*w. None of these equals the
-  // output channel count, so the scale vector would be silently mis-sized.
-  // Reject every quantized weight dtype here — FP32/FP16 are the only accepted
-  // weight types — until the weight is requested channel-last (one scale per
-  // output channel in width()) and forwarding() drives an int8 kernel.
-  auto weight_data_type = context.getWeightDataType();
+  // per-channel scale vector keys on is a kernel axis, not the output channel:
+  // for QINT8 scale_size() == width() (== kw), for QINT16 scale_size() ==
+  // height() (== kh), and QINT4 is group-based over height() * width() / 32
+  // (== 0 for kernels with fewer than 32 taps). None of these equals the
+  // output channel count. Reject every quantized weight dtype here until the
+  // weight is requested channel-last (one scale per output channel in width())
+  // and forwarding() drives an int8 kernel. FP16 is accepted, but forwarding()
+  // only runs it against an FP16 activation (W16A16) — a pre-existing
+  // constraint unrelated to this guard.
   const bool is_float_weight = weight_data_type == TensorDim::DataType::FP32 ||
                                weight_data_type == TensorDim::DataType::FP16;
   NNTR_THROW_IF(!is_float_weight, std::invalid_argument)
