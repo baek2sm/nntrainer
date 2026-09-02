@@ -42,30 +42,108 @@ void Upsample2dLayer::finalize(nntrainer::InitLayerContext &context) {
   context.setOutputDimensions(dim);
 }
 
-void Upsample2dLayer::forwarding(nntrainer::RunLayerContext &context,
-                                 bool training) {
-  nntrainer::Tensor &in = context.getInput(SINGLE_INOUT_IDX);
-  nntrainer::Tensor &out = context.getOutput(SINGLE_INOUT_IDX);
+/**
+ * @brief Nearest neighbour upsample for a contiguous tensor of layout `fm`.
+ *
+ * out[b, kh*ih + ry, kw*iw + rx] = in[b, ih, iw] for ry in [0, kh), rx in
+ * [0, kw) -- the same element mapping as the scalar loop in
+ * upsampleForwardT(), reached with row memcpy instead of one element access per
+ * output element.
+ */
+template <typename T>
+static void upsampleNearestContiguous(const Tensor &in, Tensor &out,
+                                      unsigned int kh, unsigned int kw) {
+  const T *in_d = in.getData<T>();
+  T *out_d = out.getData<T>();
+  const unsigned int batch = out.batch();
+  const unsigned int iH = in.height();
+  const unsigned int iW = in.width();
+  const unsigned int oW = out.width();
 
-  const auto &upsampling_type =
-    std::get<props::UpsampleMode>(upsample2d_props).get();
-  const auto &kernel_size =
-    std::get<std::array<props::KernelSize, UPSAMPLE2D_DIM>>(upsample2d_props);
+  if (in.getFormat() == Tformat::NCHW) {
+    const unsigned int C = out.channel();
+    const size_t in_plane = (size_t)iH * iW;
+    const size_t out_plane = (size_t)iH * kh * oW;
+    /// scratch holding one output row, reused for every input row
+    std::vector<T> expanded(oW);
+    for (unsigned int b = 0; b < batch; ++b) {
+      for (unsigned int c = 0; c < C; ++c) {
+        const T *in_bc = in_d + ((size_t)b * C + c) * in_plane;
+        T *out_bc = out_d + ((size_t)b * C + c) * out_plane;
+        for (unsigned int ih = 0; ih < iH; ++ih) {
+          const T *in_row = in_bc + (size_t)ih * iW;
+          T *e = expanded.data();
+          for (unsigned int iw = 0; iw < iW; ++iw) {
+            const T v = in_row[iw];
+            for (unsigned int rx = 0; rx < kw; ++rx)
+              e[iw * kw + rx] = v;
+          }
+          for (unsigned int ry = 0; ry < kh; ++ry)
+            std::memcpy(out_bc + (size_t)(ih * kh + ry) * oW, e,
+                        oW * sizeof(T));
+        }
+      }
+    }
+    return;
+  }
 
+  /// NHWC: channels are innermost, so the repeated unit is a whole pixel.
+  const unsigned int Co = out.channel();
+  const size_t in_hwc = (size_t)iH * iW * Co;
+  const size_t out_hwc = (size_t)out.height() * oW * Co;
+  std::vector<T> expanded((size_t)oW * Co);
+  for (unsigned int b = 0; b < batch; ++b) {
+    const T *in_b = in_d + (size_t)b * in_hwc;
+    T *out_b = out_d + (size_t)b * out_hwc;
+    for (unsigned int ih = 0; ih < iH; ++ih) {
+      const T *in_row = in_b + (size_t)ih * iW * Co;
+      T *e = expanded.data();
+      for (unsigned int iw = 0; iw < iW; ++iw) {
+        const T *v = in_row + (size_t)iw * Co;
+        for (unsigned int rx = 0; rx < kw; ++rx)
+          std::memcpy(e + ((size_t)iw * kw + rx) * Co, v, Co * sizeof(T));
+      }
+      for (unsigned int ry = 0; ry < kh; ++ry)
+        std::memcpy(out_b + ((size_t)ih * kh + ry) * oW * Co, e,
+                    (size_t)oW * Co * sizeof(T));
+    }
+  }
+}
+
+/**
+ * @brief dtype-correct upsample forwarding.
+ *
+ * getValue()/setValue() default to T = float, so reading an FP16 tensor through
+ * them reinterprets two 2-byte halves as one 4-byte float and indexes at twice
+ * the stride. The element accesses are therefore typed on the storage dtype;
+ * the bilinear interpolation itself is still carried out in float.
+ */
+template <typename T>
+static void upsampleForwardT(
+  const Tensor &in, Tensor &out,
+  props::UpsampleModeInfo::Interpolation upsampling_type,
+  const std::array<props::KernelSize, UPSAMPLE2D_DIM> &kernel_size) {
   switch (upsampling_type) {
-  case props::UpsampleModeInfo::Interpolation::nearest:
+  case props::UpsampleModeInfo::Interpolation::nearest: {
+    const bool is_nhwc = in.getFormat() == Tformat::NHWC;
+    if (in.getContiguous() && out.getContiguous() &&
+        out.getFormat() == in.getFormat() &&
+        (is_nhwc || in.getFormat() == Tformat::NCHW)) {
+      upsampleNearestContiguous<T>(in, out, kernel_size[0].get(),
+                                   kernel_size[1].get());
+      return;
+    }
     for (int b = 0; b < (int)out.batch(); b++) {
       for (int c = 0; c < (int)out.channel(); c++) {
         for (int h = 0; h < (int)out.height(); h++) {
           for (int w = 0; w < (int)out.width(); w++) {
-            out.setValue(
-              b, c, h, w,
-              in.getValue(b, c, h / kernel_size[0], w / kernel_size[1]));
+            out.getValue<T>(b, c, h, w) =
+              in.getValue<T>(b, c, h / kernel_size[0], w / kernel_size[1]);
           }
         }
       }
     }
-    break;
+  } break;
   case props::UpsampleModeInfo::Interpolation::bilinear: {
     float scale_h = (float)kernel_size[0];
     float scale_w = (float)kernel_size[1];
@@ -92,12 +170,14 @@ void Upsample2dLayer::forwarding(nntrainer::RunLayerContext &context,
             float dx = x_in - x0;
             float dy = y_in - y0;
 
-            float top = (1.0f - dx) * in.getValue(b, c, y1, x0) +
-                        dx * in.getValue(b, c, y1, x1);
-            float bottom = (1.0f - dx) * in.getValue(b, c, y0, x0) +
-                           dx * in.getValue(b, c, y0, x1);
+            float top =
+              (1.0f - dx) * static_cast<float>(in.getValue<T>(b, c, y1, x0)) +
+              dx * static_cast<float>(in.getValue<T>(b, c, y1, x1));
+            float bottom =
+              (1.0f - dx) * static_cast<float>(in.getValue<T>(b, c, y0, x0)) +
+              dx * static_cast<float>(in.getValue<T>(b, c, y0, x1));
             float v = (1.0f - dy) * bottom + dy * top;
-            out.setValue(b, c, h, w, v);
+            out.getValue<T>(b, c, h, w) = static_cast<T>(v);
           }
         }
       }
@@ -106,6 +186,25 @@ void Upsample2dLayer::forwarding(nntrainer::RunLayerContext &context,
   default:
     throw std::runtime_error("Error: Unknown Upsample Mode Type");
   }
+}
+
+void Upsample2dLayer::forwarding(nntrainer::RunLayerContext &context,
+                                 bool training) {
+  nntrainer::Tensor &in = context.getInput(SINGLE_INOUT_IDX);
+  nntrainer::Tensor &out = context.getOutput(SINGLE_INOUT_IDX);
+
+  const auto &upsampling_type =
+    std::get<props::UpsampleMode>(upsample2d_props).get();
+  const auto &kernel_size =
+    std::get<std::array<props::KernelSize, UPSAMPLE2D_DIM>>(upsample2d_props);
+
+#ifdef ENABLE_FP16
+  if (out.getDataType() == ml::train::TensorDim::DataType::FP16) {
+    upsampleForwardT<_FP16>(in, out, upsampling_type, kernel_size);
+    return;
+  }
+#endif
+  upsampleForwardT<float>(in, out, upsampling_type, kernel_size);
 }
 
 void Upsample2dLayer::calcDerivative(nntrainer::RunLayerContext &context) {

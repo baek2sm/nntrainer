@@ -108,6 +108,9 @@ private:
   std::vector<TensorDim>
     input_reshape_helper;          /** helper dimension to reshape inputs */
   TensorDim output_reshape_helper; /** helper dimension to reshape outputs */
+  unsigned int concat_axis =
+    1; /**< resolved at finalize; the reshape helpers are only valid for a
+          NCHW layout, so forwarding() needs the axis to pick the NHWC path */
   std::tuple<props::ConcatDimension> concat_props;
 
   /**

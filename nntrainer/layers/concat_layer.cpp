@@ -30,6 +30,12 @@ ConcatLayer::ConcatLayer() : Layer(), leading_helper_dim(1) {}
 
 static constexpr size_t SINGLE_INOUT_IDX = 0;
 
+/// logical (batch, channel, height, width) axis indices, as the axis property
+/// and TensorDim::getTensorDim() both index them this way
+static constexpr unsigned int CONCAT_AXIS_CHANNEL = 1;
+static constexpr unsigned int CONCAT_AXIS_HEIGHT = 2;
+static constexpr unsigned int CONCAT_AXIS_WIDTH = 3;
+
 void ConcatLayer::finalize(InitLayerContext &context) {
   auto &concat_dimension_prop = std::get<props::ConcatDimension>(concat_props);
   /** for backward compatibility, default concat dimension will be channel */
@@ -40,6 +46,7 @@ void ConcatLayer::finalize(InitLayerContext &context) {
     context.getInputDimensions().front().channel() > 1 ? 3 : 1;
   if (!concat_dimension_prop.empty())
     concat_dimension = concat_dimension_prop.get();
+  concat_axis = concat_dimension;
 
   /**
    * The concat is only done along the axis dimension.
@@ -127,6 +134,115 @@ void ConcatLayer::finalize(InitLayerContext &context) {
   setBatch(input_dims[SINGLE_INOUT_IDX].batch());
 }
 
+/**
+ * @brief Concatenate the inputs into an NHWC output.
+ *
+ * The reshape helpers the generic path uses collapse everything from the
+ * concatenated axis on into one width and copy whole leading slices, which is
+ * only equivalent to the element mapping when that axis is innermost in
+ * storage. In NHWC the channel axis is innermost, so the inputs interleave as
+ * per-pixel channel runs and the helpers write them to the wrong offsets.
+ *
+ * Channels being innermost instead makes two layouts of copy contiguous, per
+ * input, with a channel offset (chan_off) and a pixel offset into the output:
+ * - concatenating the channel axis: every output channel slot of a pixel takes
+ *   that input's C-long channel run, so the unit is one (batch, pixel) pair.
+ * - concatenating a spatial axis: every input has the same channel count, so a
+ *   whole input row is contiguous and lands at an offset inside an output row.
+ *
+ * @tparam T element type of the tensors
+ * @param output output tensor, contiguous NHWC
+ * @param context layer context holding the inputs
+ * @param axis logical (batch, channel, height, width) axis being concatenated
+ */
+template <typename T>
+static void concatNhwc(Tensor &output, RunLayerContext &context,
+                       unsigned int axis) {
+  const TensorDim out_dim = output.getDim();
+  const unsigned int out_height = out_dim.height();
+  const unsigned int out_width = out_dim.width();
+  const unsigned int out_channels = out_dim.channel();
+  T *dst = output.getData<T>();
+
+  /// the concatenated extent already contributed to the output, so the offset
+  /// of each input starts at zero and grows by the extent of the ones before it
+  unsigned int chan_off = 0;
+  unsigned int height_off = 0;
+  unsigned int width_off = 0;
+
+  for (unsigned int idx = 0; idx < context.getNumInputs(); idx++) {
+    Tensor &input = context.getInput(idx);
+    NNTR_THROW_IF(!input.getContiguous(), nntrainer::exception::not_supported)
+      << "[Concat] NHWC concat requires a contiguous input";
+
+    const TensorDim in_dim = input.getDim();
+    const unsigned int in_channels = in_dim.channel();
+    const unsigned int in_height = in_dim.height();
+    const unsigned int in_width = in_dim.width();
+    /// a row of an input, in elements, is contiguous in both tensors
+    const size_t row_size = (size_t)in_width * in_channels;
+    const T *src = input.getData<T>();
+
+    /// one work unit is one (batch, input row) pair
+    const unsigned int total = in_dim.batch() * in_height;
+    auto job = [&](unsigned int s, unsigned int e, unsigned int, void *) {
+      for (unsigned int unit = s; unit < e; ++unit) {
+        const unsigned int b = unit / in_height;
+        const unsigned int ih = unit % in_height;
+        const T *src_row = src + ((size_t)b * in_height + ih) * row_size;
+        /// an output pixel is out_channels wide even for an input that
+        /// contributes fewer, so the output offsets step by out_channels
+        T *dst_row =
+          dst +
+          ((size_t)(b * out_height + height_off + ih) * out_width + width_off) *
+            out_channels +
+          chan_off;
+        if (axis == CONCAT_AXIS_HEIGHT) {
+          /// out_width is the input width here, so the row is one contiguous
+          /// run of the output
+          std::memcpy(dst_row, src_row, row_size * sizeof(T));
+        } else {
+          /**
+           * Channel and width axis: the output row is shared with the other
+           * inputs, so the row is cut into pixels to step over the channels
+           * they own. For the channel axis the stride step is the full output
+           * channel count while only this input's channels are copied.
+           */
+          for (unsigned int iw = 0; iw < in_width; ++iw)
+            std::memcpy(dst_row + (size_t)iw * out_channels,
+                        src_row + (size_t)iw * in_channels,
+                        in_channels * sizeof(T));
+        }
+      }
+    };
+
+    bool ran_parallel = false;
+    if (total > 1) {
+      auto workers = ParallelBatch(job, total, nullptr);
+      if (workers.getNumWorkers() > 1) {
+        workers.run();
+        ran_parallel = true;
+      }
+    }
+    if (!ran_parallel)
+      job(0, total, 0, nullptr);
+
+    switch (axis) {
+    case CONCAT_AXIS_CHANNEL:
+      chan_off += in_channels;
+      break;
+    case CONCAT_AXIS_HEIGHT:
+      height_off += in_height;
+      break;
+    case CONCAT_AXIS_WIDTH:
+      width_off += in_width;
+      break;
+    default:
+      break;
+    }
+  }
+}
+
 void ConcatLayer::forwarding(RunLayerContext &context, bool training) {
   /**
    * Forwarding in ConcatLayer works as follows
@@ -147,6 +263,38 @@ void ConcatLayer::forwarding(RunLayerContext &context, bool training) {
   Tensor &output = context.getOutput(SINGLE_INOUT_IDX);
 
   const TensorDim out_dim = output.getDim();
+
+  /**
+   * The reshape helpers below copy whole leading slices, which is only correct
+   * when the concatenated axis is the innermost one. In NHWC the channel axis
+   * is innermost, so the inputs interleave as per-pixel channel runs and the
+   * helpers would write them into the wrong offsets.
+   */
+  if (out_dim.getFormat() == TensorDim::Format::NHWC) {
+    NNTR_THROW_IF(concat_axis != CONCAT_AXIS_CHANNEL &&
+                    concat_axis != CONCAT_AXIS_HEIGHT &&
+                    concat_axis != CONCAT_AXIS_WIDTH,
+                  nntrainer::exception::not_supported)
+      << "[Concat] NHWC concat supports the channel, height and width axes, "
+         "got axis="
+      << concat_axis;
+    NNTR_THROW_IF(!output.getContiguous(), nntrainer::exception::not_supported)
+      << "[Concat] NHWC concat requires a contiguous output";
+
+    switch (output.getDataType()) {
+    case TensorDim::DataType::FP32:
+      concatNhwc<float>(output, context, concat_axis);
+      return;
+#ifdef ENABLE_FP16
+    case TensorDim::DataType::FP16:
+      concatNhwc<_FP16>(output, context, concat_axis);
+      return;
+#endif
+    default:
+      throw std::runtime_error("Unsupported datatype");
+    }
+  }
+
   output.reshape(output_reshape_helper);
   unsigned int output_width_offset = 0;
   TensorDim::TensorType tensor_type = output.getTensorType();

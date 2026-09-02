@@ -29,6 +29,117 @@ namespace nntrainer {
 static constexpr size_t SINGLE_INOUT_IDX = 0;
 
 /**
+ * @brief Pooling reduction over the channels of one NHWC patch element.
+ *
+ * Channels are innermost in NHWC, so a patch element is a C-long contiguous
+ * run and the reduction walks C-wide blocks of memory instead of gathering one
+ * strided element at a time.
+ */
+enum class NhwcPoolOp { Max, Average };
+
+/**
+ * @brief Max or average pooling over an NHWC tensor, i.e. [H, W, C] per batch.
+ *
+ * The element mapping and the average divisor match pooling2d() exactly, so an
+ * NHWC model and the same model in NCHW pool to the same values. The divisor is
+ * the number of in-range elements, i.e. padding is never counted in, as in the
+ * generic path.
+ *
+ * @note This writes no pool_helper. Max pooling back-propagates through the
+ * argmax indices the generic path records, so this is only reachable when
+ * training is false and no backward pass follows.
+ */
+template <typename T>
+static void pooling2dNhwcJob(const Tensor &in, Tensor &out, NhwcPoolOp op,
+                             int patch_height, int patch_width,
+                             int stride_height, int stride_width, int pad_top,
+                             int pad_left, unsigned int row_start,
+                             unsigned int row_end) {
+  const int in_height = in.height();
+  const int in_width = in.width();
+  const int out_height = out.height();
+  const int out_width = out.width();
+  const int channels = in.channel();
+  const unsigned int batch = out.batch();
+  const T *in_data = in.getData<T>();
+  T *out_data = out.getData<T>();
+
+  /// one work unit is one (batch, output row) pair
+  for (unsigned int unit = row_start; unit < row_end; ++unit) {
+    const unsigned int b = unit / out_height;
+    const int oh = unit % out_height;
+    const T *in_b = in_data + (size_t)b * in_height * in_width * channels;
+    T *out_b = out_data + (size_t)b * out_height * out_width * channels;
+
+    const int h_beg = oh * stride_height - pad_top;
+    const int eff_h_beg = std::max(h_beg, 0);
+    const int eff_h_end = std::min(h_beg + patch_height, in_height);
+
+    for (int ow = 0; ow < out_width; ++ow) {
+      T *out_ptr = out_b + ((size_t)oh * out_width + ow) * channels;
+
+      const int w_beg = ow * stride_width - pad_left;
+      const int eff_w_beg = std::max(w_beg, 0);
+      const int eff_w_end = std::min(w_beg + patch_width, in_width);
+
+      if (op == NhwcPoolOp::Average) {
+        for (int c = 0; c < channels; ++c)
+          out_ptr[c] = static_cast<T>(0);
+      } else {
+        for (int c = 0; c < channels; ++c)
+          out_ptr[c] = std::numeric_limits<T>::lowest();
+      }
+
+      for (int ih = eff_h_beg; ih < eff_h_end; ++ih) {
+        const T *in_row = in_b + (size_t)ih * in_width * channels;
+        for (int iw = eff_w_beg; iw < eff_w_end; ++iw) {
+          const T *in_ptr = in_row + (size_t)iw * channels;
+          if (op == NhwcPoolOp::Max) {
+            for (int c = 0; c < channels; ++c)
+              out_ptr[c] = std::max(out_ptr[c], in_ptr[c]);
+          } else {
+            for (int c = 0; c < channels; ++c)
+              out_ptr[c] = out_ptr[c] + in_ptr[c];
+          }
+        }
+      }
+
+      if (op == NhwcPoolOp::Average) {
+        const T divisor =
+          static_cast<T>((eff_h_end - eff_h_beg) * (eff_w_end - eff_w_beg));
+        for (int c = 0; c < channels; ++c)
+          out_ptr[c] = out_ptr[c] / divisor;
+      }
+    }
+  }
+}
+
+/**
+ * @brief Dispatch pooling2dNhwcJob over (batch * out_height), serially when the
+ *        grid is too small to pay for a thread pool.
+ */
+template <typename T>
+static void pooling2dNhwc(const Tensor &in, Tensor &out, NhwcPoolOp op,
+                          int patch_height, int patch_width, int stride_height,
+                          int stride_width, int pad_top, int pad_left) {
+  const unsigned int rows = (unsigned int)out.batch() * out.height();
+
+  auto job = [&](unsigned int s, unsigned int e, unsigned int, void *) {
+    pooling2dNhwcJob<T>(in, out, op, patch_height, patch_width, stride_height,
+                        stride_width, pad_top, pad_left, s, e);
+  };
+
+  if (rows > 1) {
+    auto workers = ParallelBatch(job, rows, nullptr);
+    if (workers.getNumWorkers() > 1) {
+      workers.run();
+      return;
+    }
+  }
+  job(0, rows, 0, nullptr);
+}
+
+/**
  * @brief Help function for Pooling Handler
  */
 template <typename T> struct PoolFunc {
@@ -108,6 +219,10 @@ void Pooling2DLayer::finalize(InitLayerContext &context) {
   out_dim.height((eff_in_height - pool_size[0]) / stride[0] + 1);
   out_dim.width((eff_in_width - pool_size[1]) / stride[1] + 1);
   out_dim.setDataType(in_dim.getDataType());
+  /// The output keeps the input layout: an NHWC input must not produce an NCHW
+  /// output, otherwise the fast path in pooling2d() never sees NHWC and the
+  /// tensor below is allocated with the wrong strides.
+  out_dim.setFormat(in_dim.getFormat());
   context.setOutputDimensions({out_dim});
 
   /**
@@ -144,6 +259,62 @@ void Pooling2DLayer::forwarding(RunLayerContext &context, bool training) {
   Tensor &pool_helper = context.getTensor(pool_helper_idx);
 
   const TensorDim &in_dim = input_.getDim();
+
+  auto &pooling_type = std::get<props::PoolingType>(pooling2d_props).get();
+  auto &pool_size = std::get<std::vector<props::PoolSize>>(pooling2d_props);
+  auto &stride =
+    std::get<std::array<props::Stride, POOLING2D_DIM>>(pooling2d_props);
+
+  /**
+   * The generic path below hands pooling2d() a batch slice and walks it as C
+   * planes of height*width, which is only what the data looks like in NCHW. On
+   * NHWC it would read past the tensor and pool unrelated channels together, so
+   * NHWC never falls through to it.
+   *
+   * Training is refused rather than run generically: pool_helper holds the
+   * argmax indices (or the average counts) that calcDerivative() reads back,
+   * and nothing writes them in the order NHWC would need. A loud failure here
+   * is the honest answer until the helper is layout-aware.
+   */
+  if (in_dim.getFormat() == Tformat::NHWC) {
+    NNTR_THROW_IF(training, nntrainer::exception::not_supported)
+      << "[Pooling2D] NHWC pooling cannot train yet: pool_helper is written in "
+         "the NCHW element order that calcDerivative() reads back";
+
+    NNTR_THROW_IF(hidden_.getFormat() != Tformat::NHWC ||
+                    !input_.getContiguous() || !hidden_.getContiguous(),
+                  nntrainer::exception::not_supported)
+      << "[Pooling2D] NHWC pooling requires a contiguous NHWC output";
+
+    NhwcPoolOp op;
+    switch (pooling_type) {
+    case props::PoolingTypeInfo::Enum::max:
+    case props::PoolingTypeInfo::Enum::global_max:
+      op = NhwcPoolOp::Max;
+      break;
+    case props::PoolingTypeInfo::Enum::average:
+    case props::PoolingTypeInfo::Enum::global_average:
+      op = NhwcPoolOp::Average;
+      break;
+    default:
+      throw std::invalid_argument("unknown pooling type given");
+    }
+
+    switch (input_.getDataType()) {
+    case ml::train::TensorDim::DataType::FP32:
+      pooling2dNhwc<float>(input_, hidden_, op, pool_size[0], pool_size[1],
+                           stride[0], stride[1], padding[0], padding[2]);
+      return;
+#ifdef ENABLE_FP16
+    case ml::train::TensorDim::DataType::FP16:
+      pooling2dNhwc<_FP16>(input_, hidden_, op, pool_size[0], pool_size[1],
+                           stride[0], stride[1], padding[0], padding[2]);
+      return;
+#endif
+    default:
+      throw std::runtime_error("Not supported datatype");
+    }
+  }
 
   auto forwarding_job = [&](unsigned int s, unsigned int e, unsigned int pid,
                             void *user_data) {
