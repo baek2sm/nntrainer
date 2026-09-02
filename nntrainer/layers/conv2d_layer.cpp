@@ -289,9 +289,131 @@ static void im2col(const Tensor &in, const TensorDim &kdim,
     throw std::runtime_error("Not supported datatype");
   }
 }
+
+/**
+ * @brief Column matrix dimension of a channel last convolution.
+ *
+ * Like @a calcCol2ImOutputDim it is the [taps][out_h * out_w] matrix of the
+ * im2col result, but spelled for the channel last format: with the axes held as
+ * (1, taps, out_h, out_w) under that format the matrix is stored as
+ * [out_h][out_w][taps], i.e. one row of taps per output position. That is the
+ * operand layout the dot in @a forwardingChannelLast consumes, and it lets a
+ * channel last input be gathered without transposing.
+ *
+ * @param[in] kdim kernel dimension, (filter_size, in_ch, kh, kw)
+ * @param[in] out_dim convolution output dimension, channel last
+ * @return TensorDim column matrix dimension, channel last
+ */
+static TensorDim calcColOutputDimChannelLast(const TensorDim &kdim,
+                                             const TensorDim &out_dim) {
+  return TensorDim({1, kdim.getFeatureLen(), out_dim.height(), out_dim.width()},
+                   out_dim.getTensorType());
+}
+
+/**
+ * @brief Filter operand dimension of a channel last convolution.
+ *
+ * The filter is requested under the channel last format, so it is stored with
+ * the taps innermost: [filter_size][in_ch * kh * kw] in row major order.
+ * Spelling that as (1, taps, filter_size, 1) under the same format keeps the
+ * stored order and gives the dot the operand shape it expects.
+ *
+ * @param[in] filter_dim filter dimension, channel last
+ * @return TensorDim filter operand dimension, channel last
+ */
+static TensorDim calcFilterOperandDimChannelLast(const TensorDim &filter_dim) {
+  return TensorDim({1, filter_dim.getFeatureLen(), filter_dim.batch(), 1},
+                   filter_dim.getTensorType());
+}
+
+/**
+ * @brief     Reform the data of a channel last input to a 2d column matrix
+ *
+ * Counterpart of @a im2col for a channel last input. Rows are output positions,
+ * columns are taps ordered (kh, kw, in_ch). A filter requested under the
+ * channel last format is stored in exactly that tap order, so the filter is
+ * consumed as stored, with no repacking, and because the input is channel last
+ * too, the in_ch run of one tap is contiguous on both sides.
+ *
+ * @note The caller must zero @a out before every call. Taps that fall outside
+ * the input are skipped rather than written, so a column matrix that is reused
+ * across batches or across calls keeps whatever the previous user left in those
+ * slots. @a im2col carries the same requirement, so the callers setZero() for
+ * both paths.
+ *
+ * @param[in] in input data of a single batch, channel last
+ * @param[in] k_height kernel height
+ * @param[in] k_width kernel width
+ * @param[in] padding padding information
+ * @param[in] mstride stride value : height, width direction
+ * @param[in] dilation kernel dilation factor : height, width each
+ * @param[out] out column matrix to put, already sized by
+ * @a calcColOutputDimChannelLast
+ */
+static void
+im2colChannelLast(const Tensor &in, unsigned int k_height, unsigned int k_width,
+                  const std::array<unsigned int, 4> &padding,
+                  const std::array<props::Stride, CONV2D_DIM> &mstride,
+                  const std::array<props::Dilation, CONV2D_DIM> &dilation,
+                  Tensor &out) {
+  const unsigned int in_ch = in.channel();
+  const unsigned int in_height = in.height();
+  const unsigned int in_width = in.width();
+
+  const unsigned int out_height = out.height();
+  const unsigned int out_width = out.width();
+  /// taps of one output position are stored contiguously along the row
+  const size_t k_dim = (size_t)in_ch * k_height * k_width;
+
+  auto apply_data = [&](auto *col_data) {
+    using T = std::decay_t<decltype(*col_data)>;
+
+    for (unsigned int oh = 0; oh < out_height; ++oh) {
+      const int ih_base = (int)(oh * mstride[0]) - (int)padding[0];
+
+      for (unsigned int ow = 0; ow < out_width; ++ow) {
+        const int iw_base = (int)(ow * mstride[1]) - (int)padding[2];
+        /// row of taps belonging to this output position
+        T *row = col_data + (size_t)(oh * out_width + ow) * k_dim;
+
+        for (unsigned int kh = 0; kh < k_height; ++kh) {
+          const int ih = ih_base + (int)(kh * dilation[0]);
+          if (ih < 0 || in_height <= (unsigned int)ih) {
+            continue;
+          }
+          for (unsigned int kw = 0; kw < k_width; ++kw) {
+            const int iw = iw_base + (int)(kw * dilation[1]);
+            if (iw < 0 || in_width <= (unsigned int)iw) {
+              continue;
+            }
+            /// the channels of one pixel are adjacent in a channel last input,
+            /// and they are adjacent in the row too, so this is a stride-1 copy
+            const T *tap = (const T *)in.getAddress(0, 0, ih, iw);
+            T *dst = row + (size_t)(kh * k_width + kw) * in_ch;
+            for (unsigned int c = 0; c < in_ch; ++c) {
+              dst[c] = tap[c];
+            }
+          }
+        }
+      }
+    }
+  };
+
+  if (out.getDataType() == nntrainer::Tdatatype::FP32) {
+    apply_data(out.getData<float>());
+  }
+#ifdef ENABLE_FP16
+  else if (out.getDataType() == nntrainer::Tdatatype::FP16) {
+    apply_data(out.getData<_FP16>());
+  }
+#endif
+  else {
+    throw std::runtime_error("Not supported datatype");
+  }
+}
 } // namespace
 
-enum ConvParams { weight, bias };
+enum ConvParams { weight, bias, col_scratch };
 
 Conv2DLayer::Conv2DLayer(
   const std::array<unsigned int, CONV2D_DIM * 2> &padding_) :
@@ -377,6 +499,24 @@ void Conv2DLayer::finalize(InitLayerContext &context) {
                   eff_in_width - padding[2] - kernel_size[1] > IM,
                 std::invalid_argument)
     << "Failed to initialize: Calculated patch end is over int max";
+
+  // Channel last convolution gathers into a column matrix once per batch slice.
+  // Request it here so the memory is planned instead of heap allocated on every
+  // forwarding() call. The channel first path keeps allocating its own, which
+  // is what it has always done.
+  //
+  // Spelled (batch, taps, out_h, out_w) under the channel last format, this is
+  // stored as [batch][out_h][out_w][taps] so that getBatchSlice(b, 1) hands out
+  // one contiguous [out_h * out_w][taps] matrix per batch, which is exactly the
+  // operand layout the dot in @a forwardingChannelLast wants.
+  wt_idx[ConvParams::col_scratch] = std::numeric_limits<unsigned>::max();
+  if (in_dim.getFormat() == ml::train::TensorDim::Format::NHWC) {
+    TensorDim col_dim = calcColOutputDimChannelLast(kernel_dim, out_dim);
+    col_dim.batch(in_dim.batch());
+    wt_idx[ConvParams::col_scratch] =
+      context.requestTensor(col_dim, "im2col", Initializer::NONE, false,
+                            TensorLifespan::FORWARD_FUNC_LIFESPAN);
+  }
 }
 
 void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
@@ -391,6 +531,15 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);
 
   Tensor &filter_kernel = context.getWeight(wt_idx[ConvParams::weight]);
+
+  // A channel last graph takes its own path: the filter is stored taps
+  // innermost and the output is stored with the channels of one position
+  // adjacent, so neither the im2col below nor the shape it feeds the dot
+  // matches. Everything below this branch is the channel first path, unchanged.
+  if (input_.getDim().getFormat() == ml::train::TensorDim::Format::NHWC) {
+    forwardingChannelLast(context);
+    return;
+  }
 
   /** Calculate Convolution 2D
    *
@@ -477,7 +626,112 @@ void Conv2DLayer::forwarding(RunLayerContext &context, bool training) {
   }
 }
 
+void Conv2DLayer::forwardingChannelLast(RunLayerContext &context) {
+  int status = ML_ERROR_NONE;
+
+  auto &kernel_size =
+    std::get<std::array<props::KernelSize, CONV2D_DIM>>(conv_props);
+  auto &stride = std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
+  auto &dilation =
+    std::get<std::array<props::Dilation, CONV2D_DIM>>(conv_props);
+
+  Tensor &input_ = context.getInput(SINGLE_INOUT_IDX);
+  Tensor &hidden_ = context.getOutput(SINGLE_INOUT_IDX);
+  Tensor &filter_kernel = context.getWeight(wt_idx[ConvParams::weight]);
+
+  const TensorDim &in_dim = input_.getDim();
+  const TensorDim &filter_dim = filter_kernel.getDim();
+
+  /**
+   * Channel last convolution as one GEMM per batch.
+   *
+   * The filter is requested under the channel last format, so it is stored taps
+   * innermost: row f holds [kh][kw][in_ch], i.e. [filter_size][taps] in row
+   * major order. The column matrix is gathered into the transpose of that,
+   * [out_h * out_w][taps], so the product is
+   *
+   *   result[out_h * out_w][filter_size] =
+   *       col[out_h * out_w][taps] x filter[filter_size][taps]^T
+   *
+   * and a channel last output is stored [out_h][out_w][filter_size], which is
+   * the same memory as result. The GEMM therefore writes the output tensor
+   * directly: no scatter, and no repacking of the filter.
+   *
+   * Because the taps of a position and the channels of a pixel are contiguous
+   * in a channel last layout, im2colChannelLast reads and writes each in_ch run
+   * of a tap with a stride-1 copy.
+   *
+   * The summation is over the same taps as the channel first path but in a
+   * different order, the reduction runs along the operand rows here, so the
+   * result is not bit-identical to it, only equal within FP rounding.
+   */
+  TensorDim filter_operand_dim = calcFilterOperandDimChannelLast(filter_dim);
+  filter_kernel.reshape(filter_operand_dim);
+
+  auto forwarding_job = [&](unsigned int s, unsigned int e, unsigned int pid,
+                            void *user_data) {
+    // The column matrix is requested in finalize() so that its memory is
+    // planned, but it is not pre-zeroed: the padded taps are skipped rather
+    // than written, so every batch slice has to be zeroed before it is
+    // gathered.
+    Tensor &col_all = context.getTensor(wt_idx[ConvParams::col_scratch]);
+
+    for (unsigned int b = s; b < e; ++b) {
+      Tensor col = col_all.getBatchSlice(b, 1);
+      Tensor in_sub = input_.getBatchSlice(b, 1);
+      Tensor out = hidden_.getBatchSlice(b, 1);
+
+      col.setZero();
+      im2colChannelLast(in_sub, kernel_size[0].get(), kernel_size[1].get(),
+                        padding, stride, dilation, col);
+      // col is (out_h * out_w, taps), filter is (filter_size, taps)
+      col.dot(filter_kernel, out, false, true);
+    }
+  };
+
+  auto workers = ParallelBatch(forwarding_job, in_dim.batch(), nullptr);
+
+  if (workers.getNumWorkers() > 1) {
+    workers.run();
+  } else {
+    forwarding_job(0, in_dim.batch(), 0, nullptr);
+  }
+
+  filter_kernel.reshape(filter_dim);
+  if (auto &disable_bias = std::get<props::DisableBias>(*layer_impl_props);
+      disable_bias.empty() || disable_bias.get() == false) {
+    Tensor &bias_kernel = context.getWeight(wt_idx[ConvParams::bias]);
+    status = hidden_.add_i(bias_kernel);
+    if (status != ML_ERROR_NONE) {
+      throw std::invalid_argument("[Conv2D] adding bias failed");
+    }
+  }
+}
+
+void Conv2DLayer::setBatch(RunLayerContext &context, unsigned int batch) {
+  // The channel last column matrix is requested in finalize() sized to the
+  // batch present at init. When the runtime batch changes, the framework
+  // resizes the inputs and the outputs but not this layer-private tensor, so
+  // rebatch it here. Otherwise forwardingChannelLast()'s getBatchSlice(b, 1)
+  // for b beyond the init batch reads past the planned storage and aborts with
+  // "Creating shared tensor of size bigger than tensor memory".
+  if (wt_idx[ConvParams::col_scratch] != std::numeric_limits<unsigned>::max())
+    context.updateTensor(wt_idx[ConvParams::col_scratch], batch);
+}
+
 void Conv2DLayer::calcDerivative(RunLayerContext &context) {
+  // Only forwarding() has a channel last path. The dots below keep the channel
+  // first shapes, and under the channel last format Tensor::dot derives its
+  // flatten strides from the format, so the dimension checks that would
+  // otherwise reject them are satisfied by accident for some shapes: the dot
+  // then succeeds, col2im runs over the transposed product and the outgoing
+  // gradient is wrong without any error being raised. Refuse the request by
+  // name instead of depending on a dimension check that happens to line up.
+  NNTR_THROW_IF(context.getInput(SINGLE_INOUT_IDX).getDim().getFormat() ==
+                  ml::train::TensorDim::Format::NHWC,
+                std::runtime_error)
+    << "[Conv2D] channel last backwarding is not supported yet";
+
   unsigned int filter_size = std::get<props::FilterSize>(conv_props);
   auto &stride = std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
   auto &dilation =
@@ -528,6 +782,15 @@ void Conv2DLayer::calcDerivative(RunLayerContext &context) {
 }
 
 void Conv2DLayer::calcGradient(RunLayerContext &context) {
+  // Same reason as in calcDerivative(): the channel first dot shapes are only
+  // rejected by an accident of the dimension checks on the channel first path,
+  // and at batch > 1 the throw would escape a std::thread and reach
+  // std::terminate rather than the caller.
+  NNTR_THROW_IF(context.getInput(SINGLE_INOUT_IDX).getDim().getFormat() ==
+                  ml::train::TensorDim::Format::NHWC,
+                std::runtime_error)
+    << "[Conv2D] channel last backwarding is not supported yet";
+
   unsigned int filter_size = std::get<props::FilterSize>(conv_props);
   auto &stride = std::get<std::array<props::Stride, CONV2D_DIM>>(conv_props);
   auto &dilation =

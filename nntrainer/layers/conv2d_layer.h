@@ -74,6 +74,11 @@ public:
   void calcGradient(RunLayerContext &context) override;
 
   /**
+   * @copydoc Layer::setBatch(RunLayerContext &context, unsigned int batch)
+   */
+  void setBatch(RunLayerContext &context, unsigned int batch) override;
+
+  /**
    * @copydoc Layer::exportTo(Exporter &exporter, ml::train::ExportMethods
    * method)
    */
@@ -109,6 +114,18 @@ public:
   static constexpr const char *type = "conv2d";
 
 private:
+  /**
+   * @brief     Forward a channel last (NHWC) input to a channel last output
+   *
+   * Gathers the input into a column matrix and runs the convolution as one GEMM
+   * per batch, writing the output in place because a channel last output and
+   * the GEMM result share a layout. Called from @a forwarding for a channel
+   * last input; the channel first path is not involved.
+   *
+   * @param[in/out] context RunLayerContext for the layer
+   */
+  void forwardingChannelLast(RunLayerContext &context);
+
   std::array<unsigned int, CONV2D_DIM * 2> padding;
   std::tuple<props::FilterSize, std::array<props::KernelSize, CONV2D_DIM>,
              std::array<props::Stride, CONV2D_DIM>, props::Padding2D,
