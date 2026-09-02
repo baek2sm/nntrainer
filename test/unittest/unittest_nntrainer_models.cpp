@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <bn_layer.h>
 #include <input_layer.h>
 #include <layer.h>
 #include <neuralnet.h>
@@ -1077,6 +1078,115 @@ TEST(nntrainerModels, read_save_01_n) {
 
   EXPECT_THROW(NN.load("model.bin"), std::runtime_error);
   EXPECT_THROW(NN.save("model.bin"), std::runtime_error);
+}
+
+/**
+ * @brief Collect the batch normalization weights of a model, in request order,
+ *        flattened to floats.
+ */
+static std::vector<std::vector<float>> bnWeights(nntrainer::NeuralNetwork &nn) {
+  static const std::string bn_type = nntrainer::BatchNormalizationLayer::type;
+
+  std::vector<std::vector<float>> weights;
+  for (auto &node : nn.getFlatGraph()) {
+    if (node->getType() != bn_type)
+      continue;
+    for (unsigned int i = 0; i < node->getNumWeights(); ++i) {
+      nntrainer::Tensor &w = node->getWeight(i);
+      std::vector<float> values(w.size());
+      for (unsigned int k = 0; k < w.size(); ++k)
+        values[k] = w.getValue<float>(0, 0, 0, k);
+      weights.push_back(std::move(values));
+    }
+  }
+  return weights;
+}
+
+/**
+ * @brief BatchNormalization weights survive an inference-mode save/load.
+ *
+ * BatchNormalizationLayer is the only layer that overrides Layer::read() with
+ * its own weight loop, and it used to call
+ *
+ *   run_context.getWeight(i).read(file, start_offset);
+ *
+ * dropping the read_from_offset and file_fd arguments it was handed, which then
+ * defaulted to false / -1. Every other layer goes through the default
+ * Layer::read(), which forwards all four.
+ *
+ * The argument is not cosmetic. NeuralNetwork::load() reads weights per node in
+ * inference mode with read_from_offset = true, and TensorBase::read() forwards
+ * it to checkedRead(), which only seeks when it is set -- otherwise it consumes
+ * bytes at the stream position it happens to be at. With mmap-read on (the
+ * meson default) that position is the head of the file, so each batch
+ * normalization weight was filled with the leading bytes of the model file
+ * instead of its own region: gamma became the first weight saved, mu the same
+ * bytes again, and nothing raised an error.
+ *
+ * A dense layer therefore precedes the batch normalization layer: the bug only
+ * shifts a weight whose recorded offset is non-zero, and it is the offsets that
+ * carry the information. The assertion is on the weight bytes rather than on
+ * the inference output because a batch normalization in inference mode is
+ * affine in gamma and beta -- reading them from the wrong offset changes them
+ * by orders of magnitude, while a model-wide tolerance would have to be loose
+ * enough to hide it.
+ */
+TEST(nntrainerModels, batch_normalization_weights_survive_inference_load_p) {
+  const std::string model_path = "bn_inference_load_model.bin";
+  const unsigned int width = 4;
+
+  /// @note in its own block so the model is released before the reload builds
+  /// another one with the same layer names.
+  std::vector<std::vector<float>> expected;
+  {
+    auto nn = std::make_unique<nntrainer::NeuralNetwork>();
+    nn->addLayer(ml::train::layer::Input(
+      {"name=input", "input_shape=1:1:" + std::to_string(width)}));
+    /// @note a weighted layer must precede the batch normalization one: the
+    /// defect shifts a read by its recorded file offset, and the first weight
+    /// in the file is at offset 0, where a shift is a no-op.
+    nn->addLayer(ml::train::layer::FullyConnected(
+      {"name=dense", "unit=" + std::to_string(width)}));
+    nn->addLayer(ml::train::layer::BatchNormalization({"name=bn"}));
+    nn->setProperty({"loss=mse", "batch_size=1"});
+    ASSERT_EQ(nn->compile(ml::train::ExecutionMode::INFERENCE), ML_ERROR_NONE);
+    ASSERT_EQ(nn->initialize(ml::train::ExecutionMode::INFERENCE),
+              ML_ERROR_NONE);
+
+    expected = bnWeights(*nn);
+    ASSERT_EQ(expected.size(), 4u)
+      << "moving_mean, moving_variance, gamma, beta";
+
+    ASSERT_NO_THROW(
+      nn->save(model_path, ml::train::ModelFormat::MODEL_FORMAT_BIN));
+  }
+
+  auto nn = std::make_unique<nntrainer::NeuralNetwork>();
+  nn->addLayer(ml::train::layer::Input(
+    {"name=input", "input_shape=1:1:" + std::to_string(width)}));
+  nn->addLayer(ml::train::layer::FullyConnected(
+    {"name=dense", "unit=" + std::to_string(width)}));
+  nn->addLayer(ml::train::layer::BatchNormalization({"name=bn"}));
+  nn->setProperty({"loss=mse", "batch_size=1"});
+  ASSERT_EQ(nn->compile(ml::train::ExecutionMode::INFERENCE), ML_ERROR_NONE);
+  ASSERT_EQ(nn->initialize(ml::train::ExecutionMode::INFERENCE), ML_ERROR_NONE);
+
+  ASSERT_NO_THROW(
+    nn->load(model_path, ml::train::ModelFormat::MODEL_FORMAT_BIN));
+
+  const std::vector<std::vector<float>> actual = bnWeights(*nn);
+  ASSERT_EQ(actual.size(), expected.size());
+  static const char *const weight_names[] = {"moving_mean", "moving_variance",
+                                             "gamma", "beta"};
+  for (size_t i = 0; i < expected.size(); ++i) {
+    ASSERT_EQ(actual[i].size(), expected[i].size());
+    for (size_t k = 0; k < expected[i].size(); ++k) {
+      EXPECT_FLOAT_EQ(actual[i][k], expected[i][k])
+        << weight_names[i] << "[" << k << "] did not come back from its offset";
+    }
+  }
+
+  remove(model_path.c_str());
 }
 
 TEST(nntrainerModels, loadFromLayersBackbone_p) {
