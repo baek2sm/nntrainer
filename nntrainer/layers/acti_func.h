@@ -436,6 +436,20 @@ public:
    */
   template <typename T = float>
   static Tensor &gelu(Tensor const &t_in, Tensor &t_out) {
+#ifdef ENABLE_FP16
+    /**
+     * The vectorized path below reads floats, so on FP16 storage it would
+     * reinterpret the 2N-byte buffer as N floats: reading twice the elements it
+     * owns and writing the results back at float stride. Route FP16 through the
+     * FP16 kernel, which is NEON on targets with FP16 arithmetic and exact erf
+     * elsewhere.
+     */
+    if (t_in.getDataType() == Tdatatype::FP16) {
+      nntrainer::gelu_v2_fp16(t_in.size(), t_in.getData<_FP16>(),
+                              t_out.getData<_FP16>());
+      return t_out;
+    }
+#endif
     nntrainer::gelu_v2(t_in.size(), t_in.getData<float>(),
                        t_out.getData<float>());
     return t_out;
@@ -477,6 +491,31 @@ public:
    */
   template <typename T = float>
   static Tensor &tanhGelu(Tensor const &t_in, Tensor &t_out) {
+#ifdef ENABLE_FP16
+    /**
+     * Same overread as gelu above: the FP32 kernel below walks FP16 storage at
+     * float stride. There is no vectorized FP16 tanh-gelu kernel, so this stays
+     * element-wise but reads and writes halves. The formula is the one
+     * __fallback_tanh_gelu and the FP32 tanh_gelu scalar tail use.
+     *
+     * @note apply<_FP16> is spelled out rather than apply<T>: Tensor::apply
+     * resolves the overload from the function's argument type, and T is float
+     * at most call sites, which would select the float overload and throw.
+     */
+    if (t_in.getDataType() == Tdatatype::FP16) {
+      const float c1 = 0.7978845608028654f; // sqrt(2/pi)
+      const float c2 = 0.044715f;
+      t_in.apply<_FP16>(
+        [&](const _FP16 x) {
+          const float xf = static_cast<float>(x);
+          const float x3 = xf * xf * xf;
+          return static_cast<_FP16>(0.5f * xf *
+                                    (1.0f + std::tanh(c1 * (xf + c2 * x3))));
+        },
+        t_out);
+      return t_out;
+    }
+#endif
     nntrainer::tanh_gelu(t_in.size(), t_in.getData<float>(),
                          t_out.getData<float>());
     return t_out;

@@ -472,6 +472,18 @@ void tanh_gelu_v2(const unsigned int N, const float *X, float *Y);
  */
 void gelu_v2(const unsigned int N, const float *X, float *Y);
 
+#ifdef ENABLE_FP16
+/**
+ * @brief gelu_v2 over FP16 storage. x86 has no vectorized FP16 gelu, so this
+ * delegates to the scalar fallback.
+ *
+ * @param N number of elements in X
+ * @param X input, FP16 storage
+ * @param Y output, FP16 storage
+ */
+void gelu_v2_fp16(const unsigned int N, const _FP16 *X, _FP16 *Y);
+#endif /* ENABLE_FP16 */
+
 /**
  * @brief tanh_gelu function with neon but as
  * X = Y / (1 + exp(-pi/4*(Y

@@ -520,6 +520,22 @@ void tanh_gelu_v2(const unsigned int N, const float *X, float *Y);
 
 void gelu_v2(const unsigned int N, const float *X, float *Y);
 
+#ifdef ENABLE_FP16
+/**
+ * @brief gelu_v2 over FP16 storage.
+ *
+ * Same piecewise polynomial and same thresholds as gelu_v2: load 4 FP16, widen
+ * to FP32x4 for the polynomial (FP16 has no erf in hardware and the polynomial
+ * needs FP32 range), narrow back to FP16 on store. The N%4 tail is exact
+ * std::erf.
+ *
+ * @param N number of elements in X
+ * @param X input, FP16 storage
+ * @param Y output, FP16 storage
+ */
+void gelu_v2_fp16(const unsigned int N, const _FP16 *X, _FP16 *Y);
+#endif /* ENABLE_FP16 */
+
 /**
  * @brief tanh_gelu function with neon but as
  * Y = X / (1 + exp(-pi/4*(X + 0.04

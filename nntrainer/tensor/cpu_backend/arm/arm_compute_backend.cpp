@@ -81,6 +81,22 @@ void gelu_v2(const unsigned int N, const float *X, float *Y) {
 #endif
 }
 
+#ifdef ENABLE_FP16
+void gelu_v2_fp16(const unsigned int N, const _FP16 *X, _FP16 *Y) {
+  /// the kernel widens to float32x4 and needs the half load/convert intrinsics,
+  /// which are only declared once the target carries FP16 vector arithmetic.
+  /// Native aarch64 fp16 builds always pass -march=...+fp16 (meson.build) so
+  /// they hit the kernel; android takes its arch flags from the NDK, which
+  /// leaves fp16 SIMD out of the older armv8 targets, and 32-bit arm keeps NEON
+  /// off for fp16 altogether. Those configurations take the fallback instead.
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+  nntrainer::neon::gelu_v2_fp16(N, X, Y);
+#else
+  __fallback_gelu_v2(N, X, Y);
+#endif
+}
+#endif /* ENABLE_FP16 */
+
 void tanh_gelu_mul(const unsigned int N, float *X, float *Y, float *Z) {
 #ifdef __ARM_NEON
   nntrainer::neon::tanh_gelu_mul(N, X, Y, Z);

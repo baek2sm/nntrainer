@@ -496,6 +496,103 @@ TEST(nntrainer_activation, gelu_02_p_neon_dispatch) {
 }
 #endif /* __ARM_NEON */
 
+#ifdef ENABLE_FP16
+/**
+ * @brief GELU on an FP16 tensor.
+ *
+ * ActiFunc::gelu used to call the FP32 kernel unconditionally, which read the
+ * 2N-byte FP16 buffer as N floats. The reference below is the same erf form the
+ * FP16 path implements -- it is the array gelu_01_p pins the FP32 kernel to --
+ * and the tolerance is half an FP16 ulp at the largest magnitude here (~4.9e-4
+ * at 1.4) plus the polynomial's own error, which gelu_01_p shows to be under
+ * 1e-5.
+ */
+TEST(nntrainer_activation, gelu_fp16_01_p) {
+  int batch = 3;
+  int channel = 1;
+  int height = 1;
+  int width = 10;
+  float answer[30] = {
+    -0.13783135f, -0.11462659f, -0.08414805f, -0.04601721f, 0.0f,
+    0.05398279f,  0.11585195f,  0.18537343f,  0.26216868f,  0.34573120f,
+    -0.16948429f, -0.16455182f, -0.13783135f, -0.08414805f, 0.0f,
+    0.11585195f,  0.26216868f,  0.43544820f,  0.63051575f,  0.84134471f,
+    -0.13808367f, -0.16565408f, -0.16455182f, -0.11462659f, 0.0f,
+    0.18537343f,  0.43544820f,  0.73434591f,  1.06191635f,  1.39978909f};
+
+  nntrainer::TensorDim::TensorType t_type_fp16 = {nntrainer::Tformat::NCHW,
+                                                  nntrainer::Tdatatype::FP16};
+
+  nntrainer::Tensor input(batch, channel, height, width, t_type_fp16);
+  GEN_TEST_INPUT(input, (l - 4) * 0.1 * (i + 1));
+
+  nntrainer::Tensor results(batch, channel, height, width, t_type_fp16);
+  results = nntrainer::ActiFunc::gelu(input, results);
+
+  const _FP16 *data = results.getData<_FP16>();
+  ASSERT_NE(nullptr, data);
+
+  /**
+   * Error budget: the input itself is FP16-rounded, so up to half an ulp of the
+   * input (4.9e-4 at 1.5) times gelu' (under 1.1), plus half an ulp of the
+   * output (4.9e-4 at 1.4), plus the polynomial error gelu_01_p bounds at 1e-5.
+   * That is about 1.1e-3, so 2e-3 leaves room without hiding a wrong-stride or
+   * wrong-dtype read, which is off by whole elements.
+   */
+  const float fp16_tol = 2e-3f;
+  for (int i = 0; i < batch * channel * height * width; ++i) {
+    EXPECT_NEAR(static_cast<float>(data[i]), answer[i], fp16_tol);
+  }
+}
+
+/**
+ * @brief tanh-approximate GELU on an FP16 tensor. Same float-over-FP16-storage
+ * bug as gelu_fp16_01_p.
+ *
+ * The reference evaluates the definition
+ *   0.5 x (1 + tanh(0.7978845608 (x + 0.044715 x^3)))
+ * in FP32 on the values the layer actually reads, i.e. the FP16-rounded input
+ * read back out of the input tensor. That leaves the output rounding as the
+ * only difference, so the tolerance is half an FP16 ulp at the largest
+ * magnitude here.
+ */
+TEST(nntrainer_activation, tanh_gelu_fp16_01_p) {
+  int batch = 3;
+  int channel = 1;
+  int height = 1;
+  int width = 10;
+
+  nntrainer::TensorDim::TensorType t_type_fp16 = {nntrainer::Tformat::NCHW,
+                                                  nntrainer::Tdatatype::FP16};
+  nntrainer::TensorDim::TensorType t_type_fp32 = {nntrainer::Tformat::NCHW,
+                                                  nntrainer::Tdatatype::FP32};
+
+  nntrainer::Tensor input(batch, channel, height, width, t_type_fp16);
+  GEN_TEST_INPUT(input, (l - 4) * 0.1 * (i + 1));
+
+  const _FP16 *x16 = input.getData<_FP16>();
+  nntrainer::Tensor ref(batch, channel, height, width, t_type_fp32);
+  float *r32 = ref.getData();
+  for (int i = 0; i < batch * channel * height * width; ++i) {
+    float x = static_cast<float>(x16[i]);
+    r32[i] = 0.5f * x *
+             (1.0f + std::tanh(0.7978845608f * (x + 0.044715f * x * x * x)));
+  }
+
+  nntrainer::Tensor results(batch, channel, height, width, t_type_fp16);
+  results = nntrainer::ActiFunc::tanhGelu(input, results);
+
+  const _FP16 *data = results.getData<_FP16>();
+  ASSERT_NE(nullptr, data);
+
+  /// half an FP16 ulp at the largest expected magnitude (~1.4)
+  const float fp16_tol = 6e-4f;
+  for (int i = 0; i < batch * channel * height * width; ++i) {
+    EXPECT_NEAR(static_cast<float>(data[i]), r32[i], fp16_tol);
+  }
+}
+#endif /* ENABLE_FP16 */
+
 TEST(nntrainer_activation, geluPrime_01_p) {
   int batch = 3;
   int channel = 1;
