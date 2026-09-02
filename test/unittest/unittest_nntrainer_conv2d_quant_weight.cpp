@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * @file   unittest_qint8_channelwise_scale.cpp
+ * Copyright (C) 2026 Samsung Electronics Co., Ltd. All Rights Reserved.
+ *
+ * @file   unittest_nntrainer_conv2d_quant_weight.cpp
  * @date   02 September 2026
  * @brief  Contract tests for the quantized-conv2d weight guard.
+ * @author Seungbaek <sb92.hong@samsung.com>
  *
  *         Conv2DLayer requests its weight as (filter, in_ch, kh, kw), so the
  *         axis a per-channel scale vector keys on is a spatial/kernel axis, not
@@ -52,6 +55,8 @@ std::string modelTensorType(DataType weight_type) {
     return "QINT4-FP32";
   case DataType::QINT16:
     return "QINT16-QINT16";
+  case DataType::FP16:
+    return "FP16-FP32";
   default:
     ADD_FAILURE() << "unmapped weight dtype in test helper";
     return "FP32-FP32";
@@ -59,22 +64,26 @@ std::string modelTensorType(DataType weight_type) {
 }
 
 /**
- * @brief Build an NN with one conv2d, set the weight data type and format, and
- * run compile+initialize.
- * @return 0 on success, -1 if compile/initialize threw.
- */
-/**
- * @brief initialize() an NN with one conv2d; on throw, return the exception
- * message and -1; on success return 0 with an empty message.
+ * @brief Build an NN with one conv layer (conv2d, or conv1d which delegates
+ * its finalize/forwarding to an inner Conv2DLayer), set the weight data type
+ * and format, and initialize. On throw, capture the exception message and
+ * return -1; on success return 0.
  */
 int tryInitializeConvNN(Format format, DataType weight_type,
+                        const char *layer_type = "conv2d",
                         std::string *message = nullptr) {
   auto nn = std::make_unique<nntrainer::NeuralNetwork>();
 
-  nn->addLayer(
-    ml::train::layer::Input({"name=input", "input_shape=1:3:16:16"}));
-  nn->addLayer(ml::train::layer::Convolution2D(
-    {"filters=8", "kernel_size=3,3", "stride=1,1", "padding=0,0"}));
+  const bool is_1d = std::string(layer_type) == "conv1d";
+  // conv1d takes a (channel, height, width) input and a scalar kernel.
+  nn->addLayer(ml::train::layer::Input(
+    {"name=input",
+     "input_shape=" + std::string(is_1d ? "3:1:16" : "1:3:16:16")}));
+  nn->addLayer(std::shared_ptr<ml::train::Layer>(ml::train::createLayer(
+    layer_type, {std::string("name=conv") + layer_type, "filters=8",
+                 std::string("kernel_size=") + (is_1d ? "3" : "3,3"),
+                 std::string("stride=") + (is_1d ? "1" : "1,1"),
+                 std::string("padding=") + (is_1d ? "0" : "0,0")})));
 
   const char *fmt = format == Format::NHWC ? "NHWC" : "NCHW";
   nn->setProperty({std::string("batch_size=1"),
@@ -103,7 +112,7 @@ int tryInitializeConvNN(Format format, DataType weight_type,
  * scale_size() == width() == out_ch. This is what a future channel-last conv2d
  * weight request will rely on.
  */
-TEST(QInt8ChannelwiseScale, channelLastQint8ScaleSizeEqualsOutChannels) {
+TEST(ConvQuantWeightGuard, channelLastQint8ScaleSizeEqualsOutChannels) {
   const unsigned int kh = 3, kw = 3, out_ch = 8;
   nntrainer::Tensor weight(
     TensorDim(1, kh, kw, out_ch,
@@ -120,7 +129,7 @@ TEST(QInt8ChannelwiseScale, channelLastQint8ScaleSizeEqualsOutChannels) {
  * @brief The per-tensor scheme (the activation side of the scheme) is a single
  * scale regardless of shape.
  */
-TEST(QInt8ChannelwiseScale, perTensorSchemeHasSingleScale) {
+TEST(ConvQuantWeightGuard, perTensorSchemeHasSingleScale) {
   nntrainer::Tensor act(
     TensorDim(1, 4, 8, 8, TensorDim::TensorType(Format::NHWC, DataType::QINT8)),
     true, nntrainer::Initializer::NONE, "act",
@@ -135,7 +144,7 @@ TEST(QInt8ChannelwiseScale, perTensorSchemeHasSingleScale) {
  * mis-sizes the scale vector: for a 3x3 filter it yields kw scales (3), not the
  * output channel count (8). This is why the guard exists.
  */
-TEST(QInt8ChannelwiseScale, qint8WidthLayoutKeysOnKernelWidthNotOutChannels) {
+TEST(ConvQuantWeightGuard, qint8WidthLayoutKeysOnKernelWidthNotOutChannels) {
   nntrainer::Tensor weight(
     TensorDim(8, 3, 3, 3, // (filter=8, in_ch=3, kh=3, kw=3)
               TensorDim::TensorType(Format::NCHW, DataType::QINT8)),
@@ -149,7 +158,7 @@ TEST(QInt8ChannelwiseScale, qint8WidthLayoutKeysOnKernelWidthNotOutChannels) {
  * @brief QINT16 per-channel scales key on height() (== kh), equally not the
  * output channel count, so it is rejected too.
  */
-TEST(QInt8ChannelwiseScale, qint16ScaleSizeKeysOnHeight) {
+TEST(ConvQuantWeightGuard, qint16ScaleSizeKeysOnHeight) {
   nntrainer::Tensor weight(
     TensorDim(8, 3, 3, 3,
               TensorDim::TensorType(Format::NCHW, DataType::QINT16)),
@@ -163,7 +172,7 @@ TEST(QInt8ChannelwiseScale, qint16ScaleSizeKeysOnHeight) {
  * @brief QINT4 per-channel scales are group-based over h*w/32, not one per
  * output channel, so it cannot satisfy the channel-last contract either.
  */
-TEST(QInt8ChannelwiseScale, qint4ScaleSizeIsGroupBased) {
+TEST(ConvQuantWeightGuard, qint4ScaleSizeIsGroupBased) {
   // (filter=8, in_ch=4, kh=8, kw=4): scale_size() == height()*width()/32
   // == 8*4/32 == 1, which is neither the output channel count (8) nor any
   // per-channel layout.
@@ -178,19 +187,23 @@ TEST(QInt8ChannelwiseScale, qint4ScaleSizeIsGroupBased) {
 /**
  * @brief finalize() rejects every quantized conv2d weight dtype, in both
  * model formats, rather than build a mis-sized per-channel scale vector.
+ * Conv1DLayer delegates finalize() to an inner Conv2DLayer, so it is covered
+ * by the same guard and checked here too.
  */
-TEST(QInt8ChannelwiseScale, quantizedConv2dWeightsRejected) {
-  for (Format fmt : {Format::NCHW, Format::NHWC}) {
-    for (DataType dt : {DataType::QINT8, DataType::QINT4, DataType::QINT16}) {
-      std::string msg;
-      EXPECT_EQ(tryInitializeConvNN(fmt, dt, &msg), -1)
-        << "expected rejection for dtype index " << (int)dt << " fmt "
-        << (fmt == Format::NHWC ? "NHWC" : "NCHW");
-      // Pin that the throw comes from the conv2d quantized-weight guard, not an
-      // unrelated early failure during compile/initialize.
-      EXPECT_NE(msg.find("quantized conv2d weights are not supported"),
-                std::string::npos)
-        << "unexpected rejection message: " << msg;
+TEST(ConvQuantWeightGuard, quantizedConvWeightsRejected) {
+  for (const char *layer : {"conv2d", "conv1d"}) {
+    for (Format fmt : {Format::NCHW, Format::NHWC}) {
+      for (DataType dt : {DataType::QINT8, DataType::QINT4, DataType::QINT16}) {
+        std::string msg;
+        EXPECT_EQ(tryInitializeConvNN(fmt, dt, layer, &msg), -1)
+          << "expected rejection for " << layer << " dtype index " << (int)dt
+          << " fmt " << (fmt == Format::NHWC ? "NHWC" : "NCHW");
+        // Pin that the throw comes from the conv2d quantized-weight guard, not
+        // an unrelated early failure during compile/initialize.
+        EXPECT_NE(msg.find("quantized conv2d weights are not supported"),
+                  std::string::npos)
+          << "unexpected rejection message: " << msg;
+      }
     }
   }
 }
@@ -199,10 +212,21 @@ TEST(QInt8ChannelwiseScale, quantizedConv2dWeightsRejected) {
  * @brief FP32 conv2d weights initialize fine in both formats — the guard only
  * rejects quantized weights and does not disturb the normal path.
  */
-TEST(QInt8ChannelwiseScale, fp32Conv2dWeightStillInitializes) {
+TEST(ConvQuantWeightGuard, fp32Conv2dWeightStillInitializes) {
   EXPECT_EQ(tryInitializeConvNN(Format::NCHW, DataType::FP32), 0);
   EXPECT_EQ(tryInitializeConvNN(Format::NHWC, DataType::FP32), 0);
 }
+
+#ifdef ENABLE_FP16
+/**
+ * @brief FP16 weights are accepted by the guard (the other half of the
+ * accepted set), in both formats.
+ */
+TEST(ConvQuantWeightGuard, fp16Conv2dWeightStillInitializes) {
+  EXPECT_EQ(tryInitializeConvNN(Format::NCHW, DataType::FP16), 0);
+  EXPECT_EQ(tryInitializeConvNN(Format::NHWC, DataType::FP16), 0);
+}
+#endif // ENABLE_FP16
 
 int main(int argc, char **argv) {
   int result = -1;
