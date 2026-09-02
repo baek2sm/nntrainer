@@ -29,6 +29,14 @@
 #include <nntrainer_log.h>
 #include <nntrainer_test_util.h>
 
+#ifdef __ARM_NEON
+/// the gelu dispatch test below compares against the NEON kernel itself, which
+/// is declared here. cpu_backend.h reaches arm_compute_backend.h but not this
+/// header, and the arm include directory is only on the path for arm builds
+/// (tensor/cpu_backend/meson.build), so the guard keeps it off every other one.
+#include <neon_impl.h>
+#endif
+
 TEST(nntrainer_activation, softmax_01_p) {
   int batch = 3;
   int channel = 1;
@@ -441,6 +449,52 @@ TEST(nntrainer_activation, gelu_01_p) {
     EXPECT_NEAR(data[i], answer[i], tolerance);
   }
 }
+
+#ifdef __ARM_NEON
+/**
+ * @brief On a NEON build the activation must be the NEON kernel's result.
+ *
+ * arm_compute_backend's gelu_v2 used to read
+ *
+ *   #ifdef __ARM_NEON
+ *     nntrainer::neon::gelu_v2(N, X, Y);
+ *   #endif
+ *   __fallback_gelu_v2(N, X, Y);
+ *
+ * with no #else, so the scalar std::erf loop overwrote everything the vector
+ * kernel had just written and the vectorization was dead code. Note that
+ * pinning the output against exact erf cannot catch that: the clobbering
+ * fallback is the *more* accurate of the two, so it passes any
+ * accuracy-to-erf check. The only comparison that separates the two is against
+ * the NEON kernel itself, run in the same process, which is why this test is
+ * NEON-gated rather than ported to the scalar backends.
+ */
+TEST(nntrainer_activation, gelu_02_p_neon_dispatch) {
+  /// constexpr so that `expected` below is a plain array, not a VLA.
+  constexpr int batch = 1;
+  constexpr int channel = 1;
+  constexpr int height = 1;
+  /// 1001 values sweeping [-10, 10]: the polynomial band and both tails, where
+  /// the kernel clamps to 0 below gelu_start and to x above gelu_end.
+  constexpr int width = 1001;
+
+  nntrainer::Tensor input(batch, channel, height, width);
+  GEN_TEST_INPUT(input, l * 0.02f - 10.0f);
+
+  nntrainer::Tensor results(batch, channel, height, width);
+  results = nntrainer::ActiFunc::gelu(input, results);
+  float *data = results.getData();
+  ASSERT_NE(nullptr, data);
+
+  const unsigned int size = batch * channel * height * width;
+  float expected[size];
+  nntrainer::neon::gelu_v2(size, input.getData<float>(), expected);
+
+  for (unsigned int i = 0; i < size; ++i) {
+    EXPECT_NEAR(data[i], expected[i], 1e-6f) << "at index " << i;
+  }
+}
+#endif /* __ARM_NEON */
 
 TEST(nntrainer_activation, geluPrime_01_p) {
   int batch = 3;
