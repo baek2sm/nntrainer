@@ -12,11 +12,12 @@
  *         the output channel:
  *           - QINT8  : scale_size() == width()  (== kw)
  *           - QINT16 : scale_size() == height() (== kh)
- *           - QINT4  : scale_size() == height() * width() / group_size (32)
- *         None equals the output channel count, so a per-channel scale vector
- *         would be silently mis-sized. forwarding() also never drives an int8
- *         kernel (it only issues an FP dot). finalize() therefore rejects every
- *         quantized weight dtype; FP32/FP16 are the only accepted weights.
+ *           - QINT4  : scale_size() == height() * width() / group_size (32),
+ *                      i.e. 0 for any real kernel (fewer than 32 taps)
+ *         None equals the output channel count. forwarding() also never drives
+ *         an int8 kernel (it only issues an FP dot, which throws on a quantized
+ *         tensor). finalize() therefore rejects every quantized weight dtype;
+ *         FP32/FP16 are the only accepted weights.
  *
  *         The channel-last target layout (weight (1, kh, kw, out_ch), so that
  *         QINT8 scale_size() == width() == out_ch) is pinned by the scale_size
