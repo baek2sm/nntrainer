@@ -67,6 +67,7 @@ test_target = [
   ['unittest_nntrainer_tensor', []],
   ['unittest_nntrainer_quantizer', []],
   ['unittest_nntrainer_quant_read_qscheme', []],
+  ['unittest_nntrainer_bn_qscheme', []],
   ['unittest_util_func', []],
   ['unittest_nntrainer_models', [
     'models' / 'models_test_utils.cpp', 'models' / 'models_golden_test.cpp'

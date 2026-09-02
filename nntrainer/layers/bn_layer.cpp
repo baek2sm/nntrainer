@@ -407,7 +407,19 @@ void BatchNormalizationLayer::save(std::ofstream &file,
 
           dim.setDataType(definedWeightDataType);
 
-          Tensor T_save(dim, true);
+          /**
+           * @note the temporary is written straight to the file, so it has to
+           * carry the same quantization scheme as the weight it stands in for.
+           * Every weight comes from the tensor pool as PER_CHANNEL_AFFINE, see
+           * TensorPool::request, and that is what the quantized branch of the
+           * inference path of save() and read() writes and reads (the FP32
+           * inference path writes no scheme tag at all). It is stated here
+           * rather than taken from run_context.getWeight(i), because in
+           * training mode the weight itself is FP32, for which a quantization
+           * scheme is not defined.
+           */
+          Tensor T_save(dim, true, Initializer::NONE, "",
+                        QScheme::PER_CHANNEL_AFFINE);
 
           T_save.copyData(run_context.getWeight(i));
 
@@ -451,7 +463,9 @@ void BatchNormalizationLayer::read(std::ifstream &file,
 
           TensorDim dim = run_context.getWeight(i).getDim();
           dim.setDataType(definedWeightDataType);
-          Tensor T_read(dim, true);
+          /// @note same scheme as the weight, see the save() counterpart
+          Tensor T_read(dim, true, Initializer::NONE, "",
+                        QScheme::PER_CHANNEL_AFFINE);
           T_read.read(file);
           run_context.getWeight(i).copyData(T_read);
         } else {
@@ -497,7 +511,9 @@ void BatchNormalizationLayer::read(ReadSource src, RunLayerContext &run_context,
 
           TensorDim dim = run_context.getWeight(i).getDim();
           dim.setDataType(definedWeightDataType);
-          Tensor T_read(dim, true);
+          /// @note same scheme as the weight, see the save() counterpart
+          Tensor T_read(dim, true, Initializer::NONE, "",
+                        QScheme::PER_CHANNEL_AFFINE);
           T_read.read(src);
           run_context.getWeight(i).copyData(T_read);
         } else {
