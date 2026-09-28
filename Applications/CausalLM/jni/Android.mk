@@ -43,6 +43,7 @@ CAUSALLM_COMMON_INCLUDES := \
     $(LOCAL_PATH)/../models/lfm2 \
     $(LOCAL_PATH)/../third_party/minja/include \
     $(LOCAL_PATH)/../third_party \
+    $(NNTRAINER_ROOT)/nntrainer/layers \
     $(NNTRAINER_ROOT)/nntrainer/tensor/cl_operations \
 
 # Common compile flags. -std=c++17/-fexceptions/-frtti come from Application.mk
@@ -277,6 +278,7 @@ LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/../models/gemma4 \
     $(LOCAL_PATH)/../models/xlm_roberta \
     $(LOCAL_PATH)/../models/lfm2 \
+    $(NNTRAINER_ROOT)/nntrainer/layers \
     $(NNTRAINER_ROOT)/nntrainer/tensor/cl_operations \
 
 include $(BUILD_EXECUTABLE)
