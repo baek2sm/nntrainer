@@ -16,7 +16,9 @@
 #include <compute_ops.h>
 #include <fallback.h>
 #include <fallback_internal.h>
+#include <ggml_interface.h>
 #include <nntrainer_error.h>
+#include <nntr_ggml_impl.h>
 
 namespace nntrainer {
 
@@ -249,6 +251,22 @@ void gemm_q8_0(const unsigned int M, const unsigned int N, const unsigned int K,
                const float *A, const unsigned int lda, const void *B,
                const unsigned int ldb, float *C, const unsigned int ldc) {
   return __fallback_gemm_q8_0<float>(M, N, K, A, lda, B, ldb, C, ldc);
+}
+
+template <>
+void quantize_row_q8_0(const float *src, void *dst, int64_t k) {
+  nntr_quantize_row_q8_0(src, dst, k);
+}
+
+template <>
+void dequantize_row_q8_0(const void *x_raw, float *y, int64_t k) {
+  __ggml_dequantize_row_q8_0(x_raw, y, k);
+}
+
+template <>
+size_t quantize_q8_0(const float *src, void *dst, int64_t nrow,
+                     int64_t n_per_row, const float *quant_weights) {
+  return __ggml_quantize_q8_0(src, dst, nrow, n_per_row, quant_weights);
 }
 
 void gemm_q4_K(const unsigned int M, const unsigned int N, const unsigned int K,

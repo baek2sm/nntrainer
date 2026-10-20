@@ -82,6 +82,30 @@ void nntr_gemv_q8_0_4x8_q8_0(int n, float *__restrict s, size_t bs,
                              const void *__restrict vx,
                              const void *__restrict vy, int nr, int nc);
 
+#ifdef ENABLE_FP16
+/**
+ * @brief Compute interleaved (q8_0x4) Q8_0 weights by q8_0x4 activations GEMM,
+ *        FP16 output (register-blocked 4x4 SMMLA). Both operands pre-packed.
+ */
+void nntr_gemm_q8_0_q8_0_4x4_fp16(int n, NNTR_GGML_FP16 *__restrict s,
+                                  size_t bs, const void *__restrict vx,
+                                  const void *__restrict vy, int nr, int nc);
+#endif
+
+/**
+ * @brief Compute Q8_0 weights by Q8_0 activations GEMM
+ */
+void nntr_gemm_q8_0_q8_0(int n, float *__restrict s, size_t bs,
+                         const void *__restrict vx, const void *__restrict vy,
+                         int nr, int nc);
+
+/**
+ * @brief Compute Q8_0 weights by Q8_0 activations GEMV
+ */
+void nntr_gemv_q8_0_q8_0(int n, float *__restrict s, size_t bs,
+                         const void *__restrict vx, const void *__restrict vy,
+                         int nr, int nc);
+
 void nntr_quantize_mat_q8_0_4x4(const float *__restrict x, void *__restrict vy,
                                 int64_t k);
 
