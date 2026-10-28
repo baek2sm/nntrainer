@@ -3,6 +3,10 @@
 사용자 결정: **Linux x86 CPU → Android Arm CPU → 이후 backend는 추후 결정**.
 추가 결정: 이후 모델 정확성·성능 검증 기준은 **Qwen3 0.6B**다.
 Gemma4 호환성 수정은 별도 `fix/gemma4-skip-prefill-lmhead` 브랜치에서 관리한다.
+
+후속 Android CPU 작업은 기기 `bacd420f`에서 진행한다.
+[Android 빌드·단위 검증](android-build-checks.md)과
+[Android Qwen 실기기 검증](android-cpu-validation.md)에 Linux 결과와 구분해 기록한다.
 `AGENTS.md`는 참고하며 수정하지 않는다. 구현·명령·검증·미완료 사항을 단계별로
 이 문서에 갱신하고, 통과한 단위로 DCO/agent trailer를 갖춘 커밋을 남긴다.
 
@@ -210,7 +214,8 @@ byte 수·append/history copy를 검사한다. 물리 DRAM traffic, cache miss, 
 
 Android source 목록은 Meson File 대신 절대경로 문자열을 사용하도록 바로잡았다.
 Android app의 private core include 경로도 연결했다. 이는 build 연결 준비이며
-Android cross build·실기기 검증을 수행한 결과는 아니다. 다음 구현 단계는 Arm CPU다.
+Linux 단계 종료 시점에는 Android cross build·실기기 검증 전이었다. 이후 Arm CPU
+검증 결과는 위 Android 전용 기록을 참고한다.
 
 ### Qwen을 이용한 추가 CPU 상태 검증
 

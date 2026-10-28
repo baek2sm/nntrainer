@@ -11,6 +11,7 @@
  */
 
 #include <cstdio>
+#include <cstdlib>
 #include <gtest/gtest.h>
 #include <limits>
 #include <string>
@@ -19,6 +20,16 @@
 #include <kv_cache_manager.h>
 #include <tensor.h>
 #include <tensor_dim.h>
+
+namespace {
+
+// Android has no /tmp. The harness supplies TMPDIR; native runs can use cwd.
+std::string snapshotPath(const char *name) {
+  const char *tmp = std::getenv("TMPDIR");
+  return std::string(tmp && *tmp ? tmp : ".") + "/" + name;
+}
+
+} // namespace
 
 /**
  * @class   KVCacheManagerTest
@@ -227,7 +238,7 @@ TEST_F(KVCacheManagerTest, save_and_load) {
   manager.advance(3);
 
   // Save
-  std::string path = "/tmp/test_kv_cache.bin";
+  std::string path = snapshotPath("test_kv_cache.bin");
   manager.save(path);
 
   // Create a new manager and load
@@ -258,8 +269,9 @@ TEST_F(KVCacheManagerTest, save_and_load) {
 
 TEST_F(KVCacheManagerTest, save_load_not_allocated) {
   causallm::KVCacheManager empty;
-  EXPECT_THROW(empty.save("/tmp/test.bin"), std::runtime_error);
-  EXPECT_THROW(empty.load("/tmp/test.bin", 1), std::runtime_error);
+  const auto path = snapshotPath("test.bin");
+  EXPECT_THROW(empty.save(path), std::runtime_error);
+  EXPECT_THROW(empty.load(path, 1), std::runtime_error);
 }
 
 TEST_F(KVCacheManagerTest, write_view_overflow) {
@@ -475,8 +487,9 @@ TEST(KVCacheManagerCpu, ring_abort_invalidates_and_legacy_view_rejects_seam) {
   EXPECT_THROW(m.getValueCacheReadView(0, 0, 5), std::out_of_range);
   { auto step = m.beginStep(3, 5); }
   EXPECT_THROW(m.beginStep(3, 4), std::logic_error);
-  EXPECT_THROW(m.save("/tmp/kv_invalid_snapshot.bin"), std::logic_error);
-  EXPECT_THROW(m.load("/tmp/kv_invalid_snapshot.bin", 0), std::logic_error);
+  const auto path = snapshotPath("kv_invalid_snapshot.bin");
+  EXPECT_THROW(m.save(path), std::logic_error);
+  EXPECT_THROW(m.load(path, 0), std::logic_error);
   m.reset();
   auto step = m.beginStep(0, 2);
   m.commitStep(std::move(step));
@@ -491,9 +504,9 @@ TEST_F(KVCacheManagerTest, active_step_rejects_reallocation_and_snapshot) {
   EXPECT_THROW(
     manager.allocate(1, 1, 8, 1, 4, ml::train::TensorDim::DataType::FP32),
     std::logic_error);
-  EXPECT_THROW(manager.save("/tmp/kv_active_snapshot.bin"), std::logic_error);
-  EXPECT_THROW(manager.load("/tmp/kv_active_snapshot.bin", 0),
-               std::logic_error);
+  const auto path = snapshotPath("kv_active_snapshot.bin");
+  EXPECT_THROW(manager.save(path), std::logic_error);
+  EXPECT_THROW(manager.load(path, 0), std::logic_error);
   EXPECT_EQ(manager.getKeyCache(0).getMemoryData(), memory);
   manager.commitStep(std::move(step));
   EXPECT_EQ(manager.getPosition(), 2u);
