@@ -138,6 +138,7 @@ Git HEAD, dirty diff SHA256, probe/header revision 및 library hash를 남긴다
 | `NNTR_MIN_PREFILL=1`: 다섯 prompt(164-token 장문 포함) × 두 dtype | token/logits 완전 일치 | `forced-flash-comparison.json` |
 | 강제 flash: 동일 session 두 turn | token/logits 완전 일치 | 같은 report의 `sessions` |
 | `VJEPA_BK=64`, `VJEPA_BQ=32`, 164-token 장문 | 두 번째 이후 key-block offset을 포함해 FP32/Q4_0 token/logits 완전 일치 | `tiles64-comparison.json` |
+| `NNTR_MIN_PREFILL=999999`: per-row consumer, 두 dtype | token/logits 완전 일치, consumer trace 확인 | `per-row-comparison.json`, `per-row-trace-audit.json` |
 
 이 host의 기본 x86 flash threshold는 1이므로 기본 경로도 flash를 사용한다.
 별도의 per-row consumer를 검사하려면 `--min-prefill 999999`로 threshold를 올린다.
@@ -180,3 +181,37 @@ backing identity에 대한 증거이며, 하드웨어 메모리 트래픽 측정
 이 검증의 직접 쓰기는 FP32 activation의 최종 RoPE/half 변환 destination을 대상으로
 한다. native FP16 activation에서 남아 있는 V append copy, quantized KV, GPU/NPU,
 Android Arm 실기기는 이 Linux CPU 결과의 완료 범위가 아니다.
+
+## 추가 검증: chunked prefill과 파일 복원
+
+`--prefill-chunk 17`로 164-token 장문을 17-token step들로 나누어 실행했다.
+FP32와 Q4_0 모두 기존과 같은 답변을 생성하고 모든 logits가 finite였다. 각 step의
+28개 owner가 빠짐없이 같은 manager allocation으로 접근했는지 audit를 통과했다.
+이 조건에서도 baseline/post의 token IDs 및 매 generation step 전체 logits bytes가
+완전 일치했다. 비교 결과는 `chunk17-comparison.json`에 기록했다.
+
+`--session-only --snapshot-resume`는 첫 turn 종료 position 21의 cache를 파일로 저장하고,
+**새 모델 인스턴스**를 초기화·weight load한 뒤 `resumeFromKVCacheFile(path, 0)`로
+복원한다. 같은 두 번째 turn을 기존 live session과 복원 session 양쪽에서 실행한다.
+FP32/Q4_0 각각 저장 파일은 **2,409,136 bytes**였고, 복원 position 21과 다음 turn 종료
+position 49가 live session과 같았다. 생성 token IDs와 각 generation step 전체 logits가
+**bitwise 동일**했다. 보고서의 `snapshot_resume`에 이를 별도로 표시한다.
+
+```bash
+PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=8 \
+  /home/jayden/miniforge3/envs/rkv-hf/bin/python tools/kv_cache/validate_qwen3_cpu.py \
+  --output build-kv-cpu/validation/qwen3-post/chunk17 \
+  --probe build-kv-cpu/validation/qwen3-post/qwen_cpu_probe \
+  --prompt long --prefill-chunk 17 --trace
+PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=8 \
+  /home/jayden/miniforge3/envs/rkv-hf/bin/python tools/kv_cache/validate_qwen3_cpu.py \
+  --output build-kv-cpu/validation/qwen3-post/snapshot-resume \
+  --probe build-kv-cpu/validation/qwen3-post/qwen_cpu_probe \
+  --session-only --snapshot-resume --trace
+```
+
+Snapshot 검증은 원래 모델과 복원 모델의 allocation을 동시에 유지한다. audit는 이
+경우 두 storage instance를 구분하고 각 step을 실제 key/value allocation pair에 연결해
+owner 누락/중복과 copy 유무를 검사한다. 증거는 `snapshot-resume/report.json`,
+`snapshot-resume-trace-audit.json`, `chunk17/report.json`, `chunk17-trace-audit.json`이다.
+weight 모델과 `.kv` 파일은 모두 build 아래의 실행 산출물로만 남기며 커밋하지 않는다.

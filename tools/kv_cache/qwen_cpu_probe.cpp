@@ -98,33 +98,67 @@ int main(int argc, char **argv) {
       throw std::runtime_error("Qwen3ForCausalLM is not registered");
     model->initialize();
     model->load_weight(nntr.at("model_file_name").get<std::string>());
-    auto run = [&](const json &turn, const std::string &output) {
+    auto run = [&](causallm::Transformer &running, const json &turn,
+                   const std::string &output) {
       const auto prompt = turn.at("rendered_prompt").get<std::string>();
-      const auto input_ids = model->getTokenizer()->Encode(prompt);
+      const auto input_ids = running.getTokenizer()->Encode(prompt);
       if (turn.contains("input_ids") && json(input_ids) != turn.at("input_ids"))
         throw std::runtime_error("HF and nntrainer input token IDs disagree");
-      const int before = model->getKvLen();
+      const int before = running.getKvLen();
       Capture capture(output);
-      model->setLogitsProcessor(&capture);
-      model->run(prompt, false, "", "", false);
-      model->setLogitsProcessor(nullptr);
+      running.setLogitsProcessor(&capture);
+      try {
+        running.run(prompt, false, "", "", false);
+      } catch (...) {
+        running.setLogitsProcessor(nullptr);
+        throw;
+      }
+      running.setLogitsProcessor(nullptr);
       return json{
         {"request", turn},           {"input_ids", input_ids},
-        {"position_before", before}, {"position_after", model->getKvLen()},
+        {"position_before", before}, {"position_after", running.getKvLen()},
         {"token_ids", capture.ids},  {"steps", capture.rows}};
     };
-    json report = run(request, argv[3]);
+    json report = run(*model, request, argv[3]);
     if (request.contains("continuations")) {
       auto *causal = dynamic_cast<causallm::CausalLM *>(model.get());
       if (!causal)
         throw std::runtime_error("Continuation requires a CausalLM session");
+      std::unique_ptr<causallm::Transformer> resumed;
+      causallm::CausalLM *resumed_causal = nullptr;
+      if (request.value("snapshot_resume", false)) {
+        const std::string snapshot = std::string(argv[3]) + ".kv";
+        const int position = model->getKvLen();
+        causal->save_kvcache(snapshot, position);
+        resumed = causallm::Factory::Instance().create(
+          "Qwen3ForCausalLM", config, generation, nntr);
+        if (!resumed)
+          throw std::runtime_error("Qwen3 resume model is not registered");
+        resumed->initialize();
+        resumed->load_weight(nntr.at("model_file_name").get<std::string>());
+        resumed_causal = dynamic_cast<causallm::CausalLM *>(resumed.get());
+        if (!resumed_causal)
+          throw std::runtime_error("Snapshot resume requires CausalLM");
+        const auto restored =
+          resumed_causal->resumeFromKVCacheFile(snapshot, 0);
+        report["snapshot"] = {{"path", snapshot},
+                              {"bytes", std::filesystem::file_size(snapshot)},
+                              {"saved_position", position},
+                              {"restored_position", restored}};
+        report["resumed_continuations"] = json::array();
+      }
       report["continuations"] = json::array();
       for (const auto &turn : request.at("continuations")) {
         causal->setSessionTokenPosition(model->getKvLen());
         const std::string prefix =
           std::string(argv[3]) + ".turn" +
           std::to_string(report["continuations"].size() + 1);
-        report["continuations"].push_back(run(turn, prefix));
+        report["continuations"].push_back(run(*model, turn, prefix));
+        if (resumed) {
+          resumed_causal->setSessionTokenPosition(resumed->getKvLen());
+          report["resumed_continuations"].push_back(
+            run(*resumed, turn, prefix + ".resumed"));
+        }
       }
     }
     std::ofstream stream(argv[3]);

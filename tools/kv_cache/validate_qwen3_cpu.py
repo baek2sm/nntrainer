@@ -27,10 +27,6 @@ def save_json(path, value):
 
 
 def main():
-    import numpy as np
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", type=Path, default=Path("build-kv-cpu"))
     parser.add_argument("--hf", type=Path,
@@ -46,6 +42,12 @@ def main():
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--include-session", action="store_true",
                         help="Also validate two turns using the same live KV allocation")
+    parser.add_argument("--session-only", action="store_true",
+                        help="Run only the two-turn session case")
+    parser.add_argument("--snapshot-resume", action="store_true",
+                        help="Compare live continuation with a new model restored from KV file")
+    parser.add_argument("--prefill-chunk", type=int,
+                        help="Explicit NNTR_PREFILL_CHUNK for multi-token step testing")
     parser.add_argument("--force-flash", action="store_true",
                         help="Set NNTR_MIN_PREFILL=1 to exercise the x86 flash consumer")
     parser.add_argument("--min-prefill", type=int,
@@ -61,6 +63,17 @@ def main():
     args = parser.parse_args()
     if args.tokens < 2:
         parser.error("--tokens must be at least 2 for the prefill-plus-decode budget")
+    if args.threads < 1 or any(value is not None and value < 1 for value in
+                              (args.prefill_chunk, args.key_block, args.query_block)):
+        parser.error("Threads, prefill chunk and tile sizes must be positive")
+    if args.min_prefill is not None and args.min_prefill < 0:
+        parser.error("--min-prefill must be nonnegative")
+    if args.session_only or args.snapshot_resume:
+        args.include_session = True
+    import numpy as np
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
     models = args.model or [args.build / "models" / name for name in
@@ -68,6 +81,8 @@ def main():
     prompts = list(args.prompt or [name for name in PROMPTS if name != "long"])
     if args.long_prompt and "long" not in prompts:
         prompts.append("long")
+    if args.session_only:
+        prompts = []
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("NNTR_", "LD_", "VJEPA_"))}
     env.update(NNTR_ENGINE="cpu", NNTR_NUM_THREADS=str(args.threads),
@@ -85,6 +100,8 @@ def main():
         env["VJEPA_BK"] = str(args.key_block)
     if args.query_block is not None:
         env["VJEPA_BQ"] = str(args.query_block)
+    if args.prefill_chunk is not None:
+        env["NNTR_PREFILL_CHUNK"] = str(args.prefill_chunk)
     if args.trace:
         env["NNTR_KV_CPU_TRACE"] = "1"
     torch.set_num_threads(args.threads)
@@ -106,7 +123,8 @@ def main():
         "threads": args.threads,
         "force_flash": args.force_flash,
         "consumer_environment": {k: env[k] for k in
-                                 ("NNTR_MIN_PREFILL", "VJEPA_BK", "VJEPA_BQ") if k in env},
+                                 ("NNTR_MIN_PREFILL", "NNTR_PREFILL_CHUNK",
+                                  "VJEPA_BK", "VJEPA_BQ") if k in env},
         "library_path": env.get("LD_LIBRARY_PATH"),
         "runs": [],
     }
@@ -231,6 +249,8 @@ def main():
         second_ids = generate_ids(first_input + first_ids[:-1] + suffix_ids)
         request = {"rendered_prompt": first_prompt, "input_ids": first_input,
                    "continuations": [{"rendered_prompt": suffix, "input_ids": suffix_ids}]}
+        if args.snapshot_resume:
+            request["snapshot_resume"] = True
         request_file = args.output / "session-request.json"
         save_json(request_file, request)
         expected = {"first_ids": first_ids, "second_ids": second_ids,
@@ -255,6 +275,19 @@ def main():
                             positions=[result["position_before"], result["position_after"],
                                        next_turn["position_before"], next_turn["position_after"]],
                             passed=equal and finite)
+                if args.snapshot_resume:
+                    from compare_qwen_cpu_runs import compare_turn
+                    resumed = result["resumed_continuations"][0]
+                    comparison = compare_turn(next_turn, resumed)
+                    snapshot = result["snapshot"]
+                    comparison["positions_equal"] = (
+                        snapshot["saved_position"] == snapshot["restored_position"] ==
+                        next_turn["position_before"] == resumed["position_before"] and
+                        next_turn["position_after"] == resumed["position_after"])
+                    comparison["passed"] &= comparison["positions_equal"]
+                    comparison["snapshot_bytes"] = snapshot["bytes"]
+                    item["snapshot_resume"] = comparison
+                    item["passed"] &= comparison["passed"]
             manifest["sessions"].append(item)
             failed |= not item["passed"]
             print(json.dumps(item, ensure_ascii=False), flush=True)

@@ -212,9 +212,43 @@ Android source 목록은 Meson File 대신 절대경로 문자열을 사용하�
 Android app의 private core include 경로도 연결했다. 이는 build 연결 준비이며
 Android cross build·실기기 검증을 수행한 결과는 아니다. 다음 구현 단계는 Arm CPU다.
 
+### Qwen을 이용한 추가 CPU 상태 검증
+
+모델 준비에서 멈추지 않고 두 weight profile 모두 다음 조건을 추가 확인했다.
+
+- 164-token prefill을 **17-token chunk**로 나눈 뒤 decode한다. 변경 전과 새 CPU
+  manager 구현의 모든 token·각 step의 전체 logits bytes가 완전히 일치한다.
+- position **21**에서 KV snapshot을 저장하고 **새 모델 인스턴스**에서 weight와
+  snapshot을 로드한 뒤 같은 다음 turn을 실행한다. live continuation과 token,
+  전체 logits bytes 및 최종 position **49**가 일치한다. snapshot 크기는 두 profile
+  모두 **2,409,136 bytes**다.
+- 여러 모델 인스턴스의 allocation witness를 구분해 각 28 owner의 누락/중복,
+  manager 주소 대응, chunk별 byte 수, compatibility/layout copy 여부를 audit한다.
+
+이는 동일 세션의 저장·복원 검증이다. 두 세션의 물리 KV 공유나 prefix COW를
+구현했다는 의미는 아니다. 원본/변환 모델은 build 아래에만 보관하며 commit하지 않는다.
+재현 옵션은 `--prefill-chunk 17`, `--session-only --snapshot-resume`다.
+증거는 `build-kv-cpu/validation/qwen3-post/`의 `chunk17-comparison.json`,
+`snapshot-resume/report.json`, 해당 trace audit JSON에 보존한다.
+
 ## 단계 경계
 
 P0는 환경과 변경 전 baseline, P1은 내부 core storage/lease와 독립 테스트,
 P2는 기존 CausalLM CPU allocation 및 graph 실행 연결이다. 각 단계에서 구현 범위,
 실행한 검사, 남은 한계를 추가한다. GPU/NPU/CUDA direct access, quantized KV,
 session 간 공유, Android 실기기 완료를 Linux CPU 결과로 대신하지 않는다.
+
+| 단계별 commit | 내용 |
+|---|---|
+| `9a9662f69` | P0 환경 검토, 기존 모델 호환성, 빌드·검증 절차 |
+| `21c87982b` | P1 core geometry/storage/step lease와 수명·실패 테스트 |
+| `267c1b62d` | Gemma4 LM head 속성 버그 수정의 현재 브랜치 반영 |
+| `2b9bf7890` | P2 CPU facade/graph transaction 연결, x86 KV prefix copy 제거 |
+| `fc06bb03f` | 고정 revision Qwen 변환·weight 양자화·HF/기존 구현 비교 도구 |
+
+Gemma4 독립 브랜치는 `fix/gemma4-skip-prefill-lmhead`, 해당 commit은
+`21d03c477`이며 worktree는 `/tmp/nntrainer-gemma4-fix`다.
+모든 commit은 기존 인간 author/committer identity와 DCO sign-off를 유지하고
+`Co-authored-by: Codex (OpenAI)`를 포함한다. checkpoint, 변환 모델, 로그, logits,
+KV snapshot 및 build 산출물은 commit하지 않는다. 사용자 기존 untracked
+`Applications/Android/kotlin/.gradle/`도 변경·추가하지 않는다.

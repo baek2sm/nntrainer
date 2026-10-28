@@ -10,7 +10,8 @@
 
 - 기준: upstream main `141871a58ff439e3caeac40c1632ff8ac3543d20`, 2026-10-28 분석
 - 최초 범위: Linux/Android, batch=1, active session=1, inference
-- 최초 구현 순서: 공통 계약 → CPU → OpenCL → QNN; CUDA는 기존 기능 회귀를 방지하며 adapter 추가
+- 현재 구현 순서: 공통 계약 → Linux CPU → Android Arm CPU → 이후 추후 결정.
+  OpenCL/QNN/CUDA 절은 후속 후보 설계이며 현재 CPU 단계의 완료를 대체하지 않는다.
 - 최초 작성 범위: 설계·개발 계획. 이후 제품 구현과 실제 Linux 검증 결과는
   [실행 기록](linux-cpu-execution.md), [Qwen3 기준 모델 검증](qwen3-cpu-validation.md)에 남긴다.
 - 읽는 순서: 이 문서 → [현재 소스 분석](repository-analysis.md) → [Linux 개발·검증](linux-development.md)
