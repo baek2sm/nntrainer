@@ -55,7 +55,7 @@ def audit(path):
         if len(owners) != instance["owner_layers"] or sum(owners.values()) * 2 != instance["backing_bytes"]:
             raise ValueError(f"Storage byte or owner count mismatch in {path}")
     reads = re.findall(
-        r"\[kv-cpu-read\] consumer=([^ ]+) history_copy_bytes=(\d+)", text)
+        r"\[kv-cpu-read\] consumer=([^ ]+) history_copy_bytes=(\d+)([^\n]*)", text)
     if not accesses or len(reads) != len(accesses):
         raise ValueError(f"Missing producer or consumer witnesses in {path}")
     for (owner, _, _), group in groups.items():
@@ -64,18 +64,35 @@ def audit(path):
     if "profile=compatibility" in text or re.search(
             r"\[kv-cpu-layout\].*history_copy_bytes=[1-9][0-9]*", text):
         raise ValueError(f"A compatibility or layout history-copy path ran in {path}")
-    if any(copy != "0" or arm not in ("flash-strided", "per-row") for arm, copy in reads):
+    if any(copy != "0" or arm not in ("flash-strided", "per-row", "flash-tiled")
+           for arm, copy, _ in reads):
         raise ValueError(f"Unsupported consumer or history copy in {path}")
+    tile_pack_bytes, tile_scratch_bytes = 0, 0
+    for consumer, _, counters in reads:
+        if consumer != "flash-tiled":
+            continue
+        packed = re.search(r"\btile_pack_bytes=(\d+)\b", counters)
+        scratch = re.search(r"\btile_scratch_bytes=(\d+)\b", counters)
+        # Qwen head width=128, key tile<=128, two half-bit planes per worker.
+        # This is a bounded kernel scratch copy, separate from a full-prefix
+        # cache materialization. Do not describe the tile path as copy-free.
+        if (not packed or not scratch or int(packed[1]) < 1 or
+                not 0 < int(scratch[1]) <= 2 * 128 * 128 * 2):
+            raise ValueError(f"Missing or unbounded ARM tile scratch witness in {path}")
+        tile_pack_bytes += int(packed[1])
+        tile_scratch_bytes = max(tile_scratch_bytes, int(scratch[1]))
     return {"file": str(path), "storage_instances": len(instances),
             "storage_geometry": [{"backing_bytes": i["backing_bytes"],
                                   "owner_layers": i["owner_layers"]} for i in instances],
             "backing_bytes": sum(i["backing_bytes"] for i in instances),
             "owner_layers": sum(i["owner_layers"] for i in instances),
             "producer_calls": len(accesses),
-            "consumers": sorted({arm for arm, _ in reads}),
+            "consumers": sorted({arm for arm, _, _ in reads}),
             "allocation_identity_matches": True,
             "read_alias": True, "write_alias": True,
             "append_copy_bytes": 0, "history_copy_bytes": 0,
+            "tile_pack_bytes": tile_pack_bytes,
+            "max_tile_scratch_bytes_per_worker": tile_scratch_bytes,
             "transform_bytes": sum(int(row[-1]) for row in accesses), "passed": True}
 
 

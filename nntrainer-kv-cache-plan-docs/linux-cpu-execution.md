@@ -254,6 +254,36 @@ Android attention의 inference 전용 조건을 검사하면서 기존 graph의 
 앞선 sandbox Meson 실행기는 assertion 완료 뒤 종료 대기가 남아, 동일 바이너리의
 직접 실행으로 정상 종료를 확인했다.
 
+## Android Arm CPU 후속 검증
+
+사용자 지정 기기 `bacd420f`(SM8650, Android 15, arm64-v8a)에서 NDK r28c로
+CPU 엔진과 CausalLM을 빌드했다. Qwen FP32 checkpoint를 재사용하고, Q4_0/Q6_K
+weight는 `--isa ARM`으로 다시 packing했다. 빌드·기기 단위 검사 명령은
+[Android 빌드 기록](android-build-checks.md), 모델 hash와 상세 결과는
+[Android Qwen 검증](android-cpu-validation.md)에 있다.
+최종 runtime의 기기 단위 검사는 core 18 + facade 25 + ring 22 + attention profile
+15 = **80 PASS, 0 FAIL, 0 SKIP**이며, 증거는 `checks/final-cpu.validation.json`이다.
+
+모델 검증은 baseline·기본 half 수치 호환·FP32 attention·chunk17·강제 per-row·
+snapshot을 포함한 **56회**와, 최종 수정 runtime의 **8회**로 총 **64회 통과**했다.
+최종 8회는 앞선 FP32 attention 구현과 생성 token 및 모든 logits bytes가 일치한다.
+초기 지원 조건 검사의 10회 초기화 거절은 별도 증거로 보관했다. 조사 중 위 graph
+mode 누락을 회귀 테스트로 재현했고, 기기 진단에서는 engine-neutral MHA의 GPU
+residency 표기를 실제 실행 backend로 오해한 새 검사 오류를 확인했다. 후자는
+runtime을 선택하는 `NNTR_ENGINE=cpu`로 검사하고 중립 context를 허용하도록 바로잡았다.
+
+지원 profile은 `NNTR_CPU_ATTENTION_FP32=1`, inference, batch 1, FP32 Q/K/V/O와
+linear FP16 KV다. per-row 경로는 28 owner의 동일 backing 주소와 read/write alias,
+append/history/tile copy 모두 0을 확인했다. ARM flash 경로는 full-prefix 복사를
+제거했으나 계산용 tile packing이 남는다. 기본 geometry의 worker별 scratch는
+65,536 bytes이며, 이 결과를 총 copy traffic 감소나 GPU/NPU 물리 메모리 공유의
+증거로 해석하지 않는다. 기본 Android half 수치 경로는 유지한다.
+
+FP32 출력 token은 HF와 일치하고 모든 logits가 finite다. Q4 장문 출력의
+`France`와 HF/FP32의 `France.` 차이는 Linux에서 확인한 양자화 차이와 같다.
+새로운 checkpoint/변환 오류나 비정상 출력은 확인하지 않았다. 최종 모델 증거는
+`build-kv-android/validation/final-cpu/`, 전체 집계는 `android-summary.json`에 있다.
+
 ## 단계 경계
 
 P0는 환경과 변경 전 baseline, P1은 내부 core storage/lease와 독립 테스트,
@@ -268,6 +298,10 @@ session 간 공유, Android 실기기 완료를 Linux CPU 결과로 대신하지
 | `267c1b62d` | Gemma4 LM head 속성 버그 수정의 현재 브랜치 반영 |
 | `2b9bf7890` | P2 CPU facade/graph transaction 연결, x86 KV prefix copy 제거 |
 | `fc06bb03f` | 고정 revision Qwen 변환·weight 양자화·HF/기존 구현 비교 도구 |
+| `15136f828` | Qwen chunk17 및 새 모델의 snapshot 복원 검증 |
+| `504c49b05` | Android KV 단위 검사와 Linux/Android probe 빌드 지원 |
+| `6964fb8c9` | graph 재초기화 시 실행 mode 보존과 회귀 검사 |
+| `d3cf7049a` | Android CPU 직접 KV 쓰기, bounded tile 읽기와 profile 검사 |
 
 Gemma4 독립 브랜치는 `fix/gemma4-skip-prefill-lmhead`, 해당 commit은
 `21d03c477`이며 worktree는 `/tmp/nntrainer-gemma4-fix`다.
