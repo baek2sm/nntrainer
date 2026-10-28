@@ -71,12 +71,12 @@ git submodule status --recursive
 ```
 
 기본 개발 profile은 TFLite/NNStreamer/C API 의존성을 꺼서 범위를 줄인다.
-전체 CI 재현은 [.github/workflows/ubuntu_clean_meson_build.yml](../../.github/workflows/ubuntu_clean_meson_build.yml)
-및 [getting-started.md](../getting-started.md)의 dependency 구성을 사용한다.
+전체 CI 재현은 [.github/workflows/ubuntu_clean_meson_build.yml](../.github/workflows/ubuntu_clean_meson_build.yml)
+및 [getting-started.md](../docs/getting-started.md)의 dependency 구성을 사용한다.
 배포판 package 이름이나 fallback dependency는 Meson log로 확인한다.
 
 x86 Linux tokenizer archive는 tree에 있다. 새 archive가 필요하거나 aarch64 Linux를
-사용한다면 [build_tokenizers_c.sh](../../Applications/CausalLM/tools/build_tokenizers_c.sh)로
+사용한다면 [build_tokenizers_c.sh](../Applications/CausalLM/tools/build_tokenizers_c.sh)로
 별도 output 디렉터리에 build하고 `-Dcausallm-tokenizer-lib=...`로 지정한다.
 추적 중인 archive를 덮어쓰지 않는다.
 
@@ -136,7 +136,7 @@ NNTR_ENGINE=cpu meson test -C build-kv-fp16 --print-errorlogs \
 - 기존 helper 단위 테스트는 작은 batch=2 FP32 geometry도 사용한다.
   신규 batch=1 API를 만들면서 기존 테스트를 제거하지 않는다.
 
-기존 [run_unittest_x86.sh](../../Applications/CausalLM/run_unittest_x86.sh)는 모델 테스트를
+기존 [run_unittest_x86.sh](../Applications/CausalLM/run_unittest_x86.sh)는 모델 테스트를
 빠르게 실행하는 대안이다. 위 전용 build와 다른 `builddir_x86_test`를 사용하고
 기본 dependency 옵션도 다르다. 위 baseline과 섞어서 같은 build라고 보고하지 않는다.
 
@@ -364,12 +364,12 @@ core/fake backend 작업을 계속한다. 테스트 mock은 실기기 gate의 �
 
 ## 10. commit/PR 전 점검
 
-- repository [AGENTS.md](../../AGENTS.md)를 다시 확인한다.
+- repository [AGENTS.md](../AGENTS.md)를 다시 확인한다.
 - 변경 C/C++에 clang-format 14를 적용하고 `git diff --check`를 실행한다.
 - 해당 단계의 focused test와 영향 있는 build matrix를 실행한다.
 - formatter가 건드린 무관한 줄이나 vendored 파일을 PR에 포함하지 않는다.
 - commit은 component prefix, DCO sign-off와 agent co-author trailer를 갖춘다.
-- [.github/PULL_REQUEST_TEMPLATE.md](../../.github/PULL_REQUEST_TEMPLATE.md)를 그대로 사용한다.
+- [.github/PULL_REQUEST_TEMPLATE.md](../.github/PULL_REQUEST_TEMPLATE.md)를 그대로 사용한다.
   Build/Run test의 미실행 항목은 Skipped로 정직하게 표시한다.
 - 새 테스트 등록과 check_count 영향을 확인한다.
 - 요구 1 완료 판단에는 실기기 copy 증거를 첨부한다. compile 성공만으로 대체하지 않는다.

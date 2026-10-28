@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <gtest/gtest.h>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -426,6 +427,76 @@ TEST(KVCacheManagerShare, no_declaration_means_no_aliasing) {
             m.getKeyCache(1).getData<float>());
   EXPECT_NE(m.getKeyCache(1).getData<float>(),
             m.getKeyCache(2).getData<float>());
+}
+
+TEST_F(KVCacheManagerTest, cpu_step_publishes_position_and_views_use_it) {
+  ASSERT_TRUE(manager.usesCpuStorage());
+  auto step = manager.beginStep(0, 3);
+  EXPECT_EQ(manager.getPosition(), 0u);
+  EXPECT_THROW(manager.beginStep(0, 1), std::logic_error);
+  manager.commitStep(std::move(step));
+  EXPECT_EQ(manager.getPosition(), 3u);
+  auto view = manager.getKeyCacheWriteView(0, 1, 1);
+  EXPECT_EQ(view.getData<float>(), manager.getKeyCache(0).getData<float>() +
+                                     MAX_SEQ_LEN * KV_WIDTH + 3 * KV_WIDTH);
+  EXPECT_THROW(manager.beginStep(2, 4), std::logic_error);
+}
+
+TEST_F(KVCacheManagerTest, cpu_tensor_alias_outlives_facade_reallocation) {
+  auto retained = manager.getKeyCache(0);
+  retained.getData<float>()[0] = 37.0f;
+  manager.allocate(1, 1, 8, 1, 4, ml::train::TensorDim::DataType::FP32);
+  EXPECT_FLOAT_EQ(retained.getData<float>()[0], 37.0f);
+  EXPECT_NE(retained.getData<float>(), manager.getKeyCache(0).getData<float>());
+}
+
+TEST_F(KVCacheManagerTest, cpu_bounds_reject_batch_overflow_and_bad_geometry) {
+  EXPECT_THROW(manager.getKeyCacheWriteView(0, BATCH_SIZE, 1),
+               std::out_of_range);
+  EXPECT_THROW(manager.getValueCacheReadView(0, BATCH_SIZE, 1),
+               std::out_of_range);
+  EXPECT_THROW(manager.advance(std::numeric_limits<unsigned int>::max()),
+               std::out_of_range);
+  EXPECT_THROW(
+    manager.allocate(1, 1, 8, std::numeric_limits<unsigned int>::max(), 2),
+    std::overflow_error);
+  EXPECT_THROW(manager.allocate(1, 1, 8, std::vector<unsigned int>{7},
+                                ml::train::TensorDim::DataType::FP32,
+                                ml::train::TensorDim::Format::NCHW, {2}),
+               std::invalid_argument);
+}
+
+TEST(KVCacheManagerCpu, ring_abort_invalidates_and_legacy_view_rejects_seam) {
+  causallm::KVCacheManager m;
+  m.setLayerCaps({4});
+  m.allocate(1, 1, 16, 1, 4, ml::train::TensorDim::DataType::FP32);
+  m.setPosition(3);
+  EXPECT_THROW(m.getKeyCacheWriteView(0, 0, 2), std::out_of_range);
+  EXPECT_THROW(m.getValueCacheReadView(0, 0, 5), std::out_of_range);
+  { auto step = m.beginStep(3, 5); }
+  EXPECT_THROW(m.beginStep(3, 4), std::logic_error);
+  EXPECT_THROW(m.save("/tmp/kv_invalid_snapshot.bin"), std::logic_error);
+  EXPECT_THROW(m.load("/tmp/kv_invalid_snapshot.bin", 0), std::logic_error);
+  m.reset();
+  auto step = m.beginStep(0, 2);
+  m.commitStep(std::move(step));
+  EXPECT_EQ(m.getPosition(), 2u);
+}
+
+TEST_F(KVCacheManagerTest, active_step_rejects_reallocation_and_snapshot) {
+  const auto memory = manager.getKeyCache(0).getMemoryData();
+  auto step = manager.beginStep(0, 2);
+  causallm::KVCacheManager uninitialized;
+  EXPECT_THROW(uninitialized.commitStep(std::move(step)), std::logic_error);
+  EXPECT_THROW(
+    manager.allocate(1, 1, 8, 1, 4, ml::train::TensorDim::DataType::FP32),
+    std::logic_error);
+  EXPECT_THROW(manager.save("/tmp/kv_active_snapshot.bin"), std::logic_error);
+  EXPECT_THROW(manager.load("/tmp/kv_active_snapshot.bin", 0),
+               std::logic_error);
+  EXPECT_EQ(manager.getKeyCache(0).getMemoryData(), memory);
+  manager.commitStep(std::move(step));
+  EXPECT_EQ(manager.getPosition(), 2u);
 }
 
 int main(int argc, char **argv) {

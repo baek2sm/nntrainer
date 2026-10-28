@@ -97,6 +97,7 @@ public:
   void setPosition(size_t position);
   size_t committedLength() const;
   bool valid() const;
+  bool hasActiveStep() const;
   CacheStats stats() const;
   const LayerSpec &layerSpec(size_t layer) const;
   /** Persistent Tensor bridge. Its shared_ptr pins the allocation.

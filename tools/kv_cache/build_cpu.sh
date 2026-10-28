@@ -10,8 +10,16 @@ export CXX=${CXX:-g++}
 # The tracked tokenizer archive may require a newer libstdc++ than the host.
 # Always build an isolated archive with this host's compiler; never replace it.
 kv_build_abs=$(realpath -m "$kv_build")
+mkdir -p "$kv_build_abs"
+if [[ ! -e "$kv_build_abs/.gitignore" ]]; then
+  printf '*\n' > "$kv_build_abs/.gitignore"
+fi
+kv_tokenizer_args=()
+if [[ ${KV_TOKENIZER_OFFLINE:-0} == 1 ]]; then
+  kv_tokenizer_args+=(--offline)
+fi
 Applications/CausalLM/tools/build_tokenizers_c.sh \
-  --out-dir="$kv_build_abs/tokenizer" ${KV_TOKENIZER_OFFLINE:+--offline}
+  --out-dir="$kv_build_abs/tokenizer" "${kv_tokenizer_args[@]}"
 kv_rust_target=$(rustc -vV | sed -n 's/^host: //p')
 # prepare_encoder.sh uses this marker but does not create it after extracting.
 if [[ -f Applications/CausalLM/json.hpp && \

@@ -31,6 +31,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -422,16 +423,15 @@ void CausalLM::allocateAndBindKVCache() {
       layer_caps[static_cast<size_t>(i)] = getKVCacheRows(i);
     kv_cache.setLayerCaps(layer_caps);
 
-    // Per-layer width via the getKVCacheWidth() hook: uniform
-    // (NUM_KEY_VALUE_HEADS * HEAD_DIM) by default, overridden by
-    // variable-geometry models. One vector path now serves every model, so the
-    // per-model allocateAndBindKVCache overrides are gone. (The scalar
-    // allocate this used before only additionally set the KVCacheManager
-    // num_heads_kv_/head_dim_ members, which have no reader -- getKVWidth() is
-    // uncalled -- so this is behavior-identical.)
+    // Model hooks supply width and head count, including variable geometry.
+    // The CPU core keeps the actual KV heads without expanding GQA storage;
+    // the legacy width-only facade remains available to older callers.
     std::vector<unsigned int> kv_widths(static_cast<size_t>(NUM_LAYERS), 0u);
-    for (int i = 0; i < NUM_LAYERS; ++i)
+    std::vector<unsigned int> kv_heads(static_cast<size_t>(NUM_LAYERS), 0u);
+    for (int i = 0; i < NUM_LAYERS; ++i) {
       kv_widths[static_cast<size_t>(i)] = getKVCacheWidth(i);
+      kv_heads[static_cast<size_t>(i)] = getKVCacheHeadCount(i);
+    }
 
     // Second hook, same shape as the one above: which layers need storage at
     // all. A KV-shared layer (gemma4 `num_kv_shared_layers`) has no wk/wv and
@@ -459,7 +459,8 @@ void CausalLM::allocateAndBindKVCache() {
       kv_cache.setLayerKVSources(std::move(kv_sources));
 
     kv_cache.allocate(static_cast<unsigned int>(NUM_LAYERS), BATCH_SIZE,
-                      max_timestep, kv_widths, cache_dtype);
+                      max_timestep, kv_widths, cache_dtype,
+                      ml::train::TensorDim::Format::NCHW, kv_heads);
     kv_cache_bound = false;
   }
 
@@ -622,8 +623,17 @@ std::vector<float *> CausalLM::incrementalInference(
     }
   }
 
+  // The core owns the committed CPU position. Each layer derives its working
+  // cursor from this same absolute interval in incremental_forwarding(). The
+  // move-only lease aborts on a graph exception; a ring overwrite invalidates
+  // the session rather than pretending its old prefix can be rolled back.
+  std::optional<nntrainer::kv::StepLease> cpu_step;
+  if (kv_cache.usesCpuStorage())
+    cpu_step.emplace(kv_cache.beginStep(from, to));
   nntrainer::sharedConstTensors output_tensors =
     nn->incremental_inference(input_tensors, init_seq_len, from, to);
+  if (cpu_step)
+    kv_cache.commitStep(std::move(*cpu_step));
 
   // Output conversion identical to the float* overload in neuralnet.cpp.
   std::vector<float *> output;
@@ -798,7 +808,8 @@ std::vector<float *> CausalLM::incrementalInference(
   // mha_core advances only its own internal cache_index during forwarding,
   // so without this getKvLen()/save_kvcache() would report the stale
   // prefill-start position (advanceKVCachePosition had no caller).
-  if (kv_cache.isAllocated() && to <= kv_cache.getMaxSeqLen())
+  if (kv_cache.isAllocated() && !kv_cache.usesCpuStorage() &&
+      to <= kv_cache.getMaxSeqLen())
     kv_cache.setPosition(to);
 
   return output;

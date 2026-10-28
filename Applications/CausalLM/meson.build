@@ -499,6 +499,7 @@ if get_option('enable-test')
 
   test('unittest_kv_cache_manager', unittest_kv_cache_manager,
     args: '--gtest_output=xml:@0@/@1@.xml'.format(meson.build_root(), 'unittest_kv_cache_manager'),
+    env: ['NNTR_ENGINE=cpu'],
     timeout: 60,
     suite: 'unittests'
   )

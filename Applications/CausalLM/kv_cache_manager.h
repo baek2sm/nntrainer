@@ -21,6 +21,7 @@
 
 #include <memory>
 
+#include <kv_cache/kv_cache_manager.h>
 #include <memory_pool.h>
 #include <tensor.h>
 #include <tensor_dim.h>
@@ -86,7 +87,8 @@ public:
     unsigned int num_layers, unsigned int batch_size, unsigned int max_seq_len,
     const std::vector<unsigned int> &kv_widths,
     ml::train::TensorDim::DataType dtype = ml::train::TensorDim::DataType::FP16,
-    ml::train::TensorDim::Format format = ml::train::TensorDim::Format::NCHW);
+    ml::train::TensorDim::Format format = ml::train::TensorDim::Format::NCHW,
+    const std::vector<unsigned int> &kv_heads = {});
 
   /**
    * @brief Check if the manager has been allocated
@@ -96,7 +98,19 @@ public:
   /**
    * @brief Get current write position in the cache
    */
-  unsigned int getPosition() const { return cache_pos_; }
+  unsigned int getPosition() const {
+    return cpu_cache_ ? static_cast<unsigned int>(cpu_cache_->committedLength())
+                      : cache_pos_;
+  }
+
+  /** Synchronous CPU graph transaction; GPU compatibility paths stay separate.
+   */
+  bool usesCpuStorage() const { return cpu_cache_ != nullptr; }
+  nntrainer::kv::StepLease beginStep(unsigned int from, unsigned int to);
+  void commitStep(nntrainer::kv::StepLease &&step);
+  nntrainer::kv::CacheStats cpuStats() const {
+    return cpu_cache_ ? cpu_cache_->stats() : nntrainer::kv::CacheStats{};
+  }
 
   /**
    * @brief Set current write position (e.g., after loading pre-computed cache)
@@ -243,7 +257,7 @@ public:
   /**
    * @brief Get the KV dimension width (num_heads_kv * head_dim)
    */
-  unsigned int getKVWidth() const { return num_heads_kv_ * head_dim_; }
+  unsigned int getKVWidth() const { return kv_width_; }
 
   /**
    * @brief [kv-share] Declare, per layer, which EARLIER layer owns the K/V
@@ -347,6 +361,13 @@ public:
   }
 
 private:
+  void requireCpuIdle() const;
+  void allocateCpu(unsigned int num_layers, unsigned int batch_size,
+                   unsigned int max_seq_len,
+                   const std::vector<unsigned int> &kv_widths,
+                   ml::train::TensorDim::DataType dtype,
+                   ml::train::TensorDim::Format format,
+                   const std::vector<unsigned int> &kv_heads);
   /**
    * @brief FNV-1a over the per-layer geometry vectors, so the header can refuse
    *        a file whose widths / ring capacities / alias map differ without
@@ -402,6 +423,7 @@ private:
    * (NNTR_CUDA_KV_UVM) allocator. Null on the host (CPU) path.
    */
   std::shared_ptr<nntrainer::MemoryPool> svm_pool_;
+  std::unique_ptr<nntrainer::kv::KvCacheManager> cpu_cache_;
 
   unsigned int cache_pos_ = 0;    /**< current write position */
   unsigned int batch_size_ = 0;   /**< batch size */

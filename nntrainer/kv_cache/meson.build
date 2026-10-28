@@ -1,2 +1,6 @@
 # Internal headers intentionally stay out of the installed API.
-nntrainer_sources += files('kv_storage.cpp', 'kv_cache_manager.cpp')
+# Android exports this list with str.join(), so keep absolute path strings.
+nntrainer_sources += [
+  meson.current_source_dir() / 'kv_storage.cpp',
+  meson.current_source_dir() / 'kv_cache_manager.cpp',
+]

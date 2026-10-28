@@ -3560,6 +3560,13 @@ void MHACoreLayer::one_batch_incremental_forwarding(
       reinterpret_cast<const uint16_t *>(cache_key.getData<_FP16>()),
       reinterpret_cast<uint16_t *>(b_cached_key.getData<_FP16>()), batch,
       cache_to, num_heads_KV, head_dim, cache_key_dim.height());
+    // Consumer read counters below describe their own work. Account for the
+    // compatibility gather separately so a trace cannot hide this history copy.
+    if (nntr_env_on("NNTR_KV_CPU_TRACE") && nntr_engine_env() == "cpu")
+      std::fprintf(
+        stderr,
+        "[kv-cpu-layout] operation=ohwi-gather history_copy_bytes=%zu\n",
+        b_cached_key.bytes());
 #else
     NNTR_THROW_IF(true, std::invalid_argument)
       << "NNTR_KV_OHWI requires ENABLE_FP16";
@@ -3570,6 +3577,41 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   }
   nntrainer::Tensor b_cached_value = cache_value.getSharedDataTensor(
     cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
+
+  // Audit only the CPU profile whose final operations are RoPE/FP32->half
+  // conversion into the cache. Other profiles must not inherit a zero-copy
+  // claim (native half V append and OHWI gather still have compatibility
+  // copies).
+  if (nntr_env_on("NNTR_KV_CPU_TRACE") && nntr_engine_env() == "cpu") {
+    const bool profile =
+      use_rope && !kv_int8 && !kv_ohwi_read_active &&
+      query_step.getDataType() == ml::train::TensorDim::DataType::FP32 &&
+      key_step.getDataType() == ml::train::TensorDim::DataType::FP32 &&
+      value_step.getDataType() == ml::train::TensorDim::DataType::FP32 &&
+      (cache_key.getDataType() == ml::train::TensorDim::DataType::UINT16 ||
+       cache_key.getDataType() == ml::train::TensorDim::DataType::FP16) &&
+      cache_value.getDataType() == cache_key.getDataType();
+    const bool read_alias =
+      b_cached_key.getMemoryData() == cache_key.getMemoryData() &&
+      b_cached_value.getMemoryData() == cache_value.getMemoryData();
+    const bool write_alias =
+      b_cache_key_step.getMemoryData() == cache_key.getMemoryData() &&
+      b_cache_value_step.getMemoryData() == cache_value.getMemoryData();
+    if (profile)
+      std::fprintf(
+        stderr,
+        "[kv-cpu-access] from=%u tokens=%u key=%p value=%p read_alias=%d "
+        "write_alias=%d "
+        "append_copy_bytes=0 transform_bytes=%zu\n",
+        cache_index, step_size, static_cast<void *>(cache_key.getData<char>()),
+        static_cast<void *>(cache_value.getData<char>()), read_alias,
+        write_alias, b_cache_key_step.bytes() + b_cache_value_step.bytes());
+    else
+      std::fprintf(stderr,
+                   "[kv-cpu-access] from=%u tokens=%u profile=compatibility "
+                   "copy_bytes=unmeasured\n",
+                   cache_index, step_size);
+  }
 
   unsigned int gqa_size = num_heads_Q / num_heads_KV;
 
@@ -4434,6 +4476,9 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   mha_ring_assert_host_path_ok(kv_ring_cap, "host decode attention");
   mha_assert_host_readable(query_step, b_cached_key, b_cached_value,
                            attention_output_step, "host per-row attention");
+  if (nntr_env_on("NNTR_KV_CPU_TRACE") && nntr_engine_env() == "cpu")
+    std::fprintf(stderr,
+                 "[kv-cpu-read] consumer=per-row history_copy_bytes=0\n");
 #if defined(ENABLE_OPENCL)
   settle_act_stage_for_host();
 #endif
@@ -4868,8 +4913,29 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
     Qa_fp16.resize((size_t)num_heads_Q * N_q * d);
   else
     Qa_fp32.resize((size_t)num_heads_Q * N_q * d);
-  std::vector<uint16_t> Ka((size_t)num_heads_KV * N_kv * d);
-  std::vector<uint16_t> Va((size_t)num_heads_KV * N_kv * d);
+    // The x86 half/float kernel already accepts a leading dimension. Read the
+    // manager's token-major rows directly instead of copying the full history
+    // into per-head Ka/Va planes. Q packing and bounded kernel tiles remain.
+    // The ARM all-half kernel still requires contiguous heads; keep that
+    // compatibility path until the Android CPU step of the migration.
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) ||             \
+  defined(_M_IX86)
+  const bool direct_kv = !kv_int8;
+#else
+  const bool direct_kv = false;
+#endif
+  const unsigned int kv_stride = direct_kv ? HD_KV : d;
+  std::vector<uint16_t> Ka, Va;
+  if (!direct_kv) {
+    Ka.resize((size_t)num_heads_KV * N_kv * d);
+    Va.resize((size_t)num_heads_KV * N_kv * d);
+  }
+  if (nntr_env_on("NNTR_KV_CPU_TRACE") && nntr_engine_env() == "cpu")
+    std::fprintf(stderr, "[kv-cpu-read] consumer=%s history_copy_bytes=%zu\n",
+                 direct_kv ? "flash-strided" : "flash-packed",
+                 direct_kv || kv_int8
+                   ? size_t{0}
+                   : (Ka.size() + Va.size()) * sizeof(uint16_t));
   {
     if (q_fp16_to_fp32) {
 #ifdef ENABLE_FP16
@@ -4933,7 +4999,7 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
       NNTR_THROW_IF(true, std::invalid_argument)
         << "kv_int8 gemm_attention requires ENABLE_FP16";
 #endif
-    } else {
+    } else if (!direct_kv) {
       tm.parallel_for(0, static_cast<size_t>(num_heads_KV), [&](size_t hkv) {
         uint16_t *ka = Ka.data() + (size_t)hkv * N_kv * d;
         uint16_t *va = Va.data() + (size_t)hkv * N_kv * d;
@@ -4961,8 +5027,10 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
     const uint16_t *Qp_fp16 = (q_fp16 && !q_fp16_to_fp32)
                                 ? (Qa_fp16.data() + (size_t)h_q * N_q * d)
                                 : nullptr;
-    const uint16_t *Kp = Ka.data() + (size_t)h_kv * N_kv * d;
-    const uint16_t *Vp = Va.data() + (size_t)h_kv * N_kv * d;
+    const uint16_t *Kp = direct_kv ? Kbase + (size_t)h_kv * d
+                                   : Ka.data() + (size_t)h_kv * N_kv * d;
+    const uint16_t *Vp = direct_kv ? Vbase + (size_t)h_kv * d
+                                   : Va.data() + (size_t)h_kv * N_kv * d;
     float *Oh = o_fp16 ? nullptr : (O + h_q * d);
     uint16_t *Oh_fp16 = o_fp16 ? (O_fp16 + h_q * d) : nullptr;
 
@@ -5119,7 +5187,8 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) ||             \
   defined(_M_IX86)
         mha_hsgemm_avx2(bq, bk, d, inv_sqrt, Qp_fp32 + (size_t)qb * d, d,
-                        Kp + (size_t)kb * d, d, /*TransB=*/true, S.data(), bk);
+                        Kp + (size_t)kb * kv_stride, kv_stride,
+                        /*TransB=*/true, S.data(), bk);
 #elif defined(__ARM_NEON)
           nntrainer::shgemm(
             order, false, true, bq, bk, d, inv_sqrt,
@@ -5225,7 +5294,8 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
 
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) ||             \
   defined(_M_IX86)
-        mha_hsgemm_avx2(bq, d, bk, 1.0f, S.data(), bk, Vp + (size_t)kb * d, d,
+        mha_hsgemm_avx2(bq, d, bk, 1.0f, S.data(), bk,
+                        Vp + (size_t)kb * kv_stride, kv_stride,
                         /*TransB=*/false, Pacc.data(), d);
         for (unsigned int i = 0; i < bq; ++i) {
           float *ol = Ol.data() + (size_t)i * d;

@@ -103,7 +103,7 @@ false이며 `--skip-prefill`로 원래 true 조건을 재현한다.
 metadata가 없어 이것만으로 weight 내용을 증명한 것은 아니다. 강제로 읽거나
 파일을 padding하지 않는다. 작동이 확인된 FP32 모델을 우선 사용한다.
 
-core 구현 후 같은 산술/한국어 smoke의 비교 결과는 후속 단계에서 추가한다.
+이후 core 변경 전후의 실제 모델 비교는 사용자 결정대로 Qwen3 0.6B로 진행한다.
 정상적인 짧은 문장만으로 HF logits 일치나 장문 정확성을 주장하지 않는다.
 
 Gemma 초기화 오류의 후속 원인 확인: GDB stack은 `buildLmHeadOutput` →
@@ -146,6 +146,71 @@ allocation 해제에 사용하는 문제, 기본/이동된 view의 bufferId 접�
 일부 sandbox Meson 실행은 gtest XML상 완료 후에도 종료 감시 timeout이 발생했다.
 이를 통과로 세지 않고 같은 검사를 일반 실행 권한으로 반복해 exit 0을 확인했다.
 sanitizer도 leak 검사를 끄는 우회로 최종 판정을 대신하지 않았다.
+
+## P2: CausalLM CPU 연결과 직접 읽기·쓰기
+
+CPU facade가 allocation, encoding, geometry, committed position을 core에 위임한다.
+기존 input Tensor placeholder에는 allocation을 소유하는 MemoryData alias를 전달한다.
+모델별 hook으로 KV head 수를 전달해 Gemma4의 variable geometry도 보존한다.
+기존 width-only 호출, layer alias, snapshot 파일 형식은 호환 경계로 유지한다.
+
+`incrementalInference()`는 graph 실행 전에 `[from,to)` lease를 발행하고 성공 직후
+commit한다. MHA는 같은 `from`에서 작업 cursor를 유도한다. 활성 step 중 reset,
+재allocation, save/load를 거절하며 실패한 ring session은 reset 전 사용하지 않는다.
+기존 raw Tensor bridge 자체에 generation 검사를 추가한 것은 아니므로 동기 graph
+실행 범위 안에서 사용해야 한다. token마다 input name/pointer를 찾는 기존 adapter의
+정리는 후속 최적화로 남긴다.
+
+리뷰에서 x86 flash attention의 `Ka`/`Va` 전체 prefix packing을 찾아 제거했다.
+기존 AVX2 half/float kernel이 지원하는 leading dimension을 KV width로 전달한다.
+QK와 AV 모두 `head * head_dim + token * KV_width`에서 manager cache를 직접 읽는다.
+Q packing, score/accumulator tile 및 레지스터의 half→float 변환은 필요 연산이다.
+K RoPE와 V FP32→half 변환은 최종 manager cache slice에 결과를 쓴다.
+
+초기 direct-access 완료 범위는 **Linux x86, Qwen3 0.6B, batch=1, FP32 activation,
+RoPE, contiguous UINT16 half-bit KV**, weight FP32 또는 X86 Q4_0/Q6_K다.
+native FP16 activation의 V 순수 copy, ARM prefix packing, no-RoPE, INT8 KV,
+GPU/NPU adapter는 이 완료 판단에 포함하지 않는다. FP16 wrapper build 통과를
+native FP16 producer 직접 쓰기 완료로 해석하지 않는다.
+
+`NNTR_KV_CPU_TRACE=1`은 다음 operation의 증거를 stderr에 기록한다.
+
+| trace | 기록 |
+|---|---|
+| `kv-cpu-storage` | 실제 aligned backing bytes, owner 수, layer별 K/V 주소·크기·source |
+| `kv-cpu-access` | producer slice와 read Tensor의 storage alias, append 순수 copy와 필요한 변환 byte 수 |
+| `kv-cpu-read` | 실제 consumer(`per-row`/`flash-strided`/호환 packing)의 history copy |
+| `kv-cpu-layout` | OHWI→concat 호환 gather가 있으면 별도의 history copy |
+
+consumer 내부 copy가 0이어도 layout operation을 빼고 전체 copy가 0이라고 선언하지
+않는다. Qwen 지원 profile의 audit는 allocation 주소 대응·전체 layer witness·변환
+byte 수·append/history copy를 검사한다. 물리 DRAM traffic, cache miss, 장치 migration
+없음을 profiler로 증명한 수치는 아니다. timing 측정에 trace/probe 비용을 섞지 않는다.
+
+검증 결과:
+
+- 비FP16 CPU build: core **18**, facade **25**, ring **22**, tiny model **99 PASS**,
+  deprecated QINT4 fixture **1 SKIP**. 모든 Meson target exit 0.
+- FP16 wrapper CPU build: core **18**, facade **25**, ring **22 PASS**.
+  broad model target은 저장소 기존 규칙에 따라 이 profile에서 생성되지 않는다.
+- core-only `enable-app=false`, `enable-transformer=false`: ASan/UBSan/LeakSanitizer
+  **18 PASS**, 오류·누수 없음.
+- Qwen FP32/Q4_0: 일반·강제 flash·164-token 장문·같은 session 두 turn에서
+  변경 전후 모든 생성 token과 **모든 step logits가 bitwise 일치**한다.
+  BK64/BQ32로 세 key block을 통과하는 조건도 일치한다.
+- 지원 profile trace의 manager/producer/consumer 주소가 일치하며 append/history
+  application copy는 0이다. 512-token geometry의 unique backing은
+  **58,720,256 bytes / 28 owner layers**다.
+
+상세 명령·정확성 한계·모델 hash와 원본 reference 비교는
+[Qwen3 CPU 검증](qwen3-cpu-validation.md), 리뷰 근거는 [P2 리뷰](p2-review.md)에 있다.
+최종 local log는 `/tmp/kv-p2-release-tests.log`, `/tmp/kv-fp16-tests.log`,
+`/tmp/kv-core-final-asan-tests.log`이며 Qwen의 JSON/개별 logits/trace는
+`build-kv-cpu/validation/qwen3-baseline/` 및 `qwen3-post/`에 보존한다.
+
+Android source 목록은 Meson File 대신 절대경로 문자열을 사용하도록 바로잡았다.
+Android app의 private core include 경로도 연결했다. 이는 build 연결 준비이며
+Android cross build·실기기 검증을 수행한 결과는 아니다. 다음 구현 단계는 Arm CPU다.
 
 ## 단계 경계
 

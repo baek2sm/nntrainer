@@ -364,6 +364,13 @@ public:
            static_cast<unsigned int>(HEAD_DIM);
   }
 
+  /** KV head count for the storage spec; models with variable geometry
+   * override. */
+  virtual unsigned int getKVCacheHeadCount(int layer_id) const {
+    (void)layer_id;
+    return static_cast<unsigned int>(NUM_KEY_VALUE_HEADS);
+  }
+
   /**
    * @brief The EARLIER layer whose K/V storage this layer reads, or -1 when
    *        the layer owns its K/V (the default, and every model but gemma4).

@@ -673,10 +673,13 @@ private:
   /**
    * @brief GEMM-based flash attention for one batch (covers both encoder
    *        non-causal and causal-LLM prefill paths).
-   *        2-phase: (1) de-interleave Q (num_heads_Q heads) and K/V
-   *        (num_heads_KV heads) into shared contiguous [H,N,d] buffers; (2)
-   *        balanced parallel_for over (h_q, query_block) units with online
-   *        softmax over key-blocks (shgemm QK -> NEON exp -> shgemm AV).
+   *        2-phase: (1) de-interleave Q into contiguous [H,N,d] buffers;
+   *        x86 reads non-INT8 K/V directly from token-major cache rows using
+   *        their leading dimension, while compatibility paths pack K/V into
+   *        contiguous per-head buffers; (2) balanced parallel_for over
+   *        (h_q, query_block) units with online softmax over key-blocks
+   *        (QK -> softmax -> AV). Native ARM half and INT8 compatibility
+   *        paths retain their existing packing/dequantization requirements.
    *        GQA: h_kv = h_q / gqa_size. Causal: key-block upper-bound break
    *        + in-block boundary mask. Sliding window: key-block lower-bound
    *        skip + in-block lower mask.

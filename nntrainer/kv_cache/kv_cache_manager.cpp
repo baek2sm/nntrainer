@@ -220,6 +220,9 @@ size_t KvCacheManager::committedLength() const {
   return state_ ? state_->position : 0;
 }
 bool KvCacheManager::valid() const { return state_ && state_->valid; }
+bool KvCacheManager::hasActiveStep() const {
+  return state_ && state_->epoch->active_step != 0;
+}
 CacheStats KvCacheManager::stats() const {
   return state_ ? state_->stats : CacheStats{};
 }
