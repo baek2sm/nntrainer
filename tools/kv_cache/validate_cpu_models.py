@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage old model assets without modifying originals and retain smoke evidence.
+"""Legacy Gemma4 compatibility probe; use validate_qwen3_cpu.py for KV development.
 
 Greedy semantic smoke tests do not establish equivalence to a HF reference.
 The complete stdout/stderr and effective configs are kept for manual review.
