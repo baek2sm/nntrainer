@@ -1043,6 +1043,41 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
   // baseline stays default.
   kv_int8 = std::getenv("NNTR_KV_INT8") != nullptr;
 
+#if ENABLE_FP16 && defined(__ANDROID__)
+  // Opt in to the CPU external-cache FP32 producer profile. The Android
+  // default keeps its historical all-half attention arithmetic. In this
+  // profile K RoPE and V narrowing write their final values into the owned
+  // cache slice directly, rather than narrowing K/V into staging tensors.
+  cpu_attention_fp32 = nntr_env_on("NNTR_CPU_ATTENTION_FP32");
+  if (cpu_attention_fp32) {
+    const auto fp32 = ml::train::TensorDim::DataType::FP32;
+    const auto fp16 = ml::train::TensorDim::DataType::FP16;
+    // mha_core is engine-neutral in the residency policy: an init context
+    // stamped GPU may still execute this host path. NNTR_ENGINE selects the
+    // runtime backend; getComputeEngineType() is not that execution decision.
+    NNTR_THROW_IF(nntr_engine_env() != "cpu" ||
+                    context.getExecutionMode() !=
+                      ml::train::ExecutionMode::INFERENCE ||
+                    query_dim.batch() != 1 || !use_external_cache || use_sink ||
+                    kv_int8 || kv_ring_cap || is_kv_ohwi_enabled() ||
+                    std::get<props::RopeTheta>(mha_core_props).get() <= 0.0f ||
+                    context.getActivationDataType() != fp32 ||
+                    input_dims[INOUT_INDEX::QUERY].getDataType() != fp32 ||
+                    input_dims[INOUT_INDEX::KEY].getDataType() != fp32 ||
+                    input_dims[INOUT_INDEX::VALUE].getDataType() != fp32 ||
+                    input_dims[3].getDataType() != fp16 ||
+                    input_dims[4].getDataType() != fp16,
+                  std::invalid_argument)
+      << "NNTR_CPU_ATTENTION_FP32 requires batch-1 CPU inference with "
+         "external-cache FP32 Q/K/V/O, RoPE, and linear FP16 KV storage "
+         "without sink, INT8, or OHWI (layer="
+      << context.getName() << ", process_engine=" << nntr_engine_env()
+      << ", layer_engine=" << static_cast<int>(context.getComputeEngineType())
+      << ", execution_mode=" << static_cast<int>(context.getExecutionMode())
+      << ", batch=" << query_dim.batch() << ")";
+  }
+#endif
+
   /** Tensor for KV-Cache (only allocate internally when not using external
    * cache) */
   if (!use_external_cache) {
@@ -1426,37 +1461,40 @@ void MHACoreLayer::forwarding(nntrainer::RunLayerContext &context,
       host_io.add(output_step, /*read_only=*/false);
 #endif
 #if ENABLE_FP16 && defined(__ANDROID__)
-      nntrainer::TensorDim Q_step_dim = query_step_dim;
-      nntrainer::TensorDim K_step_dim = key_step_dim;
-      nntrainer::TensorDim V_step_dim = value_step_dim;
-      nntrainer::TensorDim O_step_dim = output_step_dim;
-      Q_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
-      K_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
-      V_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
-      O_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+      if (!cpu_attention_fp32) {
+        nntrainer::TensorDim Q_step_dim = query_step_dim;
+        nntrainer::TensorDim K_step_dim = key_step_dim;
+        nntrainer::TensorDim V_step_dim = value_step_dim;
+        nntrainer::TensorDim O_step_dim = output_step_dim;
+        Q_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+        K_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+        V_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+        O_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
 
-      nntrainer::Tensor Q_step = nntrainer::Tensor(Q_step_dim, true);
-      nntrainer::Tensor K_step = nntrainer::Tensor(K_step_dim, true);
-      nntrainer::Tensor V_step = nntrainer::Tensor(V_step_dim, true);
-      nntrainer::Tensor O_step = nntrainer::Tensor(O_step_dim, true);
+        nntrainer::Tensor Q_step = nntrainer::Tensor(Q_step_dim, true);
+        nntrainer::Tensor K_step = nntrainer::Tensor(K_step_dim, true);
+        nntrainer::Tensor V_step = nntrainer::Tensor(V_step_dim, true);
+        nntrainer::Tensor O_step = nntrainer::Tensor(O_step_dim, true);
 
-      Q_step.copyData(query_step);
-      K_step.copyData(key_step);
-      V_step.copyData(value_step);
+        Q_step.copyData(query_step);
+        K_step.copyData(key_step);
+        V_step.copyData(value_step);
 
-      if (use_sink) {
-        one_batch_incremental_forwarding(
-          batch, from, from, to, Q_step, K_step, V_step, O_step, cache_key,
-          cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
-          cache_value_step_dim, sink);
-      } else {
-        one_batch_incremental_forwarding(batch, from, from, to, Q_step, K_step,
-                                         V_step, O_step, cache_key, cache_value,
-                                         cache_key_dim, cache_key_step_dim,
-                                         cache_value_dim, cache_value_step_dim);
+        if (use_sink) {
+          one_batch_incremental_forwarding(
+            batch, from, from, to, Q_step, K_step, V_step, O_step, cache_key,
+            cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
+            cache_value_step_dim, sink);
+        } else {
+          one_batch_incremental_forwarding(
+            batch, from, from, to, Q_step, K_step, V_step, O_step, cache_key,
+            cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
+            cache_value_step_dim);
+        }
+        output_step.copyData(O_step);
+        continue;
       }
-      output_step.copyData(O_step);
-#else
+#endif
       if (use_sink) {
         one_batch_incremental_forwarding(
           batch, from, from, to, query_step, key_step, value_step, output_step,
@@ -1468,7 +1506,6 @@ void MHACoreLayer::forwarding(nntrainer::RunLayerContext &context,
           cache_key, cache_value, cache_key_dim, cache_key_step_dim,
           cache_value_dim, cache_value_step_dim);
       }
-#endif
     } else {
       one_batch_incremental_forwarding(
         batch, from, from, to, query_step, key_step, value_step, output_step,
@@ -1627,36 +1664,39 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
       host_io.add(output_step, /*read_only=*/false);
 #endif
 #if ENABLE_FP16 && defined(__ANDROID__)
-      nntrainer::TensorDim Q_step_dim = query_step_dim;
-      nntrainer::TensorDim K_step_dim = key_step_dim;
-      nntrainer::TensorDim V_step_dim = value_step_dim;
-      nntrainer::TensorDim O_step_dim = output_step_dim;
-      Q_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
-      K_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
-      V_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
-      O_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+      if (!cpu_attention_fp32) {
+        nntrainer::TensorDim Q_step_dim = query_step_dim;
+        nntrainer::TensorDim K_step_dim = key_step_dim;
+        nntrainer::TensorDim V_step_dim = value_step_dim;
+        nntrainer::TensorDim O_step_dim = output_step_dim;
+        Q_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+        K_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+        V_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
+        O_step_dim.setDataType(ml::train::TensorDim::DataType::FP16);
 
-      nntrainer::Tensor Q_step = nntrainer::Tensor(Q_step_dim, true);
-      nntrainer::Tensor K_step = nntrainer::Tensor(K_step_dim, true);
-      nntrainer::Tensor V_step = nntrainer::Tensor(V_step_dim, true);
-      nntrainer::Tensor O_step = nntrainer::Tensor(O_step_dim, true);
+        nntrainer::Tensor Q_step = nntrainer::Tensor(Q_step_dim, true);
+        nntrainer::Tensor K_step = nntrainer::Tensor(K_step_dim, true);
+        nntrainer::Tensor V_step = nntrainer::Tensor(V_step_dim, true);
+        nntrainer::Tensor O_step = nntrainer::Tensor(O_step_dim, true);
 
-      Q_step.copyData(query_step);
-      K_step.copyData(key_step);
-      V_step.copyData(value_step);
-      if (use_sink) {
-        one_batch_incremental_forwarding(
-          batch, _from, from, to, Q_step, K_step, V_step, O_step, cache_key,
-          cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
-          cache_value_step_dim, sink);
-      } else {
-        one_batch_incremental_forwarding(batch, _from, from, to, Q_step, K_step,
-                                         V_step, O_step, cache_key, cache_value,
-                                         cache_key_dim, cache_key_step_dim,
-                                         cache_value_dim, cache_value_step_dim);
+        Q_step.copyData(query_step);
+        K_step.copyData(key_step);
+        V_step.copyData(value_step);
+        if (use_sink) {
+          one_batch_incremental_forwarding(
+            batch, _from, from, to, Q_step, K_step, V_step, O_step, cache_key,
+            cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
+            cache_value_step_dim, sink);
+        } else {
+          one_batch_incremental_forwarding(
+            batch, _from, from, to, Q_step, K_step, V_step, O_step, cache_key,
+            cache_value, cache_key_dim, cache_key_step_dim, cache_value_dim,
+            cache_value_step_dim);
+        }
+        output_step.copyData(O_step);
+        continue;
       }
-      output_step.copyData(O_step);
-#else
+#endif
       if (use_sink) {
         one_batch_incremental_forwarding(
           batch, _from, from, to, query_step, key_step, value_step, output_step,
@@ -1668,7 +1708,6 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
           cache_key, cache_value, cache_key_dim, cache_key_step_dim,
           cache_value_dim, cache_value_step_dim);
       }
-#endif
     } else {
       one_batch_incremental_forwarding(
         batch, _from, from, to, query_step, key_step, value_step, output_step,
@@ -4909,33 +4948,38 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
 #endif
   std::vector<float> Qa_fp32;
   std::vector<uint16_t> Qa_fp16;
-  if (q_fp16 && !q_fp16_to_fp32)
+  if (q_fp16 && !q_fp16_to_fp32) {
     Qa_fp16.resize((size_t)num_heads_Q * N_q * d);
-  else
+  } else {
     Qa_fp32.resize((size_t)num_heads_Q * N_q * d);
-    // The x86 half/float kernel already accepts a leading dimension. Read the
-    // manager's token-major rows directly instead of copying the full history
-    // into per-head Ka/Va planes. Q packing and bounded kernel tiles remain.
-    // The ARM all-half kernel still requires contiguous heads; keep that
-    // compatibility path until the Android CPU step of the migration.
+  }
+
+  // x86 can read token-major half rows with their actual leading dimension.
+  // ARM's half kernels require contiguous input; pack only the current key
+  // tile per worker, keeping scratch bounded by Bk rather than history
+  // length. INT8 and other compatibility paths retain their existing
+  // whole-head pack.
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) ||             \
   defined(_M_IX86)
   const bool direct_kv = !kv_int8;
+  const bool tiled_kv = false;
+#elif defined(__ARM_NEON)
+  const bool direct_kv = false;
+  const bool tiled_kv = !kv_int8 && nntr_engine_env() == "cpu";
 #else
   const bool direct_kv = false;
+  const bool tiled_kv = false;
 #endif
-  const unsigned int kv_stride = direct_kv ? HD_KV : d;
+  const bool pack_history = !direct_kv && !tiled_kv;
+  const unsigned int kv_stride = pack_history ? d : HD_KV;
   std::vector<uint16_t> Ka, Va;
-  if (!direct_kv) {
+  if (pack_history) {
     Ka.resize((size_t)num_heads_KV * N_kv * d);
     Va.resize((size_t)num_heads_KV * N_kv * d);
   }
-  if (nntr_env_on("NNTR_KV_CPU_TRACE") && nntr_engine_env() == "cpu")
-    std::fprintf(stderr, "[kv-cpu-read] consumer=%s history_copy_bytes=%zu\n",
-                 direct_kv ? "flash-strided" : "flash-packed",
-                 direct_kv || kv_int8
-                   ? size_t{0}
-                   : (Ka.size() + Va.size()) * sizeof(uint16_t));
+  const bool trace_cpu =
+    nntr_env_on("NNTR_KV_CPU_TRACE") && nntr_engine_env() == "cpu";
+  std::atomic<size_t> tile_pack_bytes{0}, tile_scratch_bytes{0};
   {
     if (q_fp16_to_fp32) {
 #ifdef ENABLE_FP16
@@ -4999,7 +5043,7 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
       NNTR_THROW_IF(true, std::invalid_argument)
         << "kv_int8 gemm_attention requires ENABLE_FP16";
 #endif
-    } else if (!direct_kv) {
+    } else if (pack_history) {
       tm.parallel_for(0, static_cast<size_t>(num_heads_KV), [&](size_t hkv) {
         uint16_t *ka = Ka.data() + (size_t)hkv * N_kv * d;
         uint16_t *va = Va.data() + (size_t)hkv * N_kv * d;
@@ -5027,15 +5071,33 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
     const uint16_t *Qp_fp16 = (q_fp16 && !q_fp16_to_fp32)
                                 ? (Qa_fp16.data() + (size_t)h_q * N_q * d)
                                 : nullptr;
-    const uint16_t *Kp = direct_kv ? Kbase + (size_t)h_kv * d
-                                   : Ka.data() + (size_t)h_kv * N_kv * d;
-    const uint16_t *Vp = direct_kv ? Vbase + (size_t)h_kv * d
-                                   : Va.data() + (size_t)h_kv * N_kv * d;
+    const uint16_t *Kp = pack_history ? Ka.data() + (size_t)h_kv * N_kv * d
+                                      : Kbase + (size_t)h_kv * d;
+    const uint16_t *Vp = pack_history ? Va.data() + (size_t)h_kv * N_kv * d
+                                      : Vbase + (size_t)h_kv * d;
     float *Oh = o_fp16 ? nullptr : (O + h_q * d);
     uint16_t *Oh_fp16 = o_fp16 ? (O_fp16 + h_q * d) : nullptr;
 
     thread_local std::vector<float> S, Pacc, Ol, mrow, lrow;
-    thread_local std::vector<uint16_t> Sp16, Pacc16;
+    thread_local std::vector<uint16_t> Sp16, Pacc16, Ktile, Vtile;
+    size_t worker_pack_bytes = 0;
+    if (tiled_kv) {
+      // Reserve the fixed tile ceiling, so growing sequence lengths do not
+      // trigger geometric TLS-vector growth beyond Bk rows.
+      Ktile.reserve((size_t)Bk * d);
+      Vtile.reserve((size_t)Bk * d);
+      Ktile.resize((size_t)std::min(Bk, N_kv) * d);
+      Vtile.resize((size_t)std::min(Bk, N_kv) * d);
+      if (trace_cpu) {
+        const size_t scratch =
+          (Ktile.capacity() + Vtile.capacity()) * sizeof(uint16_t);
+        size_t observed = tile_scratch_bytes.load(std::memory_order_relaxed);
+        while (observed < scratch &&
+               !tile_scratch_bytes.compare_exchange_weak(
+                 observed, scratch, std::memory_order_relaxed)) {
+        }
+      }
+    }
     S.resize((size_t)Bq * Bk);
     Pacc.resize((size_t)Bq * d);
     Ol.resize((size_t)Bq * d);
@@ -5079,6 +5141,21 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
       // Does this block straddle the sliding-window lower bound for any row?
       const bool window_boundary = windowed && ((size_t)kb + W < q_abs_hi + 1);
 
+      const uint16_t *Kblock = Kp + (size_t)kb * kv_stride;
+      const uint16_t *Vblock = Vp + (size_t)kb * kv_stride;
+      if (tiled_kv) {
+        for (unsigned int k = 0; k < bk; ++k) {
+          std::memcpy(Ktile.data() + (size_t)k * d,
+                      Kblock + (size_t)k * kv_stride, d * sizeof(uint16_t));
+          std::memcpy(Vtile.data() + (size_t)k * d,
+                      Vblock + (size_t)k * kv_stride, d * sizeof(uint16_t));
+        }
+        Kblock = Ktile.data();
+        Vblock = Vtile.data();
+        if (trace_cpu)
+          worker_pack_bytes += (size_t)bk * d * 2 * sizeof(uint16_t);
+      }
+
 #if !defined(__x86_64__) && !defined(__i386__) && defined(__ARM_NEON)
       if (q_fp16) {
         // ALL-FP16 PATH (matches pre-V-JEPA mha_core precision: FP16
@@ -5087,7 +5164,7 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
         // QK: FP16 × FP16 -> FP16 (custom_hgemm with FP32 partial acc).
         nntrainer::neon::custom_hgemm(
           reinterpret_cast<const __fp16 *>(Qp_fp16 + (size_t)qb * d),
-          reinterpret_cast<const __fp16 *>(Kp + (size_t)kb * d),
+          reinterpret_cast<const __fp16 *>(Kblock),
           reinterpret_cast<__fp16 *>(Sp16.data()), bq, bk, d, inv_sqrt, 0.0f,
           /*TransA=*/false, /*TransB=*/true);
 
@@ -5162,7 +5239,7 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
         // AV: FP16 × FP16 -> FP16 (custom_hgemm).
         nntrainer::neon::custom_hgemm(
           reinterpret_cast<const __fp16 *>(Sp16.data()),
-          reinterpret_cast<const __fp16 *>(Vp + (size_t)kb * d),
+          reinterpret_cast<const __fp16 *>(Vblock),
           reinterpret_cast<__fp16 *>(Pacc16.data()), bq, d, bk, 1.0f, 0.0f,
           /*TransA=*/false, /*TransB=*/false);
         // Accumulate Pacc16 -> Ol FP32 (FP32 accumulator across kb).
@@ -5187,18 +5264,18 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) ||             \
   defined(_M_IX86)
         mha_hsgemm_avx2(bq, bk, d, inv_sqrt, Qp_fp32 + (size_t)qb * d, d,
-                        Kp + (size_t)kb * kv_stride, kv_stride,
+                        Kblock, kv_stride,
                         /*TransB=*/true, S.data(), bk);
 #elif defined(__ARM_NEON)
           nntrainer::shgemm(
             order, false, true, bq, bk, d, inv_sqrt,
             Qp_fp32 + (size_t)qb * d, d,
-            reinterpret_cast<const __fp16 *>(Kp + (size_t)kb * d), d, 0.0f,
+            reinterpret_cast<const __fp16 *>(Kblock), d, 0.0f,
             S.data(), bk);
 #else
           nntrainer::sgemm(order, false, true, bq, bk, d, inv_sqrt,
                            Qp_fp32 + (size_t)qb * d, d,
-                           Kp + (size_t)kb * d, d, 0.0f, S.data(), bk);
+                           Kblock, d, 0.0f, S.data(), bk);
 #endif
 
         for (unsigned int i = 0; i < bq; ++i) {
@@ -5294,8 +5371,7 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
 
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) ||             \
   defined(_M_IX86)
-        mha_hsgemm_avx2(bq, d, bk, 1.0f, S.data(), bk,
-                        Vp + (size_t)kb * kv_stride, kv_stride,
+        mha_hsgemm_avx2(bq, d, bk, 1.0f, S.data(), bk, Vblock, kv_stride,
                         /*TransB=*/false, Pacc.data(), d);
         for (unsigned int i = 0; i < bq; ++i) {
           float *ol = Ol.data() + (size_t)i * d;
@@ -5306,7 +5382,7 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
 #elif defined(__ARM_NEON)
           nntrainer::neon::custom_hgemm(
             reinterpret_cast<const __fp16 *>(Sp16.data()),
-            reinterpret_cast<const __fp16 *>(Vp + (size_t)kb * d),
+            reinterpret_cast<const __fp16 *>(Vblock),
             reinterpret_cast<__fp16 *>(Pacc16.data()), bq, d, bk, 1.0f, 0.0f,
             /*TransA=*/false, /*TransB=*/false);
           for (unsigned int i = 0; i < bq; ++i) {
@@ -5325,7 +5401,7 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
           }
 #else
           nntrainer::sgemm(order, false, false, bq, d, bk, 1.0f, S.data(), bk,
-                           Vp + (size_t)kb * d, d, 0.0f, Pacc.data(), d);
+                           Vblock, d, 0.0f, Pacc.data(), d);
           for (unsigned int i = 0; i < bq; ++i) {
             float *ol = Ol.data() + (size_t)i * d;
             const float *pa = Pacc.data() + (size_t)i * d;
@@ -5348,7 +5424,19 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
           oh[x] = ol[x] * inv;
       }
     }
+    if (trace_cpu && tiled_kv)
+      tile_pack_bytes.fetch_add(worker_pack_bytes, std::memory_order_relaxed);
   });
+  if (trace_cpu)
+    std::fprintf(
+      stderr,
+      "[kv-cpu-read] consumer=%s history_copy_bytes=%zu tile_pack_bytes=%zu "
+      "tile_scratch_bytes=%zu\n",
+      direct_kv ? "flash-strided" : (tiled_kv ? "flash-tiled" : "flash-packed"),
+      pack_history && !kv_int8 ? (Ka.size() + Va.size()) * sizeof(uint16_t)
+                               : size_t{0},
+      tile_pack_bytes.load(std::memory_order_relaxed),
+      tile_scratch_bytes.load(std::memory_order_relaxed));
 }
 
 void MHACoreLayer::one_batch_incremental_forwarding(

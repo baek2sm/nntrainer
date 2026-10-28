@@ -156,6 +156,18 @@ LOCAL_STATIC_LIBRARIES := googletest
 LOCAL_C_INCLUDES := $(CAUSALLM_COMMON_INCLUDES)
 include $(BUILD_EXECUTABLE)
 
+# Compile the production MHA translation unit into this focused test. This
+# exercises finalize guards directly without a model or tokenizer dependency.
+include $(CLEAR_VARS)
+LOCAL_MODULE := unittest_mha_cpu_profile
+LOCAL_CFLAGS := $(CAUSALLM_COMMON_CFLAGS)
+LOCAL_LDLIBS := -llog -landroid
+LOCAL_SRC_FILES := ../layers/unittest_mha_cpu_profile.cpp ../layers/mha_core.cpp
+LOCAL_SHARED_LIBRARIES := nntrainer ccapi-nntrainer
+LOCAL_STATIC_LIBRARIES := googletest_main
+LOCAL_C_INCLUDES := $(CAUSALLM_COMMON_INCLUDES)
+include $(BUILD_EXECUTABLE)
+
 include $(CLEAR_VARS)
 LOCAL_MODULE := unittest_causallm_models
 LOCAL_CFLAGS += $(CAUSALLM_COMMON_CFLAGS) -Igoogletest/include -Igoogletest/

@@ -98,14 +98,127 @@ NDK의 googletest source를 기존 harness의 ignored `jni/googletest/` 위치�
 모든 ADB 호출은 `adb -s bacd420f`를 사용하며, 배포와 실행은 전용 `checks/` 경로에서
 진행했다. `TMPDIR`와 `LD_LIBRARY_PATH`도 해당 절대경로로 고정했다.
 
-| 기기 실행 | 결과 |
+| 초기 baseline runtime 기기 실행 | 결과 |
 |---|---|
 | core geometry/storage/lease | 18 PASS |
 | CausalLM facade/snapshot | 25 PASS |
 | ring geometry | 22 PASS |
-| 합계 | **65 PASS, 0 FAIL, 0 SKIP** |
+| 초기 합계 | **65 PASS, 0 FAIL, 0 SKIP** |
 
 변경된 fixture의 Linux facade 25개도 통과했다. Android XML, stdout, executable hash와
 ABI 기록은 `build-kv-android/validation/checks/validation.json`과 같은 디렉터리에 있다.
 이 단위 검증 통과만으로 attention 직접 접근 완료를 판단하지 않는다. Qwen 실제 모델의
 주소·copy 계측과 출력 검증은 별도 단계다.
+
+## 실제 모델 초기화에서 발견한 통합 문제
+
+batch=1 / inference guard를 추가한 첫 실제 Qwen FP32·Q4 smoke 2개가 추론 전에
+초기화에서 거절되었다. 조사 과정에서 `LayerNode::refinalize()`가
+`InitLayerContext`를 만들 때 graph의 execution mode를 전달하지 않아 기본 `TRAIN`을
+사용하는 기존 오류를 확인했다. `compile(INFERENCE)`를 호출해도 재초기화 context는
+달라질 수 있었다. graph mode를 refinalize까지 전달하도록 엔진 코드를 수정했으며,
+앱만 교체해서 반영되는 변경이 아니므로 Android 엔진과 앱을 함께 다시 빌드했다.
+
+이미 구성된 동일 build 디렉터리에서는 다음 명령을 실제로 사용했다.
+
+```bash
+ninja -C builddir -j8
+meson install -C builddir --no-rebuild --skip-subprojects
+ninja -C builddir_app/cpu -j8
+```
+
+이 mode 오류는 host regression으로 재현했다. 수정 전 INFERENCE·VALIDATE 두 case가
+실패했고 수정 후 mode 보존 및 기존 training 기본 동작 4개가 모두 통과했다.
+증거는 `checks/refinalize-mode.before.log`, `refinalize-mode.after.log/.xml`에 있다.
+첫 실제 모델 초기화 거절 2개는 `final-guarded/`의 per-model stderr·report에 보존했다.
+첫 로그에는 실제 context mode를 출력하지 않았으므로 두 거절 모두의 직접 원인이
+mode였다고 단정하지 않는다.
+
+mode를 보존한 다음 진단 runtime에서는 실제 Qwen 8개 case가 여전히 초기화에서
+거절되었다. 이번 메시지는 `process_engine=cpu`, `layer_engine=1`,
+`execution_mode=1`, `batch=1`이었다. CausalLM의 residency policy는 `mha_core`를
+engine-neutral type으로 선언하며 `LayerNode::finalize()`는 이 context에 GPU stamp를
+부여한다. 이 값은 CPU attention의 실제 실행 backend를 뜻하지 않는다. 잘못 추가한
+context-engine CPU 검사를 제거하고 실제 runtime 선택인 `NNTR_ENGINE=cpu` 조건을
+유지했다. 두 번째 진단의 8개 실패는 `final-verified/`에 보존했다. 이 10개 거절은
+추론 출력을 생성하지 않았으며 성공 모델 검증 횟수에 포함하지 않는다.
+
+## 최종 final-cpu runtime 재검증
+
+Android FP32 attention opt-in은 CPU process, batch=1, inference, 외부 FP16 cache와
+FP32 Q/K/V activation을 요구한다. profile suite는 CPU context의 지원 profile,
+CPU process에서 engine-neutral GPU context 허용, 명시적 `0`의 legacy 유지 3개와
+training/validation, batch=2, 비CPU process, half Q/K/V, FP32 cache, 내부 cache,
+RoPE 없음, INT8, sink 거절 12개로 구성한다. **15개가 실제 기기에서 모두 통과**했다.
+이 target은 production `mha_core.cpp`를 직접 컴파일한다. 테스트용 context만으로
+전체 graph 통합을 대신하지 않으며 실제 Qwen 검증은 별도 문서에 기록한다.
+
+mode 전달 수정과 engine-neutral context 허용을 모두 반영한 최종 runtime을
+`build-kv-android/validation/final-cpu/runtime/`에 고정했다. 해당 디렉터리의 네 library를
+기기의 전용 `checks/`에 배포하고 네 test target을 다시 빌드·실행했다. 로컬 frozen
+파일과 기기 library·실행 파일의 SHA256이 모두 일치한다.
+`final-cpu/build.json`은 반영된 source 파일 및 runtime hash를 함께 보존한다.
+
+```text
+libnntrainer.so: 4,960,352 bytes
+SHA256: 0b7204882344ffe917cd1fd4e991e84e7e0930f0ad5611fbf31a1727d7479ad8
+libcausallm.so: 17,591,568 bytes
+SHA256: 78502cc34a2ee950e3d177186a0bb3c43950376e4df3f6daa1aea21ca24f0cd7
+```
+
+| 최종 final-cpu 기기 단위 검증 | 결과 |
+|---|---|
+| core geometry/storage/lease | 18 PASS |
+| CausalLM facade/snapshot | 25 PASS |
+| ring geometry | 22 PASS |
+| Android FP32 profile 승인·거부 | 15 PASS |
+| 합계 | **80 PASS, 0 FAIL, 0 SKIP** |
+
+네 실행 파일 모두 exit code `0`이며 disabled·error도 `0`이다. 증거는
+`build-kv-android/validation/checks/final-cpu.validation.json`,
+`final-cpu.device.sha256.txt`, `final-cpu.ndk-build.log`와
+`final-cpu.unittest_*.xml/.log`에 있다. manifest는 네 suite의 실제 결과와 exit code,
+source/executable/runtime/device hash, XML·log hash 및 ADB 명령을 기록한다.
+기존 profile 15개 결과와 다른 runtime의 65개 결과를 합산한 수치가 아니라 네 suite를
+같은 최종 runtime으로 다시 실행한 결과다.
+
+재현용 build와 기기 실행 명령은 다음과 같다. 여기서 단위 테스트는 모델을 로드하지
+않고 전용 `checks/`만 사용한다.
+
+```bash
+ANDROID_NDK=/opt/android-ndk-r28c /opt/android-ndk-r28c/ndk-build \
+  -C Applications/CausalLM/jni NDK_PROJECT_PATH=. NDK_LIBS_OUT=./libs \
+  NDK_OUT=./obj APP_BUILD_SCRIPT=./Android.mk \
+  NDK_APPLICATION_MK=./Application.mk \
+  CAUSALLM_PREBUILT_LIB=../../../builddir_app/cpu/libcausallm.so \
+  unittest_kv_cache_core unittest_kv_cache_manager unittest_kv_ring \
+  unittest_mha_cpu_profile -j4
+
+adb -s bacd420f push \
+  build-kv-android/validation/final-cpu/runtime/libnntrainer.so \
+  build-kv-android/validation/final-cpu/runtime/libccapi-nntrainer.so \
+  build-kv-android/validation/final-cpu/runtime/libcausallm.so \
+  build-kv-android/validation/final-cpu/runtime/libc++_shared.so \
+  /data/local/tmp/nntr_kv_cpu_bacd420f/checks/
+
+for suite in unittest_kv_cache_core unittest_kv_cache_manager unittest_kv_ring \
+  unittest_mha_cpu_profile; do
+  adb -s bacd420f push \
+    "Applications/CausalLM/jni/obj/local/arm64-v8a/$suite" \
+    /data/local/tmp/nntr_kv_cpu_bacd420f/checks/
+  adb -s bacd420f shell \
+    "cd /data/local/tmp/nntr_kv_cpu_bacd420f/checks && chmod 755 $suite && \
+    LD_LIBRARY_PATH=/data/local/tmp/nntr_kv_cpu_bacd420f/checks \
+    TMPDIR=/data/local/tmp/nntr_kv_cpu_bacd420f/checks NNTR_ENGINE=cpu \
+    ./$suite --gtest_color=no --gtest_output=xml:final-cpu.$suite.xml" \
+    > "build-kv-android/validation/checks/final-cpu.$suite.log" 2>&1
+  adb -s bacd420f pull \
+    "/data/local/tmp/nntr_kv_cpu_bacd420f/checks/final-cpu.$suite.xml" \
+    build-kv-android/validation/checks/
+done
+```
+
+이전 baseline 65개, 최초 profile 15개, 중간 guarded 65개는 기존 파일에 유지하며,
+잘못된 context guard가 있던 중간 80개는
+`checks/history/final-verified-context-guarded/final-verified.validation.json`과
+인접 XML·로그에 별도 보존했다. 최종 결과는 `final-cpu.*`만 가리킨다.

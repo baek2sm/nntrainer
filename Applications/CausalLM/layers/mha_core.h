@@ -560,6 +560,11 @@ private:
    */
   bool use_external_cache = false;
 
+  /** Android CPU opt-in preserving FP32 Q/K/V/O for the external-cache RoPE
+   * producer profile. Validated once in finalize(); the default retains the
+   * legacy Android all-half attention arithmetic. */
+  bool cpu_attention_fp32 = false;
+
   /** intermal info */
   size_t num_heads_Q;
   size_t num_heads_KV;
@@ -675,11 +680,11 @@ private:
    *        non-causal and causal-LLM prefill paths).
    *        2-phase: (1) de-interleave Q into contiguous [H,N,d] buffers;
    *        x86 reads non-INT8 K/V directly from token-major cache rows using
-   *        their leading dimension, while compatibility paths pack K/V into
-   *        contiguous per-head buffers; (2) balanced parallel_for over
-   *        (h_q, query_block) units with online softmax over key-blocks
-   *        (QK -> softmax -> AV). Native ARM half and INT8 compatibility
-   *        paths retain their existing packing/dequantization requirements.
+   *        their leading dimension, while ARM CPU packs bounded K/V tiles
+   *        immediately before the contiguous half kernels. Other compatibility
+   *        paths pack/dequantize contiguous per-head buffers; (2) balanced
+   *        parallel_for over (h_q, query_block) units with online softmax over
+   *        key-blocks (QK -> softmax -> AV).
    *        GQA: h_kv = h_q / gqa_size. Causal: key-block upper-bound break
    *        + in-block boundary mask. Sliding window: key-block lower-bound
    *        skip + in-block lower mask.
