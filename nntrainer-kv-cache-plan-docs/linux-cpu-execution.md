@@ -1,6 +1,8 @@
 # Linux CPU 개발·검증 기록
 
 사용자 결정: **Linux x86 CPU → Android Arm CPU → 이후 backend는 추후 결정**.
+추가 결정: 이후 모델 정확성·성능 검증 기준은 **Qwen3 0.6B**다.
+Gemma4 호환성 수정은 별도 `fix/gemma4-skip-prefill-lmhead` 브랜치에서 관리한다.
 `AGENTS.md`는 참고하며 수정하지 않는다. 구현·명령·검증·미완료 사항을 단계별로
 이 문서에 갱신하고, 통과한 단위로 DCO/agent trailer를 갖춘 커밋을 남긴다.
 
@@ -20,6 +22,12 @@
 | core MVP batch=1 | 기존 batch=2 FP32 manager 테스트를 유지한다. contiguous CPU storage가 batch offset을 명시적으로 검사하도록 한다. session 간 공유는 구현 범위가 아니다. |
 | 모든 model 테스트가 실행됨 | 최초 baseline은 93 PASS + deprecated QINT4 fixture 1 SKIP. Meson의 suite SKIP=0 표기와 개별 gtest SKIP를 구분한다. |
 | 기존 Gemma4 패키지를 바로 사용 | `skip_prefill=true`일 때 초기 layer property 오류가 발생한다. 이를 끈 별도 설정에서 FP32 `.bin`은 로드/생성이 가능하지만, 기존 양자화 `.bin`은 현재 graph와 byte 수가 다르다. 원본 파일은 수정하지 않는다. |
+
+추가 확인: `ml-api-support=disabled`는 이 checkout의 Meson에서 완전한 dependency
+제거를 보장하지 않는다. 설치된 ML-API package가 발견되면 `required:false`여도
+`.found()` 조건에 의해 `ML_API_COMMON=1`, `NNSTREAMER_AVAILABLE=1` 및 해당 library
+link가 활성화된다. 위 옵션은 요청값이고 실제 compile/link 결과는 이와 구분한다.
+새 core 모듈의 header/source에는 application, GPU/NPU SDK 의존이 없다.
 
 Host: Intel Core i9-14900, x86_64, AVX2/FMA/F16C 지원, RAM 62GiB
 (착수 시 available 약 46GiB), 작업 filesystem 여유 약 69GiB.
@@ -97,6 +105,47 @@ metadata가 없어 이것만으로 weight 내용을 증명한 것은 아니다. 
 
 core 구현 후 같은 산술/한국어 smoke의 비교 결과는 후속 단계에서 추가한다.
 정상적인 짧은 문장만으로 HF logits 일치나 장문 정확성을 주장하지 않는다.
+
+Gemma 초기화 오류의 후속 원인 확인: GDB stack은 `buildLmHeadOutput` →
+`TieWordEmbedding::setProperty` → `LayerImpl::setProperty`다.
+공통 builder가 FC 전용 `plan_last_row_only`를 tied/custom LM head에도 전달하는
+**현재 소스의 버그**이며 모델 설정 자체의 결함으로 단정하지 않는다.
+별도 branch의 `21d03c477`은 해당 속성을 FC에만 전달한다. 신규 회귀 6개와 전체
+model suite 99 PASS/1 SKIP, 기존 FP32 Gemma의 `skip_prefill=true` 산술/한국어 smoke
+모두 통과했다. 상세 기록은 해당 branch의 `docs/gemma4-skip-prefill-fix.md`에 있다.
+
+## P1: 내부 CPU storage와 step lease
+
+`nntrainer/kv_cache/`에 C++17 내부 모듈을 추가했다. 초기 지원은 동기 CPU,
+token-major contiguous FP32 또는 IEEE half payload(FP16/UINT16 backing)이다.
+기존 MemAllocator를 사용하고 device-visible/SVM/등록 필요 allocator는 거절한다.
+네이티브 backend handle과 비동기 completion을 지원한다고 선언하지 않는다.
+
+- 모든 layer의 geometry/encoding/alias/byte overflow와 alignment rounding을
+  allocation 전에 검사한다. owner마다 K/V를 할당하고 alias layer는 이를 공유한다.
+- `KvStorage`가 실제 allocation과 allocator를 소유한다. aliasing shared_ptr로
+  내보낸 MemoryData/Tensor가 manager보다 오래 살아도 allocation을 유지한다.
+- `StepLease`는 한 번에 하나만 발행하며 모든 owner 준비 후 commit해야 위치를
+  전진시킨다. 실패 시 RAII abort, linear tail은 미공개, ring overwrite는 reset까지
+  session invalid다. ring seam은 두 segment로 표현한다.
+- reset/reallocate/다음 step 시작 시 이전 view를 무효화한다. Tensor bridge의
+  raw mutable alias는 이 검사를 우회하는 명시적인 기존 graph 호환 경계다.
+- source를 core include 경로에 직접 추가하지 않아 기존 app의 같은 이름 header와
+  충돌하지 않으며, header는 설치/public ABI로 노출하지 않는다.
+
+리뷰에서 이전 ring read view의 다음 step 재사용, mutable MemoryData 주소를
+allocation 해제에 사용하는 문제, 기본/이동된 view의 bufferId 접근을 발견해 고쳤다.
+각각 재현 테스트를 추가했다.
+
+검증: 신규 core **18 PASS**; 독립 ASan/UBSan/**LeakSanitizer 18 PASS**, 오류·누수 없음.
+변경 전 범위의 기존 manager 20, ring 22, model 93 PASS/1 deprecated SKIP도 유지했다.
+`enable-app=false`, `enable-transformer=false` core-only sanitizer target을 빌드했다.
+증거: `/tmp/kv-core-review/tests.log`, `/tmp/kv-core-review-asan/tests.log`,
+`/tmp/kv-p1-tests-host.log`, `build-kv-core-asan/`.
+
+일부 sandbox Meson 실행은 gtest XML상 완료 후에도 종료 감시 timeout이 발생했다.
+이를 통과로 세지 않고 같은 검사를 일반 실행 권한으로 반복해 exit 0을 확인했다.
+sanitizer도 leak 검사를 끄는 우회로 최종 판정을 대신하지 않았다.
 
 ## 단계 경계
 
