@@ -236,6 +236,24 @@ Linux 단계 종료 시점에는 Android cross build·실기기 검증 전이었
 증거는 `build-kv-cpu/validation/qwen3-post/`의 `chunk17-comparison.json`,
 `snapshot-resume/report.json`, 해당 trace audit JSON에 보존한다.
 
+### Android 검증에서 발견한 재초기화 mode 누락
+
+Android attention의 inference 전용 조건을 검사하면서 기존 graph의 mode 전달
+누락을 발견했다. `NetworkGraph::finalizeContext()`는 실행 mode를 전달하지만,
+`refinalizeContext()`는 이를 생략하여 `LayerNode::refinalize()`가 `InitLayerContext`를
+기본 `TRAIN`으로 만들었다. 모델을 `INFERENCE`로 compile해도 재초기화 callback은
+학습 mode를 받았다. graph의 현재 mode를 refinalize까지 전달하고, 직접 호출의 기본
+`TRAIN` 동작과 기존 tensor type/loss scale 처리는 유지했다.
+
+실제 `NeuralNetwork::reinitialize()`의 layer callback을 관찰하는 회귀 테스트를
+추가했다. 수정 전에는 `INFERENCE`·`VALIDATE` 2개가 실패했고, 수정 후에는 세 mode와
+기본값 4개가 모두 통과했다. 전체 graph **16 PASS**, KV **65 PASS**, 기존 모델
+**99 PASS / deprecated QINT4 1 SKIP**이며 직접 모델 실행의 종료 코드도 0이다.
+재현 증거는 `build-kv-android/validation/checks/refinalize-mode.*`와
+`host-final-models.xml`, `/tmp/kv-android-refinalize-host-model-tests.log`에 보관했다.
+앞선 sandbox Meson 실행기는 assertion 완료 뒤 종료 대기가 남아, 동일 바이너리의
+직접 실행으로 정상 종료를 확인했다.
+
 ## 단계 경계
 
 P0는 환경과 변경 전 baseline, P1은 내부 core storage/lease와 독립 테스트,
