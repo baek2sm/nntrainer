@@ -868,7 +868,10 @@ Tensor CausalLM::buildLmHeadOutput(Tensor h, bool add_skip_prefill) {
     // layers honour this by planning the output at height 1
     // (props::PlanLastRowOnly, fc_layer.cpp / fc_layer_cl.cpp); without the
     // declaration the property is inert and the plane comes back.
-    lmhead_prop.emplace_back(withKey("plan_last_row_only", "true"));
+    // The dedicated lm_head and tie_word_embeddings layers already plan a
+    // single output row and do not accept the FC-only planning property.
+    if (lmhead_untied)
+      lmhead_prop.emplace_back(withKey("plan_last_row_only", "true"));
   }
   if (TIE_WORD_EMBEDDINGS && !lmhead_untied)
     lmhead_prop.emplace_back(withKey("shared_from", "embedding0"));
