@@ -85,11 +85,16 @@ struct CacheSpec {
         throw std::invalid_argument("Invalid KV encoding/backing combination");
       if (page_tokens && s.capacity != s.max_tokens)
         throw std::invalid_argument("Paged KV does not support ring storage");
-      if (page_tokens)
-        checkedMultiply(page_tokens, s.rowBytes());
       const size_t plane = s.planeBytes();
-      // Count actual aligned backing bytes, not just the logical payload.
-      const size_t aligned = checkedAdd(plane, 63) & ~size_t{63};
+      // Paged storage rounds each page, including the partial final page.
+      size_t aligned = checkedAdd(plane, 63) & ~size_t{63};
+      if (page_tokens) {
+        const size_t page = checkedMultiply(page_tokens, s.rowBytes());
+        const size_t page_aligned = checkedAdd(page, 63) & ~size_t{63};
+        const size_t pages = 1 + (s.max_tokens - 1) / page_tokens;
+        aligned =
+          checkedMultiply(checkedMultiply(s.batch, pages), page_aligned);
+      }
       if (s.source < -1 ||
           (s.source >= 0 && (static_cast<size_t>(s.source) >= i ||
                              !s.sameGeometry(layers[s.source]) ||

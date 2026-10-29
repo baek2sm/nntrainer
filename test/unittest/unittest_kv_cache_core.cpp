@@ -8,6 +8,8 @@
 #include <kv_cache/kv_cache_manager.h>
 #include <tensor.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -507,7 +509,166 @@ TEST(KvCacheCore, pagedAllocationFailureLeavesSessionUnchanged) {
   EXPECT_EQ(manager.committedLength(), 0u);
   EXPECT_FALSE(manager.hasActiveStep());
   EXPECT_EQ(manager.stats().backing_bytes, 0u);
-  EXPECT_EQ(allocator->frees, 1u);
+  EXPECT_EQ(allocator->frees, 0u); // Failed admission leaves an idle pool page.
+}
+
+TEST(KvCacheCore, sharedPagePoolPinsViewsAndReusesReleasedPages) {
+  auto pool = std::make_shared<KvPagePool>(128);
+  auto s = spec();
+  s.page_tokens = 2;
+  KvCacheManager first, second;
+  first.initialize(s, std::make_shared<nntrainer::MemAllocator>(), pool);
+  second.initialize(s, std::make_shared<nntrainer::MemAllocator>(), pool);
+  auto step = first.beginStep(1);
+  auto retained = first.writeKey(step, 0);
+  const auto identity = retained[0].bufferId();
+  first.abort(std::move(step));
+  EXPECT_THROW(second.beginStep(1), std::bad_alloc);
+  EXPECT_THROW(retained[0].data(), std::logic_error);
+  retained.clear();
+  auto next = second.beginStep(1);
+  EXPECT_EQ(second.writeKey(next, 0)[0].bufferId(), identity);
+  EXPECT_EQ(pool->reservedBytes(), 128u);
+  second.abort(std::move(next));
+  pool->trim();
+  EXPECT_EQ(pool->reservedBytes(), 0u);
+}
+
+TEST(KvCacheCore, pagedAttentionMatchesDenseReferenceAcrossStepsAndBatches) {
+  auto s = spec(8, 8);
+  s.layers[0].batch = 2;
+  s.page_tokens = 2;
+  s.layers.push_back(s.layers[0]);
+  s.layers[1].source = 0;
+  KvCacheManager manager;
+  manager.initialize(s);
+  AttentionOptions options;
+  options.query_heads = 4;
+  options.scale = 0.7f;
+  options.logit_softcap = 1.5f;
+  std::vector<float> history_k[2], history_v[2];
+  for (size_t count : {3u, 1u, 3u}) {
+    auto step = manager.beginStep(count);
+    std::vector<float> queries(count * 8);
+    for (size_t i = 0; i < queries.size(); ++i)
+      queries[i] = std::sin(static_cast<float>(i + step.from()));
+    for (size_t b = 0; b < 2; ++b) {
+      std::vector<float> k(count * 4), v(count * 4);
+      for (size_t i = 0; i < k.size(); ++i) {
+        k[i] = std::cos(static_cast<float>(i + step.from() * 4 + b));
+        v[i] = static_cast<float>(i + step.from() * 4 + b) / 13;
+      }
+      manager.append(step, 0, k.data(), v.data(), k.size() * sizeof(float), b);
+      history_k[b].insert(history_k[b].end(), k.begin(), k.end());
+      history_v[b].insert(history_v[b].end(), v.begin(), v.end());
+    }
+    EXPECT_THROW(manager.attention(step, 0, queries, options),
+                 std::logic_error);
+    manager.markReady(step, 0);
+    for (bool causal : {true, false})
+      for (size_t window : {0u, 2u})
+        for (size_t b = 0; b < 2; ++b) {
+          options.causal = causal;
+          options.window = window;
+          auto actual = manager.attention(step, 1, queries, options, b);
+          for (size_t q = 0; q < count; ++q) {
+            const size_t end = causal ? step.from() + q + 1 : step.to();
+            const size_t start = window && end > window ? end - window : 0;
+            for (size_t h = 0; h < 4; ++h) {
+              std::vector<double> scores(end - start);
+              for (size_t t = start; t < end; ++t) {
+                double score = 0;
+                for (size_t d = 0; d < 2; ++d)
+                  score += static_cast<double>(queries[q * 8 + h * 2 + d]) *
+                           history_k[b][t * 4 + (h / 2) * 2 + d];
+                scores[t - start] =
+                  1.5 * std::tanh(score * options.scale / 1.5);
+              }
+              double maximum = *std::max_element(scores.begin(), scores.end());
+              double sum = 0;
+              for (auto &score : scores) {
+                score = std::exp(score - maximum);
+                sum += score;
+              }
+              for (size_t d = 0; d < 2; ++d) {
+                double expected = 0;
+                for (size_t t = start; t < end; ++t)
+                  expected += scores[t - start] *
+                              history_v[b][t * 4 + (h / 2) * 2 + d] / sum;
+                EXPECT_NEAR(actual[q * 8 + h * 2 + d], expected, 1e-5);
+              }
+            }
+          }
+        }
+    finish(manager, std::move(step));
+  }
+}
+
+TEST(KvCacheCore, pagedAttentionDecodesBinary16WithoutNativeHalf) {
+  auto s = spec();
+  s.page_tokens = 1;
+  s.layers[0].encoding = Encoding::Float16;
+  s.layers[0].storage_type = StorageType::UInt16;
+  KvCacheManager manager;
+  manager.initialize(s);
+  auto step = manager.beginStep(2);
+  uint16_t k[8] = {}; // Equal scores give uniform attention.
+  uint16_t v[8] = {0x3c00, 0x4000, 0x4200, 0x4400,
+                   0x4200, 0x4400, 0x4500, 0x4600};
+  manager.append(step, 0, k, v, sizeof(k));
+  manager.markReady(step, 0);
+  AttentionOptions options;
+  options.query_heads = 2;
+  auto output = manager.attention(step, 0, std::vector<float>(8, 1), options);
+  EXPECT_FLOAT_EQ(output[0], 1);
+  EXPECT_FLOAT_EQ(output[4], 2);
+  EXPECT_FLOAT_EQ(output[5], 3);
+  EXPECT_FLOAT_EQ(output[6], 4);
+  EXPECT_FLOAT_EQ(output[7], 5);
+}
+
+TEST(KvCacheCore, pagedTruncateReturnsWholeBlocksAndRejectsForwardSeek) {
+  auto s = spec();
+  s.page_tokens = 2;
+  auto pool = std::make_shared<KvPagePool>();
+  KvCacheManager manager;
+  manager.initialize(s, std::make_shared<nntrainer::MemAllocator>(), pool);
+  finish(manager, manager.beginStep(5));
+  EXPECT_EQ(manager.stats().backing_bytes, 384u);
+  manager.setPosition(1);
+  EXPECT_EQ(manager.stats().backing_bytes, 128u);
+  EXPECT_THROW(manager.setPosition(2), std::logic_error);
+  pool->trim();
+  EXPECT_EQ(pool->reservedBytes(), 128u);
+  manager.reset();
+  pool->trim();
+  EXPECT_EQ(pool->reservedBytes(), 0u);
+}
+
+TEST(KvCacheCore, segmentedAttentionRejectsInvalidGeometryAndQueries) {
+  auto s = spec();
+  s.page_tokens = 2;
+  KvCacheManager manager;
+  manager.initialize(s);
+  auto step = manager.beginStep(1);
+  manager.markReady(step, 0);
+  AttentionOptions options;
+  options.query_heads = 3;
+  EXPECT_THROW(manager.attention(step, 0, std::vector<float>(6), options),
+               std::invalid_argument);
+  options.query_heads = 2;
+  EXPECT_THROW(manager.attention(step, 0, std::vector<float>(3), options),
+               std::invalid_argument);
+  options.scale = std::numeric_limits<float>::infinity();
+  EXPECT_THROW(manager.attention(step, 0, std::vector<float>(4), options),
+               std::invalid_argument);
+  options.scale = 0;
+  auto output =
+    manager.attention(step, 0, std::vector<float>(4, 10000), options);
+  for (float value : output)
+    EXPECT_FLOAT_EQ(value, 0);
+  EXPECT_THROW(manager.append(step, 0, nullptr, nullptr, 16),
+               std::invalid_argument);
 }
 
 GTEST_API_ int main(int argc, char **argv) {

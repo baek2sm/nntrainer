@@ -8,6 +8,7 @@
 #define NNTRAINER_CORE_KV_CACHE_MANAGER_H
 
 #include <kv_cache/kv_cache_spec.h>
+#include <kv_cache/kv_page_pool.h>
 #include <kv_cache/kv_storage.h>
 
 #include <memory>
@@ -67,11 +68,23 @@ private:
 };
 
 struct CacheStats {
-  size_t backing_bytes = 0;
+  size_t backing_bytes =
+    0; /**< Session pages; excludes idle or view-only pool pages. */
   size_t owner_layers = 0;
 };
 
-/** Geometry and publication only; attention/RoPE stay in the model/layer.
+/** CPU attention parameters. Queries and results use [token, query_head, dim].
+ * RoPE must already have been applied to queries and keys by the producer.
+ */
+struct AttentionOptions {
+  size_t query_heads = 0;
+  bool causal = true;
+  size_t window = 0; /**< Zero means all available history. */
+  float scale = 0;   /**< Zero means 1/sqrt(head_dim). */
+  float logit_softcap = 0;
+};
+
+/** Cache ownership, publication and direct segmented CPU attention.
  * Thread confined. No asynchronous backend completion is advertised.
  */
 class KvCacheManager {
@@ -85,7 +98,8 @@ public:
    * supported in that mode. Pages are allocated as steps advance. */
   void initialize(
     const CacheSpec &spec,
-    std::shared_ptr<MemAllocator> allocator = std::make_shared<MemAllocator>());
+    std::shared_ptr<MemAllocator> allocator = std::make_shared<MemAllocator>(),
+    std::shared_ptr<KvPagePool> page_pool = nullptr);
   StepLease beginStep(size_t token_count);
   std::vector<KvView> writeKey(const StepLease &, size_t layer,
                                size_t batch = 0);
@@ -95,7 +109,21 @@ public:
                               size_t batch = 0);
   std::vector<KvView> readValue(const StepLease &, size_t layer,
                                 size_t batch = 0);
+  /** Append already transformed token-major K/V in the cache's encoding.
+   * bytes is the size of each plane for this batch and step, not both planes.
+   * Input buffers must not overlap cache storage.
+   * Call markReady after all batches have been produced.
+   */
+  void append(const StepLease &, size_t layer, const void *keys,
+              const void *values, size_t bytes, size_t batch = 0);
   void markReady(const StepLease &, size_t owner_layer);
+  /** Consume pages directly with online softmax; never gather cache history.
+   * Queries cover exactly this step. Reads require markReady(), including
+   * aliases. The returned FP32 output has the same layout and size as queries.
+   */
+  std::vector<float> attention(const StepLease &, size_t layer,
+                               const std::vector<float> &queries,
+                               const AttentionOptions &, size_t batch = 0);
   /** Bind checked accesses to one synchronous graph invocation. */
   std::unique_ptr<KvStepScope> bindStep(const StepLease &);
   void commit(StepLease &&);

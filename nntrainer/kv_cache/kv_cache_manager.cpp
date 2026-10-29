@@ -8,6 +8,7 @@
 #include <kv_cache/kv_cache_manager.h>
 
 #include <algorithm>
+#include <cstring>
 #include <utility>
 
 namespace nntrainer::kv {
@@ -21,7 +22,7 @@ struct SessionState {
   CacheSpec spec;
   std::vector<std::shared_ptr<KvStorage>> keys, values;
   std::vector<std::vector<std::shared_ptr<KvStorage>>> key_pages, value_pages;
-  std::shared_ptr<MemAllocator> allocator;
+  std::shared_ptr<KvPagePool> pool;
   std::vector<bool> ready;
   std::shared_ptr<ViewEpoch> epoch = std::make_shared<ViewEpoch>();
   size_t position = 0;
@@ -29,6 +30,28 @@ struct SessionState {
   bool valid = true;
   bool overwrites = false;
   CacheStats stats;
+  // Shrinking never allocates, so lease destruction can return uncommitted
+  // pages.
+  void releaseTail(size_t position) noexcept {
+    if (!spec.page_tokens)
+      return;
+    const size_t keep = position ? 1 + (position - 1) / spec.page_tokens : 0;
+    for (size_t i = 0; i < spec.layers.size(); ++i) {
+      const auto &s = spec.layers[i];
+      const size_t stride = 1 + (s.max_tokens - 1) / spec.page_tokens;
+      for (size_t b = 0; b < s.batch; ++b)
+        for (size_t p = keep;
+             p < stride && b * stride + p < key_pages[i].size(); ++p) {
+          const size_t index = b * stride + p;
+          if (key_pages[i][index]) {
+            const size_t bytes = key_pages[i][index]->bytes();
+            stats.backing_bytes -= 2 * ((bytes + 63) & ~size_t{63});
+            key_pages[i][index].reset();
+            value_pages[i][index].reset();
+          }
+        }
+    }
+  }
 };
 
 void KvView::validate(bool write) const {
@@ -72,6 +95,7 @@ void StepLease::abort() noexcept {
   if (state_ && state_->epoch->active_step == id_) {
     if (state_->overwrites)
       state_->valid = false;
+    state_->releaseTail(state_->position);
     state_->epoch->active_step = 0;
     ++state_->epoch->generation;
   }
@@ -84,14 +108,19 @@ KvCacheManager::KvCacheManager() = default;
 KvCacheManager::~KvCacheManager() = default;
 
 void KvCacheManager::initialize(const CacheSpec &spec,
-                                std::shared_ptr<MemAllocator> allocator) {
+                                std::shared_ptr<MemAllocator> allocator,
+                                std::shared_ptr<KvPagePool> page_pool) {
   const auto bytes = spec.validate();
   if (state_ && state_->epoch->active_step)
     throw std::logic_error("KV step is in flight");
   auto next = std::make_shared<SessionState>();
   next->spec = spec;
   next->stats.backing_bytes = spec.page_tokens ? 0 : bytes;
-  next->allocator = allocator;
+  if (page_pool && !spec.page_tokens)
+    throw std::invalid_argument("Page pool requires paged KV geometry");
+  if (spec.page_tokens)
+    next->pool = page_pool ? std::move(page_pool)
+                           : std::make_shared<KvPagePool>(0, allocator);
   next->key_pages.resize(spec.layers.size());
   next->value_pages.resize(spec.layers.size());
   for (const auto &s : spec.layers) {
@@ -147,8 +176,8 @@ StepLease KvCacheManager::beginStep(size_t count) {
         for (size_t p = 0; p < pages; ++p) {
           const size_t index = b * stride + p;
           if (!keys[i][index]) {
-            keys[i][index] = KvStorage::create(page_bytes, state_->allocator);
-            values[i][index] = KvStorage::create(page_bytes, state_->allocator);
+            keys[i][index] = state_->pool->acquire(page_bytes);
+            values[i][index] = state_->pool->acquire(page_bytes);
             backing = checkedAdd(backing, checkedMultiply(aligned, 2));
           }
         }
@@ -250,6 +279,27 @@ std::vector<KvView> KvCacheManager::readValue(const StepLease &step, size_t l,
   return views(step, l, b, false, false);
 }
 
+void KvCacheManager::append(const StepLease &step, size_t layer,
+                            const void *keys, const void *values, size_t bytes,
+                            size_t batch) {
+  checkStep(step);
+  if (!keys || !values ||
+      bytes !=
+        checkedMultiply(step.to() - step.from(), layerSpec(layer).rowBytes()))
+    throw std::invalid_argument("KV append shape or pointer is invalid");
+  auto key_views = writeKey(step, layer, batch);
+  auto value_views = writeValue(step, layer, batch);
+  size_t offset = 0;
+  for (size_t i = 0; i < key_views.size(); ++i) {
+    const size_t count = key_views[i].sizeBytes();
+    std::memcpy(key_views[i].writableData(),
+                static_cast<const char *>(keys) + offset, count);
+    std::memcpy(value_views[i].writableData(),
+                static_cast<const char *>(values) + offset, count);
+    offset += count;
+  }
+}
+
 void KvCacheManager::markReady(const StepLease &step, size_t layer) {
   checkStep(step);
   if (state_->spec.layers.at(layer).source >= 0 ||
@@ -296,6 +346,7 @@ void KvCacheManager::setPosition(size_t position) {
     throw std::out_of_range("KV position exceeds capacity");
   if (state_->spec.page_tokens && position > state_->position)
     throw std::logic_error("Cannot seek beyond committed paged KV");
+  state_->releaseTail(position);
   state_->position = position;
   ++state_->epoch->generation;
 }
