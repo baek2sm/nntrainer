@@ -72,28 +72,6 @@ static unsigned int min_prefill_thr(unsigned int head_dim) {
 #endif
 }
 
-// Whether a device attention arm can run in this process: the OpenCL arm
-// (NNTR_MHA_GPU on the gpu engine, whose context is registered) or the CUDA
-// arm (NNTR_CUDA_ATTN on the cuda engine). False on the cpu engine, whatever
-// the env and the model properties say. Latched like the env gates it combines
-// (the engine is fixed for the process).
-static bool mha_device_attention_on() {
-  static const bool on = []() {
-    const std::string eng = nntr_engine_env();
-    if (eng == "cpu")
-      return false;
-    if (eng == "cuda")
-      return nntr_env_on("NNTR_CUDA_ATTN");
-#if defined(ENABLE_OPENCL)
-    return nntr_env_on("NNTR_MHA_GPU") &&
-           nntrainer::Engine::Global().isContextRegistered("gpu");
-#else
-    return false;
-#endif
-  }();
-  return on;
-}
-
 // Which HOST arm a decode step (M=1) takes when no device arm runs it.
 // ARM: the per-row path (the NEON compute_kcaches /
 // compute_fp16vcache_transposed kernels). The host flash path spends M=1 in a
@@ -903,6 +881,8 @@ mha_report_image_mirror_refused(size_t num_heads_KV, size_t head_dim,
 
 void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
 
+  runtime_config = RuntimeConfig::capture();
+
   NNTR_THROW_IF(context.getNumInputs() < 3 || context.getNumInputs() > 5,
                 std::invalid_argument)
     << "Multi head Attention layer needs 3, 4, or 5 inputs. "
@@ -1048,30 +1028,36 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
   // default keeps its historical all-half attention arithmetic. In this
   // profile K RoPE and V narrowing write their final values into the owned
   // cache slice directly, rather than narrowing K/V into staging tensors.
-  cpu_attention_fp32 = nntr_env_on("NNTR_CPU_ATTENTION_FP32");
+  cpu_attention_fp32 = runtime_config.cpu_attention_fp32;
   if (cpu_attention_fp32) {
     const auto fp32 = ml::train::TensorDim::DataType::FP32;
     const auto fp16 = ml::train::TensorDim::DataType::FP16;
     // mha_core is engine-neutral in the residency policy: an init context
     // stamped GPU may still execute this host path. NNTR_ENGINE selects the
     // runtime backend; getComputeEngineType() is not that execution decision.
-    NNTR_THROW_IF(nntr_engine_env() != "cpu" ||
-                    context.getExecutionMode() !=
-                      ml::train::ExecutionMode::INFERENCE ||
-                    query_dim.batch() != 1 || !use_external_cache || use_sink ||
-                    kv_int8 || kv_ring_cap || is_kv_ohwi_enabled() ||
-                    std::get<props::RopeTheta>(mha_core_props).get() <= 0.0f ||
-                    context.getActivationDataType() != fp32 ||
-                    input_dims[INOUT_INDEX::QUERY].getDataType() != fp32 ||
-                    input_dims[INOUT_INDEX::KEY].getDataType() != fp32 ||
-                    input_dims[INOUT_INDEX::VALUE].getDataType() != fp32 ||
-                    input_dims[3].getDataType() != fp16 ||
-                    input_dims[4].getDataType() != fp16,
-                  std::invalid_argument)
+    CpuAttentionProfile profile;
+    profile.cpu = runtime_config.cpu;
+    profile.inference =
+      context.getExecutionMode() == ml::train::ExecutionMode::INFERENCE;
+    profile.batch = query_dim.batch();
+    profile.external_cache = use_external_cache;
+    profile.sink = use_sink;
+    profile.int8_cache = kv_int8;
+    profile.ring = kv_ring_cap != 0;
+    profile.ohwi = is_kv_ohwi_enabled();
+    profile.rope = std::get<props::RopeTheta>(mha_core_props).get() > 0.0f;
+    profile.fp32_io = context.getActivationDataType() == fp32 &&
+                      input_dims[INOUT_INDEX::QUERY].getDataType() == fp32 &&
+                      input_dims[INOUT_INDEX::KEY].getDataType() == fp32 &&
+                      input_dims[INOUT_INDEX::VALUE].getDataType() == fp32;
+    profile.half_cache = use_external_cache &&
+                         input_dims[3].getDataType() == fp16 &&
+                         input_dims[4].getDataType() == fp16;
+    NNTR_THROW_IF(!supportsCpuAttentionFp32(profile), std::invalid_argument)
       << "NNTR_CPU_ATTENTION_FP32 requires batch-1 CPU inference with "
          "external-cache FP32 Q/K/V/O, RoPE, and linear FP16 KV storage "
          "without sink, INT8, or OHWI (layer="
-      << context.getName() << ", process_engine=" << nntr_engine_env()
+      << context.getName() << ", process_engine=" << runtime_config.engine
       << ", layer_engine=" << static_cast<int>(context.getComputeEngineType())
       << ", execution_mode=" << static_cast<int>(context.getExecutionMode())
       << ", batch=" << query_dim.batch() << ")";
@@ -1731,7 +1717,7 @@ bool MHACoreLayer::attention_fp32_on_device(
   ml::train::TensorDim &cache_value_dim,
   ml::train::TensorDim &cache_value_step_dim) {
   if (!use_gemm_attention || kv_int8 || use_sink ||
-      !mha_device_attention_on() || nntr_engine_env() == "cuda")
+      !runtime_config.device_attention || runtime_config.engine == "cuda")
     return false;
   auto svm_plane = [](const nntrainer::Tensor &t) {
     const auto md = t.getMemoryData();
@@ -2064,6 +2050,7 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     batch * cache_value_dim.getFeatureLen() +
       cacheRow(cache_index) * cache_value_dim.width(),
     true);
+
 
   // [rq-scalar-off] The SAME address, expressed as (stable base, scalar row
   // offset) instead of an offset-baked pointer.
@@ -3237,6 +3224,7 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     b_cache_value_step.copyData(value_step);
   }
 
+
   /// @todo replace step_size into input height
   unsigned int step_size = to - from;
   unsigned int cache_from = cache_index;
@@ -3601,7 +3589,7 @@ void MHACoreLayer::one_batch_incremental_forwarding(
       cache_to, num_heads_KV, head_dim, cache_key_dim.height());
     // Consumer read counters below describe their own work. Account for the
     // compatibility gather separately so a trace cannot hide this history copy.
-    if (nntr_env_on("NNTR_KV_CPU_TRACE") && nntr_engine_env() == "cpu")
+    if (runtime_config.cpu_trace)
       std::fprintf(
         stderr,
         "[kv-cpu-layout] operation=ohwi-gather history_copy_bytes=%zu\n",
@@ -3617,11 +3605,12 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   nntrainer::Tensor b_cached_value = cache_value.getSharedDataTensor(
     cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
 
+
   // Audit only the CPU profile whose final operations are RoPE/FP32->half
   // conversion into the cache. Other profiles must not inherit a zero-copy
   // claim (native half V append and OHWI gather still have compatibility
   // copies).
-  if (nntr_env_on("NNTR_KV_CPU_TRACE") && nntr_engine_env() == "cpu") {
+  if (runtime_config.cpu_trace) {
     const bool profile =
       use_rope && !kv_int8 && !kv_ohwi_read_active &&
       query_step.getDataType() == ml::train::TensorDim::DataType::FP32 &&
@@ -3657,8 +3646,8 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   // Optional flash GEMM attention path. Handles both non-causal (encoder)
   // and causal-prefill paths, supports GQA and sliding window. Gated on a
   // minimum prefill length. Decode (step_size == 1) enters it when a device
-  // attention arm can run (mha_device_attention_on()); with no device arm it
-  // takes the faster host arm for this platform
+  // attention arm can run (runtime_config.device_attention); with no device arm
+  // it takes the faster host arm for this platform
   // (host_decode_prefers_per_row(): the per-row dot path below on ARM).
   const unsigned int FLASH_MIN_PREFILL =
     min_prefill_thr((unsigned int)head_dim); // env NNTR_MIN_PREFILL
@@ -3686,7 +3675,8 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   // about the engine, so on a cpu-engine run it sent every decode step of
   // such a model to the HOST flash path. Without a device arm a decode step
   // now takes the platform's faster host arm instead.
-  const bool per_row_decode = step_size == 1 && !mha_device_attention_on() &&
+  const bool per_row_decode = step_size == 1 &&
+                              !runtime_config.device_attention &&
                               host_decode_prefers_per_row();
   if (use_gemm_attention && !per_row_decode &&
       (step_size >= FLASH_MIN_PREFILL || (_mha_gpu_decode && step_size == 1) ||
@@ -4515,7 +4505,7 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   mha_ring_assert_host_path_ok(kv_ring_cap, "host decode attention");
   mha_assert_host_readable(query_step, b_cached_key, b_cached_value,
                            attention_output_step, "host per-row attention");
-  if (nntr_env_on("NNTR_KV_CPU_TRACE") && nntr_engine_env() == "cpu")
+  if (runtime_config.cpu_trace)
     std::fprintf(stderr,
                  "[kv-cpu-read] consumer=per-row history_copy_bytes=0\n");
 #if defined(ENABLE_OPENCL)
@@ -4965,7 +4955,7 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
   const bool tiled_kv = false;
 #elif defined(__ARM_NEON)
   const bool direct_kv = false;
-  const bool tiled_kv = !kv_int8 && nntr_engine_env() == "cpu";
+  const bool tiled_kv = !kv_int8 && runtime_config.cpu_kv_tiled;
 #else
   const bool direct_kv = false;
   const bool tiled_kv = false;
@@ -4977,8 +4967,7 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
     Ka.resize((size_t)num_heads_KV * N_kv * d);
     Va.resize((size_t)num_heads_KV * N_kv * d);
   }
-  const bool trace_cpu =
-    nntr_env_on("NNTR_KV_CPU_TRACE") && nntr_engine_env() == "cpu";
+  const bool trace_cpu = runtime_config.cpu_trace;
   std::atomic<size_t> tile_pack_bytes{0}, tile_scratch_bytes{0};
   {
     if (q_fp16_to_fp32) {
@@ -5378,25 +5367,25 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
             ol[x] += pa[x];
         }
 #elif defined(__ARM_NEON)
-          nntrainer::neon::custom_hgemm(
-            reinterpret_cast<const __fp16 *>(Sp16.data()),
-            reinterpret_cast<const __fp16 *>(Vblock),
-            reinterpret_cast<__fp16 *>(Pacc16.data()), bq, d, bk, 1.0f, 0.0f,
-            /*TransA=*/false, /*TransB=*/false);
-          for (unsigned int i = 0; i < bq; ++i) {
-            float *ol = Ol.data() + (size_t)i * d;
-            const uint16_t *pa = Pacc16.data() + (size_t)i * d;
-            unsigned int x = 0;
-            for (; x + 8 <= d; x += 8) {
-              float16x8_t h = vreinterpretq_f16_u16(vld1q_u16(pa + x));
-              float32x4_t lo = vcvt_f32_f16(vget_low_f16(h));
-              float32x4_t hi = vcvt_f32_f16(vget_high_f16(h));
-              vst1q_f32(ol + x, vaddq_f32(vld1q_f32(ol + x), lo));
-              vst1q_f32(ol + x + 4, vaddq_f32(vld1q_f32(ol + x + 4), hi));
-            }
-            for (; x < d; ++x)
-              ol[x] += nntrainer::compute_fp16_to_fp32(pa[x]);
+        nntrainer::neon::custom_hgemm(
+          reinterpret_cast<const __fp16 *>(Sp16.data()),
+          reinterpret_cast<const __fp16 *>(Vblock),
+          reinterpret_cast<__fp16 *>(Pacc16.data()), bq, d, bk, 1.0f, 0.0f,
+          /*TransA=*/false, /*TransB=*/false);
+        for (unsigned int i = 0; i < bq; ++i) {
+          float *ol = Ol.data() + (size_t)i * d;
+          const uint16_t *pa = Pacc16.data() + (size_t)i * d;
+          unsigned int x = 0;
+          for (; x + 8 <= d; x += 8) {
+            float16x8_t h = vreinterpretq_f16_u16(vld1q_u16(pa + x));
+            float32x4_t lo = vcvt_f32_f16(vget_low_f16(h));
+            float32x4_t hi = vcvt_f32_f16(vget_high_f16(h));
+            vst1q_f32(ol + x, vaddq_f32(vld1q_f32(ol + x), lo));
+            vst1q_f32(ol + x + 4, vaddq_f32(vld1q_f32(ol + x + 4), hi));
           }
+          for (; x < d; ++x)
+            ol[x] += nntrainer::compute_fp16_to_fp32(pa[x]);
+        }
 #else
         nntrainer::sgemm(order, false, false, bq, d, bk, 1.0f, S.data(), bk,
                          Vblock, d, 0.0f, Pacc.data(), d);
@@ -5499,6 +5488,7 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     batch * cache_value_dim.getFeatureLen() + from * cache_value_dim.width(),
     true);
 
+
   apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, true);
 
   apply_rotary_emb_tensor_v2(key_step, b_cache_key_step, head_dim, _from, true);
@@ -5514,6 +5504,7 @@ void MHACoreLayer::one_batch_incremental_forwarding(
 #endif
   }
 
+
   ml::train::TensorDim cached_key_dim = cache_key_dim;
   ml::train::TensorDim cached_value_dim = cache_value_dim;
   // [kv-window-ring] No clamp here: this is the attention-sink overload, and
@@ -5527,6 +5518,7 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     cached_key_dim, batch * cache_key_dim.getFeatureLen(), true);
   nntrainer::Tensor b_cached_value = cache_value.getSharedDataTensor(
     cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
+
 
   // skip_prefill (see the non-sink overload above): K/V are written into the
   // cache; skip the unused prefill attention compute + output write. The

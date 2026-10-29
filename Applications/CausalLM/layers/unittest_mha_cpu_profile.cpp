@@ -166,9 +166,17 @@ TEST_F(MHACpuProfile, AcceptsEngineNeutralResidencyContext) {
   EXPECT_NO_THROW(finalize(p));
 }
 
-TEST_F(MHACpuProfile, RejectsNonCpuProcess) {
-  ScopedEnv gpu("NNTR_ENGINE", "gpu");
-  rejected(Profile{});
+TEST_F(MHACpuProfile, UnavailableBackendUsesCpuFallback) {
+  ScopedEnv unavailable("NNTR_ENGINE", "unregistered-profile-backend");
+  EXPECT_NO_THROW(finalize(Profile{}));
+}
+
+TEST_F(MHACpuProfile, UnsetEngineUsesRegisteredCpuRuntime) {
+  ScopedEnv unset("NNTR_ENGINE", nullptr);
+  if (causallm::runtimeEngine() == "cpu")
+    EXPECT_NO_THROW(finalize(Profile{}));
+  else
+    rejected(Profile{});
 }
 
 TEST_F(MHACpuProfile, RejectsHalfQuery) {

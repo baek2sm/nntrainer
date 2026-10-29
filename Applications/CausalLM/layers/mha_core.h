@@ -39,6 +39,7 @@
 #include <cpu_backend.h>
 #include <layer_impl.h>
 #include <limits.h>
+#include <runtime_config.h>
 #include <util_simd.h>
 
 #include <map>
@@ -564,6 +565,8 @@ private:
    * producer profile. Validated once in finalize(); the default retains the
    * legacy Android all-half attention arithmetic. */
   bool cpu_attention_fp32 = false;
+  /** Backend and CPU feature snapshot refreshed by finalize, not per step. */
+  RuntimeConfig runtime_config;
 
   /** intermal info */
   size_t num_heads_Q;

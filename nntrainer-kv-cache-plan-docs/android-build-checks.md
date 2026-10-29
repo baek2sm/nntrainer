@@ -222,3 +222,59 @@ done
 잘못된 context guard가 있던 중간 80개는
 `checks/history/final-verified-context-guarded/final-verified.validation.json`과
 인접 XML·로그에 별도 보존했다. 최종 결과는 `final-cpu.*`만 가리킨다.
+
+## 2026-10-29 리뷰 반영: runtime 선택과 opt-in 기본값
+
+위 `final-cpu` 기록은 2026-10-28에 고정한 runtime의 결과다. 이후 리뷰에서 Android
+CPU 변경의 기본 동작 범위를 줄이고 engine 판정을 통합했다. 새 빌드에서는 다음 값을
+명시한다. 모델·기기 회귀 결과는 해당 source/runtime hash로 별도 기록한다.
+
+| 옵션 | 기본값 | 활성화 효과 |
+|---|---|---|
+| `NNTR_CPU_ATTENTION_FP32` | `0` | 지원되는 CPU external-cache profile에서 Q/K/V/O를 FP32로 유지 |
+| `NNTR_CPU_KV_TILED` | `0` | ARM CPU flash가 전체 Ka/Va history 대신 bounded K/V tile을 pack |
+| `NNTR_CPU_KV_LEGACY` | `0` | 비교·회귀 검증을 위해 기존 CPU facade allocation 경로 선택 |
+| `NNTR_KV_CPU_TRACE` | `0` | 선택된 CPU runtime의 allocation/access/history·tile copy 증거 출력 |
+
+FP32와 tiled 옵션은 독립적이며 `=0`으로 명시적으로 끌 수 있다. 두 옵션을 모두
+설정하지 않은 Android CPU는 기존 half attention과 full-history packing을 유지한다.
+따라서 trace의 `flash-packed`는 실제 Ka/Va 복사량을 `history_copy_bytes`로 보고한다.
+`tiled=1`일 때만 `flash-tiled`, `history_copy_bytes=0`, 실제 `tile_pack_bytes`와
+worker별 `tile_scratch_bytes`를 보고한다. full-history copy와 bounded kernel scratch를
+하나의 zero-copy 수치로 합치지 않는다.
+
+`runtime_config.h`의 공통 선택 함수는 `NNTR_ENGINE`의 대소문자를 정규화하고 live
+context registry로 backend를 확인한다. 명시한 backend가 등록되어 있으면 사용하고,
+미등록이면 core `Engine::parseComputeEngine`과 같이 CPU로 fallback한다. 변수가 unset이면
+등록된 GPU, CUDA, CPU 순서로 선택한다. CPU-only 환경의 unset과 명시적 `cpu`는
+동일한 engine, cache allocation, FP32 승인 정책과 trace를 사용한다. `llm_util.hpp`,
+KV facade allocation, MHA finalize가 이 함수를 공유한다.
+
+MHA는 finalize에서 engine과 CPU trace/FP32/tiled/device-attention 설정을 snapshot으로
+보존한다. 실행 중인 각 layer/step은 같은 결정을 사용하며 반복적인 env/string 판정을
+피한다. 새 객체 또는 재finalize는 env를 다시 읽으므로 서로 다른 설정을 같은 test
+process에서 비교해도 process-static cache의 첫 값에 묶이지 않는다. engine-neutral
+context의 GPU residency stamp는 여전히 CPU 실행을 거절하는 기준이 아니다.
+
+공통 admission 정책은 Android macro 밖의 순수 함수로 추출했다.
+`test/unittest/meson.build`의 `unittest_causallm_runtime`은 transformer/app 활성화와
+독립적으로 등록되며 engine 선택, 옵션 기본값·독립성·snapshot, FP32 profile의
+승인·거부를 **Linux 23개 실제 test**로 검증한다. 로컬 executable 직접 실행은 exit `0`,
+23 PASS였고 source hash·XML·stdout·compile log는
+`build-kv-cpu/validation/review-runtime-policy/validation.json`과 인접 파일에 보존했다. Meson runner는 출력에 모든 PASS가
+있어도 subprocess 종료를 기다리다 timeout되는 로컬 현상이 있어, runner 성공으로
+기록하지 않는다. Android 전용 finalize suite는 unset CPU case를 추가해 16개다.
+
+기존 facade fixture의 공통 20개를 legacy allocation에서도 실행하도록 Meson에
+`unittest_kv_cache_manager_legacy`를 등록했다. 기본 CPU-core 실행은
+`NNTR_CPU_KV_LEGACY=0`, legacy 실행은 `=1`을 고정하며 core-only transaction case는
+legacy 호출에서 제외한다. 추가한 두 CI target은 fake SKIP에 의존하지 않는다.
+
+```bash
+ninja -C build-kv-cpu test/unittest/unittest_causallm_runtime \
+  Applications/CausalLM/unittest_kv_cache_manager
+build-kv-cpu/test/unittest/unittest_causallm_runtime
+NNTR_ENGINE=cpu NNTR_CPU_KV_LEGACY=1 \
+  build-kv-cpu/Applications/CausalLM/unittest_kv_cache_manager \
+  '--gtest_filter=-*.cpu_*:KVCacheManagerCpu.*:*.active_step*'
+```

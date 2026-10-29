@@ -23,6 +23,7 @@
 #include <env_compat.h>
 #include <mem_allocator.h>
 #include <nntrainer_log.h>
+#include <runtime_config.h>
 
 #if defined(ENABLE_CUDA) && ENABLE_CUDA == 1
 #include <cuda_context_manager.h>
@@ -74,11 +75,9 @@ void KVCacheManager::allocate(unsigned int num_layers, unsigned int batch_size,
     }
   }
 
-  const auto selected = nntr_engine_env();
-  const bool cpu = selected == "cpu" ||
-                   (selected.empty() &&
-                    !nntrainer::Engine::Global().isContextRegistered("gpu") &&
-                    !nntrainer::Engine::Global().isContextRegistered("cuda"));
+  const auto runtime = RuntimeConfig::capture();
+  const auto &selected = runtime.engine;
+  const bool cpu = runtime.cpu && !runtime.cpu_kv_legacy;
   if (cpu) {
     allocateCpu(num_layers, batch_size, max_seq_len, kv_widths, dtype, format,
                 kv_heads);
@@ -141,9 +140,9 @@ void KVCacheManager::allocate(unsigned int num_layers, unsigned int batch_size,
   // cache.
   std::shared_ptr<nntrainer::MemAllocator> svm_alloc;
   const char *_svm_pool_env = std::getenv("NNTR_GPU_SVM_POOL");
-  const std::string _eng = nntr_engine_env();
+  const std::string &_eng = selected;
   const bool svm_pool_on = !_svm_pool_env || std::atoi(_svm_pool_env) != 0;
-  const bool gpu_engine = _eng != "cpu" && _eng != "cuda";
+  const bool gpu_engine = _eng == "gpu";
   if (svm_pool_on && gpu_engine) {
     auto allocs = nntrainer::Engine::Global().getAllocators();
     auto it = allocs.find("gpu");
@@ -172,7 +171,7 @@ void KVCacheManager::allocate(unsigned int num_layers, unsigned int batch_size,
   // cuda::device_memset0/copy_any. Falls back to the UVM path if the cuda
   // engine is not registered. Takes precedence over NNTR_CUDA_KV_UVM.
   const char *kv_dev = std::getenv("NNTR_CUDA_KV_DEV");
-  if (!svm_alloc && kv_dev != nullptr && kv_dev[0] == '1') {
+  if (_eng == "cuda" && !svm_alloc && kv_dev != nullptr && kv_dev[0] == '1') {
     auto allocs = nntrainer::Engine::Global().getAllocators();
     if (allocs.find("cuda") != allocs.end()) {
       svm_alloc =
@@ -181,7 +180,7 @@ void KVCacheManager::allocate(unsigned int num_layers, unsigned int batch_size,
   }
 
   const char *kv_uvm = std::getenv("NNTR_CUDA_KV_UVM");
-  if (!svm_alloc && kv_uvm != nullptr && kv_uvm[0] != '0') {
+  if (_eng == "cuda" && !svm_alloc && kv_uvm != nullptr && kv_uvm[0] != '0') {
     auto allocs = nntrainer::Engine::Global().getAllocators();
     auto it = allocs.find("cuda");
     if (it != allocs.end() && it->second &&

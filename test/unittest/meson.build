@@ -158,6 +158,23 @@ foreach target: test_target
   )
 endforeach
 
+# CPU attention admission and engine/option policy are pure host contracts.
+# Build these even when the CausalLM application / transformer is disabled.
+causallm_runtime_test = executable(
+  'unittest_causallm_runtime',
+  'unittest_causallm_runtime.cpp',
+  include_directories: include_directories('../../Applications/CausalLM'),
+  dependencies: nntrainer_test_main_deps,
+  install: get_option('enable-test'),
+  install_dir: application_install_dir
+)
+test('unittest_causallm_runtime', causallm_runtime_test,
+  args: ['--gtest_output=xml:@0@/@1@.xml'.format(
+    meson.build_root(), 'unittest_causallm_runtime')],
+  timeout: test_timeout,
+  suite: 'unittests'
+)
+
 # CUDA kernel unittests (the CUDA analogue of the OpenCL kernel tests above).
 # Standalone targets: the shared loop cannot add per-target dependencies, and
 # these need cuda_dep (cuda_runtime.h + cudart for the managed buffers they
