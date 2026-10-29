@@ -3,6 +3,9 @@
 > Linux 실행 기록: [환경 검토와 단계별 검증](linux-cpu-execution.md).
 > Android 실행 기록: [빌드와 단위 검증](android-build-checks.md),
 > [Qwen3 실기기 검증과 동일 CPU allocation 접근 범위](android-cpu-validation.md).
+> 리뷰 후속: [안전장치·CI 보강](review-followup.md), [성능 측정](cpu-performance.md),
+> [다음 backend 조사](next-backend-review.md).
+> 일반 환경 재현 절차는 [CPU KV 검증 안내](../docs/kv-cache-cpu-validation.md)를 참고한다.
 > 현재 사용자 확정 순서는 **Linux CPU → Android Arm CPU → 이후 추후 결정**이다.
 > 아래 Windows 분석 당시 로드맵과 실제 실행 결과를 구분한다.
 

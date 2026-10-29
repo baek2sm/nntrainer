@@ -261,9 +261,12 @@ context의 GPU residency stamp는 여전히 CPU 실행을 거절하는 기준이
 독립적으로 등록되며 engine 선택, 옵션 기본값·독립성·snapshot, FP32 profile의
 승인·거부를 **Linux 23개 실제 test**로 검증한다. 로컬 executable 직접 실행은 exit `0`,
 23 PASS였고 source hash·XML·stdout·compile log는
-`build-kv-cpu/validation/review-runtime-policy/validation.json`과 인접 파일에 보존했다. Meson runner는 출력에 모든 PASS가
-있어도 subprocess 종료를 기다리다 timeout되는 로컬 현상이 있어, runner 성공으로
-기록하지 않는다. Android 전용 finalize suite는 unset CPU case를 추가해 16개다.
+`build-kv-cpu/validation/review-runtime-policy/validation.json`과 인접 파일에 보존했다.
+Sandbox 안의 Meson runner는 PASS 출력 후 subprocess 종료를 기다리다 timeout되었으나,
+정상 환경에서 같은 `unittest_causallm_runtime`과 legacy facade target을 함께 실행해
+**23 + 20 PASS, Meson exit 0**을 확인했다. 실행기 현상을 CI 정책 테스트 실패와
+구분한다. 정상 runner 로그도 `review-runtime-policy/meson-unsandboxed.log`에 보존한다.
+Android 전용 finalize suite는 unset CPU case를 추가해 16개다.
 
 기존 facade fixture의 공통 20개를 legacy allocation에서도 실행하도록 Meson에
 `unittest_kv_cache_manager_legacy`를 등록했다. 기본 CPU-core 실행은
@@ -278,3 +281,67 @@ NNTR_ENGINE=cpu NNTR_CPU_KV_LEGACY=1 \
   build-kv-cpu/Applications/CausalLM/unittest_kv_cache_manager \
   '--gtest_filter=-*.cpu_*:KVCacheManagerCpu.*:*.active_step*'
 ```
+
+
+## 2026-10-29 최종 candidate의 native 85 + 실제 graph 7
+
+성능 비교에 사용한 고정 runtime
+`build-kv-perf/runtime/android-candidate/`와 동일한 네 library로 `bacd420f`에서
+최종 경계 검증을 실행했다. production source 9개의 hash가 candidate `build.json`과
+일치하고, 기기에 배포한 library 및 executable hash도 로컬과 일치한다.
+
+```text
+libnntrainer.so SHA256:
+37d5d8cfb4b6adf41ed3cea19a822c7981a441e3d45055fdd969c1e941f99d1a
+libcausallm.so SHA256:
+80657e37ed93d97908443d7ace29c2be679a5ce4ad3de9bd5c5964cf12b32ea4
+```
+
+| 기기 검증 그룹 | 결과 |
+|---|---|
+| native core | 22 PASS |
+| native facade | 25 PASS |
+| native ring | 22 PASS |
+| native MHA profile | 16 PASS |
+| native 소계 | **85 PASS** |
+| 실제 Qwen graph 경계 | 5 PASS |
+| 실제 LFM2 hybrid graph 및 logits pool | 2 PASS |
+| actual graph 소계 | **7 PASS** |
+| 합계 | **92 PASS, 0 FAIL, 0 SKIP** |
+
+다섯 executable 호출 모두 exit `0`이며 error·disabled도 `0`이다. host pure policy
+23개와 legacy facade 20개는 별도 결과이며 위 native 92개에 더하지 않는다.
+
+Qwen graph는 capacity까지 commit/reset 반복, 실행되지 않은 선언 producer 때문에
+commit 거절, foreign K/V의 write 이전 거절, 잘못된 interval 후 정상 실행 복구를
+검증했다. LFM2 graph는 attention+conv 경로의 producer 선언, 연속 decode,
+logits pool 재사용과 overflow 시 position·이전 logits 보존을 검증했다.
+실제 model wrapper와 MHA hook을 호출하는 fixture를 사용했으며 기존 raw graph helper의
+숫자 비교만으로 대체하지 않았다. Android broad golden 전체는 실행하지 않았다.
+
+NDK model target을 기존과 같은 j4 옵션으로 빌드한 뒤 아래 filter만 사용했다.
+환경은 `NNTR_ENGINE=cpu`, `NNTR_CPU_KV_LEGACY=0`,
+`NNTR_CPU_ATTENTION_FP32=0`, `NNTR_CPU_KV_TILED=0`, `NNTR_KV_CPU_TRACE=0`으로 고정했고,
+각 test의 scoped-env override는 fixture가 복구한다. `TMPDIR`와 `LD_LIBRARY_PATH`는
+모두 `/data/local/tmp/nntr_kv_cpu_bacd420f/checks`다.
+
+```bash
+ANDROID_NDK=/opt/android-ndk-r28c /opt/android-ndk-r28c/ndk-build \
+  -C Applications/CausalLM/jni NDK_PROJECT_PATH=. NDK_LIBS_OUT=./libs \
+  NDK_OUT=./obj APP_BUILD_SCRIPT=./Android.mk \
+  NDK_APPLICATION_MK=./Application.mk \
+  CAUSALLM_PREBUILT_LIB=../../../builddir_app/cpu/libcausallm.so \
+  unittest_causallm_models -j4
+# 기기의 checks 경로에서 해당 환경으로 실행한 model filter:
+./unittest_causallm_models \
+  '--gtest_filter=*QwenCpuKVGraphTest*:*Lfm2CpuKVGraphTest*' \
+  --gtest_output=xml:review-final.actual-graph.xml
+```
+
+증거는 `build-kv-android/validation/checks/`의
+`review-final.native.validation.json`(85), `review-final.actual-graph.validation.json`(7),
+`review-final.validation.json`(합계), `review-final.device.sha256.txt`,
+각 `review-final.*.xml/.log`에 있다. manifest에는 실제 test count·exit code,
+source/fixture/runtime/executable/device hash, XML·log hash와 ADB 명령을 기록했다.
+NDK 준비 기록은 `review-candidate.build.json`, `review-candidate.ndk-build.log`,
+`review-final.model-ndk-build.log`에 있다. 이전 단계의 모든 기록은 보존했다.

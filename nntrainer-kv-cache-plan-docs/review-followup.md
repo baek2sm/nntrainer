@@ -78,3 +78,41 @@ All three are local, independent single-commit branches based on main. No PRs
 were published and the user's development history was not rewritten. The
 separate Gemma document remains with its dedicated review branch; the combined
 development branch retains history and is not the proposed upstream PR payload.
+
+## Final local verification and remaining limits
+
+The same frozen candidate passed 85 Android native cases and seven actual-graph
+cases (all exit0, no failures/skips). Linux passed the seven Meson targets above.
+Natural-output Qwen comparisons passed eight Linux and 24 Android cases, with
+identical tokens, all logits and snapshot continuations for each matching
+arithmetic profile. Packed cases are compatibility reads with history copying;
+FP32 per-row/tiled supported profiles retain their separately audited scope.
+
+Ten fixed-work Q4 benchmark processes completed 50 measured trials and ten
+warmups at context1K/4K, plane128/chunk128, four compute threads and one BLAS
+thread. Linux stayed within the 5% latency budget. Android1K did too, while
+the first cold-to-hot4K comparison exceeded it; a heated reverse comparison
+did not reproduce that regression. Both results are retained. Experimental
+tiled4K had lower observed latency and peak process memory, but its different
+thermal starting point prevents a speedup claim. Default packing remains the
+previous implementation; tiled stays opt-in. Unchunked4K and FP32-weight
+performance are not measured by this run.
+
+The first Linux candidate snapshot accidentally selected an old application
+library from a preserved validation directory. Its eight initialization errors
+are preserved. A Meson-target-only freeze corrected the ABI mismatch, and the
+new reusable freezer rejects collisions, missing targets and snapshot overwrite.
+No model-conversion or encoding-design change was needed.
+
+Detailed results/commands are in [cpu-performance.md](cpu-performance.md),
+[android-build-checks.md](android-build-checks.md) and the portable procedure.
+Changed-line clang-format14, level1 Doxygen, Python syntax and Python E/F/W
+checks pass locally. Full GitHub platform builds, CodeQL, GPU/NPU execution and
+CPU/GPU physical-sharing validation have not been performed.
+
+The query-only device probe found Adreno750/OpenCL3.0 and SVM0xB (coarse/fine
+buffer and atomics, no fine-grain system pointers). QNN SDK/runtime files exist.
+OpenCL/SVM is the proposed next backend: first verify allocation granularity,
+map/fence policy and CPU/GPU handoff on one explicitly owned allocation. This
+selection is not a claim that current host malloc or existing KV storage can
+already be shared with the GPU. See [next-backend-review.md](next-backend-review.md).
