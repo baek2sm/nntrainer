@@ -302,6 +302,7 @@ void KVCacheManager::allocateCpu(
   if ((!heads.empty() && heads.size() != num_layers) ||
       (!layer_caps_.empty() && layer_caps_.size() != num_layers) ||
       (!layer_kv_sources_.empty() && layer_kv_sources_.size() != num_layers) ||
+      (!layer_producers_.empty() && layer_producers_.size() != num_layers) ||
       (dtype != DataType::FP32 && dtype != DataType::FP16 &&
        dtype != DataType::UINT16))
     throw std::invalid_argument("Unsupported CPU KV geometry or storage type");
@@ -313,6 +314,10 @@ void KVCacheManager::allocateCpu(
     s.max_tokens = max_seq_len;
     s.capacity =
       i < layer_caps_.size() && layer_caps_[i] ? layer_caps_[i] : max_seq_len;
+    if (s.capacity != max_seq_len)
+      throw std::invalid_argument("CPU CausalLM requires linear KV storage; "
+                                  "ring attention is unsupported");
+    s.has_producer = layer_producers_.empty() || layer_producers_[i];
     s.num_kv_heads = heads.empty() ? 1 : heads[i];
     if (!s.num_kv_heads || widths[i] % s.num_kv_heads)
       throw std::invalid_argument("KV width is not divisible by head count");
@@ -376,11 +381,8 @@ nntrainer::kv::StepLease KVCacheManager::beginStep(unsigned int from,
 void KVCacheManager::commitStep(nntrainer::kv::StepLease &&step) {
   if (!cpu_cache_)
     throw std::logic_error("CPU KV storage is not initialized");
-  // The synchronous graph completed. Hybrid blocks without attention have no
-  // producer; their compatibility allocation is retained but never consumed.
-  for (unsigned int i = 0; i < getNumLayers(); ++i)
-    if (!isLayerKVAliased(i))
-      cpu_cache_->markReady(step, i);
+  // Actual MHA producers mark their own checked write views ready. A skipped
+  // or failed producer must make commit fail, even if the graph returns.
   cpu_cache_->commit(std::move(step));
 }
 

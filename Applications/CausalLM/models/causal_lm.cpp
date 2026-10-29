@@ -90,7 +90,7 @@ void clLaunchStatDump(const char *phase);
 #include <cuda_context_manager.h>
 #include <cuda_elementwise.h>
 #include <cuda_emb_gather.h> // [reload] gather LUT teardown
-#include <cuda_fc_qs4cx.h> // [lmhead-tie-lut] tied-head LUT registration
+#include <cuda_fc_qs4cx.h>   // [lmhead-tie-lut] tied-head LUT registration
 #include <cuda_runtime.h>
 #include <cuda_stream_manager.h>
 #endif
@@ -422,6 +422,10 @@ void CausalLM::allocateAndBindKVCache() {
     for (int i = 0; i < NUM_LAYERS; ++i)
       layer_caps[static_cast<size_t>(i)] = getKVCacheRows(i);
     kv_cache.setLayerCaps(layer_caps);
+    std::vector<bool> producers;
+    for (int i = 0; i < NUM_LAYERS; ++i)
+      producers.push_back(hasKVCacheProducer(i));
+    kv_cache.setLayerProducers(std::move(producers));
 
     // Model hooks supply width and head count, including variable geometry.
     // The CPU core keeps the actual KV heads without expanding GQA storage;
@@ -623,13 +627,14 @@ std::vector<float *> CausalLM::incrementalInference(
     }
   }
 
-  // The core owns the committed CPU position. Each layer derives its working
-  // cursor from this same absolute interval in incremental_forwarding(). The
-  // move-only lease aborts on a graph exception; a ring overwrite invalidates
-  // the session rather than pretending its old prefix can be rolled back.
+  // Bind this graph invocation to checked core views. MHA validates its actual
+  // Tensor slices and publishes readiness after K and V have been produced.
   std::optional<nntrainer::kv::StepLease> cpu_step;
-  if (kv_cache.usesCpuStorage())
+  std::unique_ptr<nntrainer::kv::KvStepScope> cpu_scope;
+  if (kv_cache.usesCpuStorage()) {
     cpu_step.emplace(kv_cache.beginStep(from, to));
+    cpu_scope = kv_cache.bindStep(*cpu_step);
+  }
   nntrainer::sharedConstTensors output_tensors =
     nn->incremental_inference(input_tensors, init_seq_len, from, to);
   if (cpu_step)

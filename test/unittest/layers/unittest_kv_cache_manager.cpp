@@ -29,6 +29,26 @@ std::string snapshotPath(const char *name) {
   return std::string(tmp && *tmp ? tmp : ".") + "/" + name;
 }
 
+// Simulate synchronous producers through the same checked adapter MHA uses.
+void completeCpuProducers(causallm::KVCacheManager &manager,
+                          const nntrainer::kv::StepLease &step) {
+  auto scope = manager.bindStep(step);
+  for (unsigned int i = 0; i < manager.getNumLayers(); ++i) {
+    if (manager.isLayerKVAliased(i))
+      continue;
+    auto access = nntrainer::kv::KvStepScope::access(
+      manager.getKeyCache(i).getData<char>(),
+      manager.getValueCache(i).getData<char>(), 0, step.from(), step.to());
+    auto key = manager.getKeyCacheWriteView(i, 0, step.to() - step.from());
+    auto value = manager.getValueCacheWriteView(i, 0, step.to() - step.from());
+    access->validateWrite(key.getData<char>(), value.getData<char>(),
+                          key.bytes());
+    key.setZero();
+    value.setZero();
+    access->producerReady();
+  }
+}
+
 } // namespace
 
 /**
@@ -442,15 +462,19 @@ TEST(KVCacheManagerShare, no_declaration_means_no_aliasing) {
 }
 
 TEST_F(KVCacheManagerTest, cpu_step_publishes_position_and_views_use_it) {
+  manager.allocate(NUM_LAYERS, 1, MAX_SEQ_LEN, NUM_HEADS_KV, HEAD_DIM,
+                   ml::train::TensorDim::DataType::FP32);
   ASSERT_TRUE(manager.usesCpuStorage());
   auto step = manager.beginStep(0, 3);
   EXPECT_EQ(manager.getPosition(), 0u);
   EXPECT_THROW(manager.beginStep(0, 1), std::logic_error);
+  EXPECT_THROW(manager.commitStep(std::move(step)), std::logic_error);
+  completeCpuProducers(manager, step);
   manager.commitStep(std::move(step));
   EXPECT_EQ(manager.getPosition(), 3u);
-  auto view = manager.getKeyCacheWriteView(0, 1, 1);
-  EXPECT_EQ(view.getData<float>(), manager.getKeyCache(0).getData<float>() +
-                                     MAX_SEQ_LEN * KV_WIDTH + 3 * KV_WIDTH);
+  auto view = manager.getKeyCacheWriteView(0, 0, 1);
+  EXPECT_EQ(view.getData<float>(),
+            manager.getKeyCache(0).getData<float>() + 3 * KV_WIDTH);
   EXPECT_THROW(manager.beginStep(2, 4), std::logic_error);
 }
 
@@ -478,25 +502,24 @@ TEST_F(KVCacheManagerTest, cpu_bounds_reject_batch_overflow_and_bad_geometry) {
                std::invalid_argument);
 }
 
-TEST(KVCacheManagerCpu, ring_abort_invalidates_and_legacy_view_rejects_seam) {
+TEST(KVCacheManagerCpu, ring_is_rejected_before_graph_binding) {
   causallm::KVCacheManager m;
   m.setLayerCaps({4});
+  EXPECT_THROW(m.allocate(1, 1, 16, 1, 4, ml::train::TensorDim::DataType::FP32),
+               std::invalid_argument);
+  m.setLayerCaps({});
   m.allocate(1, 1, 16, 1, 4, ml::train::TensorDim::DataType::FP32);
-  m.setPosition(3);
-  EXPECT_THROW(m.getKeyCacheWriteView(0, 0, 2), std::out_of_range);
-  EXPECT_THROW(m.getValueCacheReadView(0, 0, 5), std::out_of_range);
-  { auto step = m.beginStep(3, 5); }
-  EXPECT_THROW(m.beginStep(3, 4), std::logic_error);
-  const auto path = snapshotPath("kv_invalid_snapshot.bin");
-  EXPECT_THROW(m.save(path), std::logic_error);
-  EXPECT_THROW(m.load(path, 0), std::logic_error);
+  { auto step = m.beginStep(0, 2); }
   m.reset();
   auto step = m.beginStep(0, 2);
+  completeCpuProducers(m, step);
   m.commitStep(std::move(step));
   EXPECT_EQ(m.getPosition(), 2u);
 }
 
 TEST_F(KVCacheManagerTest, active_step_rejects_reallocation_and_snapshot) {
+  manager.allocate(NUM_LAYERS, 1, MAX_SEQ_LEN, NUM_HEADS_KV, HEAD_DIM,
+                   ml::train::TensorDim::DataType::FP32);
   const auto memory = manager.getKeyCache(0).getMemoryData();
   auto step = manager.beginStep(0, 2);
   causallm::KVCacheManager uninitialized;
@@ -508,6 +531,7 @@ TEST_F(KVCacheManagerTest, active_step_rejects_reallocation_and_snapshot) {
   EXPECT_THROW(manager.save(path), std::logic_error);
   EXPECT_THROW(manager.load(path, 0), std::logic_error);
   EXPECT_EQ(manager.getKeyCache(0).getMemoryData(), memory);
+  completeCpuProducers(manager, step);
   manager.commitStep(std::move(step));
   EXPECT_EQ(manager.getPosition(), 2u);
 }

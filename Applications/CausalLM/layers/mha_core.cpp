@@ -20,6 +20,7 @@
 #include <cstring>
 #include <engine.h>
 #include <env_compat.h>
+#include <kv_cache/kv_cache_manager.h>
 #include <kv_ring.h> // causallm::kvRingCap (shared with models/transformer.h)
 #include <mutex>
 #include <thread>
@@ -2051,6 +2052,18 @@ void MHACoreLayer::one_batch_incremental_forwarding(
       cacheRow(cache_index) * cache_value_dim.width(),
     true);
 
+  auto cpu_access = nntrainer::kv::KvStepScope::access(
+    cache_key.getData<char>(), cache_value.getData<char>(), batch, cache_index,
+    to);
+  if (cpu_access && (kv_int8 || kv_ring_cap || is_kv_ohwi_enabled()))
+    throw std::invalid_argument(
+      "Checked CPU KV graph access requires linear token-major storage");
+  if (cpu_access && b_cache_key_step.bytes() != b_cache_value_step.bytes())
+    throw std::logic_error("CPU KV K/V Tensor byte ranges differ");
+  if (cpu_access)
+    cpu_access->validateWrite(b_cache_key_step.getData<char>(),
+                              b_cache_value_step.getData<char>(),
+                              b_cache_key_step.bytes());
 
   // [rq-scalar-off] The SAME address, expressed as (stable base, scalar row
   // offset) instead of an offset-baked pointer.
@@ -3224,6 +3237,8 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     b_cache_value_step.copyData(value_step);
   }
 
+  if (cpu_access)
+    cpu_access->producerReady();
 
   /// @todo replace step_size into input height
   unsigned int step_size = to - from;
@@ -3605,6 +3620,12 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   nntrainer::Tensor b_cached_value = cache_value.getSharedDataTensor(
     cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
 
+  if (cpu_access && b_cached_key.bytes() != b_cached_value.bytes())
+    throw std::logic_error("CPU KV K/V Tensor byte ranges differ");
+  if (cpu_access)
+    cpu_access->validateRead(b_cached_key.getData<char>(),
+                             b_cached_value.getData<char>(),
+                             b_cached_key.bytes());
 
   // Audit only the CPU profile whose final operations are RoPE/FP32->half
   // conversion into the cache. Other profiles must not inherit a zero-copy
@@ -5488,6 +5509,17 @@ void MHACoreLayer::one_batch_incremental_forwarding(
     batch * cache_value_dim.getFeatureLen() + from * cache_value_dim.width(),
     true);
 
+  auto cpu_access = nntrainer::kv::KvStepScope::access(
+    cache_key.getData<char>(), cache_value.getData<char>(), batch, _from, to);
+  if (cpu_access && (kv_int8 || kv_ring_cap || is_kv_ohwi_enabled()))
+    throw std::invalid_argument(
+      "Checked CPU KV graph access requires linear token-major storage");
+  if (cpu_access && b_cache_key_step.bytes() != b_cache_value_step.bytes())
+    throw std::logic_error("CPU KV K/V Tensor byte ranges differ");
+  if (cpu_access)
+    cpu_access->validateWrite(b_cache_key_step.getData<char>(),
+                              b_cache_value_step.getData<char>(),
+                              b_cache_key_step.bytes());
 
   apply_rotary_emb_tensor_v2(query_step, query_step, head_dim, _from, true);
 
@@ -5504,6 +5536,8 @@ void MHACoreLayer::one_batch_incremental_forwarding(
 #endif
   }
 
+  if (cpu_access)
+    cpu_access->producerReady();
 
   ml::train::TensorDim cached_key_dim = cache_key_dim;
   ml::train::TensorDim cached_value_dim = cache_value_dim;
@@ -5519,6 +5553,12 @@ void MHACoreLayer::one_batch_incremental_forwarding(
   nntrainer::Tensor b_cached_value = cache_value.getSharedDataTensor(
     cached_value_dim, batch * cache_value_dim.getFeatureLen(), true);
 
+  if (cpu_access && b_cached_key.bytes() != b_cached_value.bytes())
+    throw std::logic_error("CPU KV K/V Tensor byte ranges differ");
+  if (cpu_access)
+    cpu_access->validateRead(b_cached_key.getData<char>(),
+                             b_cached_value.getData<char>(),
+                             b_cached_key.bytes());
 
   // skip_prefill (see the non-sink overload above): K/V are written into the
   // cache; skip the unused prefill attention compute + output write. The

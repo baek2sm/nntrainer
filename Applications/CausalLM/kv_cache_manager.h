@@ -108,6 +108,16 @@ public:
   bool usesCpuStorage() const { return cpu_cache_ != nullptr; }
   nntrainer::kv::StepLease beginStep(unsigned int from, unsigned int to);
   void commitStep(nntrainer::kv::StepLease &&step);
+  std::unique_ptr<nntrainer::kv::KvStepScope>
+  bindStep(const nntrainer::kv::StepLease &step) {
+    if (!cpu_cache_)
+      throw std::logic_error("CPU KV storage is not initialized");
+    return cpu_cache_->bindStep(step);
+  }
+  /** Model-declared non-attention blocks need no producer completion. */
+  void setLayerProducers(std::vector<bool> producers) {
+    layer_producers_ = std::move(producers);
+  }
   nntrainer::kv::CacheStats cpuStats() const {
     return cpu_cache_ ? cpu_cache_->stats() : nntrainer::kv::CacheStats{};
   }
@@ -424,6 +434,7 @@ private:
    */
   std::shared_ptr<nntrainer::MemoryPool> svm_pool_;
   std::unique_ptr<nntrainer::kv::KvCacheManager> cpu_cache_;
+  std::vector<bool> layer_producers_;
 
   unsigned int cache_pos_ = 0;    /**< current write position */
   unsigned int batch_size_ = 0;   /**< batch size */

@@ -1,5 +1,13 @@
 # P2 CPU facade·attention 연결 코드 리뷰
 
+> 이 문서는 Linux P2 당시의 기록이다. 당시 facade는 graph 종료 뒤 모든 owner를
+> 일괄 ready 처리했고, 실제 MHA는 checked view를 사용하지 않았다. 아래 core 계약을
+> 당시 실행 경로가 모두 강제했다는 뜻으로 읽으면 안 된다. 2026-10-29 후속 변경은
+> 실제 MHA 쓰기·읽기 경계에 checked view와 readiness를 연결한다.
+> `cache_index = _from`은 upstream에 이미 존재하던 동작이며 새 최적화가 아니다.
+> CPU facade ring은 현재 명시적으로 거절한다. 상세는
+> [리뷰 후속 기록](review-followup.md)과 [이식 가능한 검증 절차](../docs/kv-cache-cpu-validation.md)를 참고한다.
+
 리뷰 범위는 core storage를 기존 CausalLM allocation/graph 실행에 연결하는 변경이다.
 기준은 P1 core commit `21c87982b`이며, 모델 실행 기준은 사용자 결정에 따라
 Qwen3 0.6B다. `AGENTS.md`는 수정하지 않았다. 이 문서는 소스 리뷰와 작은 재현의

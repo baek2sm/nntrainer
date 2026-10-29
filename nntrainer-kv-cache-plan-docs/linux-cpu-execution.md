@@ -159,8 +159,11 @@ CPU facade가 allocation, encoding, geometry, committed position을 core에 위�
 기존 width-only 호출, layer alias, snapshot 파일 형식은 호환 경계로 유지한다.
 
 `incrementalInference()`는 graph 실행 전에 `[from,to)` lease를 발행하고 성공 직후
-commit한다. MHA는 같은 `from`에서 작업 cursor를 유도한다. 활성 step 중 reset,
-재allocation, save/load를 거절하며 실패한 ring session은 reset 전 사용하지 않는다.
+commit한다. MHA의 `cache_index = _from` 동작은 upstream에 이미 존재하던 것이며,
+새로 구현한 cursor 최적화가 아니다. 당시 readiness 일괄 처리는 실제 producer 완료를
+강제하지 못했다. 2026-10-29 변경에서 실제 MHA의 checked write/read와 완료 통지를
+연결했다. 활성 step 중 reset, 재allocation, save/load를 거절하며 현재 CPU facade는
+ring을 명시적으로 거절한다. core의 ring 검사는 독립 계약 실험 범위다.
 기존 raw Tensor bridge 자체에 generation 검사를 추가한 것은 아니므로 동기 graph
 실행 범위 안에서 사용해야 한다. token마다 input name/pointer를 찾는 기존 adapter의
 정리는 후속 최적화로 남긴다.
