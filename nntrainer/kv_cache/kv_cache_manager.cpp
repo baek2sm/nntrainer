@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
+/**
+ * @file kv_cache_manager.cpp
+ * @brief Synchronous CPU KV ownership, views and transactional publication.
+ * @author Codex (OpenAI)
+ * @bug Sessions are thread confined; asynchronous device access is unsupported.
+ */
 #include <kv_cache/kv_cache_manager.h>
 
 #include <algorithm>

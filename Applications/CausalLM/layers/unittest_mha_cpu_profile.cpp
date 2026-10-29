@@ -3,6 +3,8 @@
  * @file   unittest_mha_cpu_profile.cpp
  * @date   28 October 2026
  * @brief  Android CPU FP32 external-cache attention profile admission tests
+ * @author Codex (OpenAI)
+ * @bug    Checks Android native-FP16 admission without executing attention.
  */
 
 #include <env_compat.h>

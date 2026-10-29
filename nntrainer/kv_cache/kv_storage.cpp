@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
+/**
+ * @file kv_storage.cpp
+ * @brief Own aligned CPU allocations shared by cache views and Tensor aliases.
+ * @author Codex (OpenAI)
+ * @bug Device-visible allocators and asynchronous access are unsupported.
+ */
 #include <kv_cache/kv_cache_spec.h>
 #include <kv_cache/kv_storage.h>
 

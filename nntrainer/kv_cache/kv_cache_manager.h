@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 /** @file kv_cache_manager.h
  * @brief Internal synchronous CPU cache, single session and single live step.
+ * @author Codex (OpenAI)
+ * @bug Sessions are thread confined; asynchronous device access is unsupported.
  */
 #ifndef NNTRAINER_CORE_KV_CACHE_MANAGER_H
 #define NNTRAINER_CORE_KV_CACHE_MANAGER_H

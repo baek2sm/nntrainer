@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 /** @file kv_storage.h
  * @brief CPU allocation ownership that survives every exported Tensor alias.
+ * @author Codex (OpenAI)
+ * @bug Device-visible allocators and asynchronous access are unsupported.
  */
 #ifndef NNTRAINER_KV_STORAGE_H
 #define NNTRAINER_KV_STORAGE_H

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 /** @file kv_cache_spec.h
  * @brief Internal, backend-independent KV geometry for contiguous CPU storage.
+ * @author Codex (OpenAI)
+ * @bug Only contiguous token-major CPU layouts are supported.
  */
 #ifndef NNTRAINER_KV_CACHE_SPEC_H
 #define NNTRAINER_KV_CACHE_SPEC_H

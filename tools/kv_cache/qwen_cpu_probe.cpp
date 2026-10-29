@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 /** @file qwen_cpu_probe.cpp
  * @brief Record unmodified CPU logits and token IDs for model parity checks.
+ * @author Codex (OpenAI)
+ * @bug Supports batch-1 Qwen3 inference with raw FP32 logits only.
  */
 #include <causal_lm.h>
 #include <factory.h>

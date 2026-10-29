@@ -5267,15 +5267,13 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
                         Kblock, kv_stride,
                         /*TransB=*/true, S.data(), bk);
 #elif defined(__ARM_NEON)
-          nntrainer::shgemm(
-            order, false, true, bq, bk, d, inv_sqrt,
-            Qp_fp32 + (size_t)qb * d, d,
-            reinterpret_cast<const __fp16 *>(Kblock), d, 0.0f,
-            S.data(), bk);
+        nntrainer::shgemm(
+          order, false, true, bq, bk, d, inv_sqrt, Qp_fp32 + (size_t)qb * d, d,
+          reinterpret_cast<const __fp16 *>(Kblock), d, 0.0f, S.data(), bk);
 #else
-          nntrainer::sgemm(order, false, true, bq, bk, d, inv_sqrt,
-                           Qp_fp32 + (size_t)qb * d, d,
-                           Kblock, d, 0.0f, S.data(), bk);
+        nntrainer::sgemm(order, false, true, bq, bk, d, inv_sqrt,
+                         Qp_fp32 + (size_t)qb * d, d, Kblock, d, 0.0f, S.data(),
+                         bk);
 #endif
 
         for (unsigned int i = 0; i < bq; ++i) {
@@ -5400,14 +5398,14 @@ void MHACoreLayer::gemm_attention(nntrainer::Tensor &query_step,
               ol[x] += nntrainer::compute_fp16_to_fp32(pa[x]);
           }
 #else
-          nntrainer::sgemm(order, false, false, bq, d, bk, 1.0f, S.data(), bk,
-                           Vblock, d, 0.0f, Pacc.data(), d);
-          for (unsigned int i = 0; i < bq; ++i) {
-            float *ol = Ol.data() + (size_t)i * d;
-            const float *pa = Pacc.data() + (size_t)i * d;
-            for (unsigned int x = 0; x < d; ++x)
-              ol[x] += pa[x];
-          }
+        nntrainer::sgemm(order, false, false, bq, d, bk, 1.0f, S.data(), bk,
+                         Vblock, d, 0.0f, Pacc.data(), d);
+        for (unsigned int i = 0; i < bq; ++i) {
+          float *ol = Ol.data() + (size_t)i * d;
+          const float *pa = Pacc.data() + (size_t)i * d;
+          for (unsigned int x = 0; x < d; ++x)
+            ol[x] += pa[x];
+        }
 #endif
       } // FP32 Q path
     }

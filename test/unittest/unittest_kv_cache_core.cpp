@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 /** @file unittest_kv_cache_core.cpp
  * @brief CPU ownership, checked geometry and transactional KV publication.
+ * @author Codex (OpenAI)
+ * @bug Covers synchronous CPU storage; device integration is not exercised.
  */
 #include <gtest/gtest.h>
 #include <kv_cache/kv_cache_manager.h>
