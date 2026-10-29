@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -122,10 +123,23 @@ int main(int argc, char **argv) {
       throw std::runtime_error(
         "Repeated prompt did not encode to the requested length");
     model->setNumToGenerate(decode);
+    const auto actual_plane = model->prefillPlaneFor(0);
+    const auto actual_chunk = model->prefillDriveChunk();
+    if (request.value("expected_plane", actual_plane) != actual_plane ||
+        request.value("expected_prefill_chunk", actual_chunk) != actual_chunk ||
+        (request.value("single_block", false) &&
+         (actual_chunk != 0 || std::getenv("NNTR_PREFILL_CHUNK") != nullptr)))
+      throw std::runtime_error("Requested prefill strategy was not applied");
     const auto prepare_end = Clock::now();
     json report = {
       {"request", request},
       {"input_ids", input_ids},
+      {"activation_plane", actual_plane},
+      {"effective_prefill_chunk", actual_chunk},
+      {"prefill_chunk_environment_present",
+       std::getenv("NNTR_PREFILL_CHUNK") != nullptr},
+      {"expected_prefill_graph_calls",
+       actual_chunk ? (context + actual_chunk - 1) / actual_chunk : 1},
       {"factory_ms", milliseconds(initialize_begin - factory_begin)},
       {"initialize_ms", milliseconds(load_begin - initialize_begin)},
       {"weight_load_and_pack_ms", milliseconds(prepare_begin - load_begin)},
@@ -149,6 +163,8 @@ int main(int argc, char **argv) {
           metrics.prefill_tokens != context ||
           metrics.generation_tokens != decode ||
           metrics.prompt_truncated_tokens ||
+          model->prefillPlaneFor(0) != actual_plane ||
+          model->prefillDriveChunk() != actual_chunk ||
           model->getKvLen() != int(context + decode))
         throw std::runtime_error(
           "Truncation, early EOS, or cache-position mismatch");

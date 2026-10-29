@@ -5,6 +5,7 @@ No HF reference, logits dump or cache trace runs in the measured process.
 Each process loads once, warms up, then measures repeated independent prompts.
 """
 import argparse
+from collections import Counter
 import hashlib
 import json
 import math
@@ -68,6 +69,23 @@ def host_sensors():
     return {"unix_time": time.time(), "sysfs": readings}
 
 
+def audit_prefill_trace(text, context, chunk, owners=28):
+    """Check the actual MHA intervals in one untimed prefill plus decode step."""
+    rows = re.findall(r"\[kv-cpu-access\] from=(\d+) tokens=(\d+)\b", text)
+    observed = Counter((int(start), int(count)) for start, count in rows)
+    block = chunk or context
+    expected = Counter({(start, min(block, context - start)): owners
+                        for start in range(0, context, block)})
+    expected[(context, 1)] = owners
+    if observed != expected:
+        raise ValueError(f"Actual MHA intervals differ: {dict(observed)} != {dict(expected)}")
+    return {"passed": True, "owner_layers_per_step": owners,
+            "prefill_graph_calls": math.ceil(context / block),
+            "decode_graph_calls": 1,
+            "intervals": [{"from": start, "tokens": count, "owner_calls": calls}
+                          for (start, count), calls in sorted(observed.items())]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=("linux", "android"), required=True)
@@ -86,7 +104,13 @@ def main():
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--plane", type=int, default=128)
-    parser.add_argument("--prefill-chunk", type=int, default=128)
+    prefill = parser.add_mutually_exclusive_group()
+    prefill.add_argument("--prefill-chunk", type=int,
+                         help="Chunk rows (default 128); must fit --plane")
+    prefill.add_argument("--single-block", action="store_true",
+                         help="Unset NNTR_PREFILL_CHUNK; --plane must fit the complete context")
+    parser.add_argument("--verify-prefill", action="store_true",
+                        help="Run a separate untimed trace to verify actual MHA intervals")
     parser.add_argument("--min-prefill", type=int, default=1)
     parser.add_argument("--capacity", type=int)
     parser.add_argument("--timeout", type=int, default=1800)
@@ -98,6 +122,8 @@ def main():
                         help="Completed benchmark output directory for workload-checked comparisons")
     parser.add_argument("--max-regression-percent", type=float, default=5.0)
     args = parser.parse_args()
+    args.prefill_chunk = 0 if args.single_block else (
+        128 if args.prefill_chunk is None else args.prefill_chunk)
     if args.target == "android" and (not args.serial or not args.runtime_dir):
         parser.error("Android requires --serial and --runtime-dir")
     if args.serial and not re.fullmatch(r"[A-Za-z0-9_.-]+", args.serial):
@@ -108,8 +134,12 @@ def main():
     if len(set(contexts)) != len(contexts) or len({p.name for p in args.model}) != len(args.model):
         parser.error("Context lengths and model directory names must be unique")
     if min(contexts + [args.decode_tokens, args.repetitions, args.threads,
-                       args.plane, args.prefill_chunk]) < 1 or args.warmup < 0:
+                       args.plane]) < 1 or args.warmup < 0:
         parser.error("Context, decode, repeat, thread and plane values must be positive")
+    if not args.single_block and args.prefill_chunk < 1:
+        parser.error("Chunk must be positive; use --single-block to disable chunking")
+    if args.single_block and max(contexts) > args.plane:
+        parser.error("Single-block requires --plane at least as large as every context")
     if args.prefill_chunk > args.plane or args.min_prefill < 0:
         parser.error("Chunk must fit the activation plane; minimum prefill must be nonnegative")
     if not 0 <= args.cooldown_seconds <= 60:
@@ -125,11 +155,13 @@ def main():
     env_values = {"NNTR_ENGINE": "cpu", "NNTR_NUM_THREADS": str(args.threads),
                   "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": str(args.threads),
                   "NNTR_INIT_SEQ_LEN": str(args.plane),
-                  "NNTR_PREFILL_CHUNK": str(args.prefill_chunk),
                   "NNTR_MIN_PREFILL": str(args.min_prefill),
                   "NNTR_CPU_ATTENTION_FP32": "1" if args.profile.startswith("fp32") else "0",
                   "NNTR_CPU_KV_TILED": "1" if args.profile.endswith("tiled") else "0",
                   "NNTR_TOKENIZER_CACHE": "0"}
+    if not args.single_block:
+        env_values["NNTR_PREFILL_CHUNK"] = str(args.prefill_chunk)
+    env_values["NNTR_KV_CPU_TRACE"] = "0"
     manifest = {"target": args.target, "serial": args.serial, "label": args.label,
                 "profile": args.profile, "environment": env_values,
                 "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
@@ -137,6 +169,9 @@ def main():
                 "benchmark_source_sha256": sha256(Path(__file__).with_name("qwen_cpu_benchmark.cpp")),
                 "harness_sha256": sha256(Path(__file__)), "probe_sha256": sha256(args.probe),
                 "warmup": args.warmup, "repetitions": args.repetitions,
+                "prefill_mode": "single-block" if args.single_block else "chunked",
+                "requested_plane": args.plane, "requested_chunk": args.prefill_chunk,
+                "verify_prefill": args.verify_prefill,
                 "cooldown_seconds": args.cooldown_seconds, "runs": []}
     manifest["host"] = {"platform": platform.platform(), "cpu_count": os.cpu_count(),
                         "cpu_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None}
@@ -232,7 +267,10 @@ def main():
             save(stage / "generation_config.json", generation)
             request = args.output / f"{name}-request.json"
             save(request, {"context_tokens": context, "decode_tokens": args.decode_tokens,
-                           "warmup": args.warmup, "repetitions": args.repetitions})
+                           "warmup": args.warmup, "repetitions": args.repetitions,
+                           "expected_plane": args.plane,
+                           "expected_prefill_chunk": args.prefill_chunk,
+                           "single_block": args.single_block})
             report_path = args.output / f"{name}.json"
             item = {"model": model.name, "context": context, "capacity": capacity,
                     "weight_sha256": model_hash, "weight_bytes": weight.stat().st_size,
@@ -241,10 +279,7 @@ def main():
                 item["prepared_only"] = True
                 manifest["runs"].append(item)
                 continue
-            if args.cooldown_seconds:
-                time.sleep(args.cooldown_seconds)
             sensors = device_sensors if args.target == "android" else host_sensors
-            save(args.output / f"{name}-sensors-before.json", sensors())
             env = dict(clean_env, **env_values)
             if args.target == "linux":
                 if args.runtime_dir:
@@ -261,10 +296,63 @@ def main():
                 remote_env = dict(env_values, LD_LIBRARY_PATH=str(remote / "runtime"),
                                   NNTR_LOG_DIR=str(remote / "logs"), XDG_CACHE_HOME=str(remote / "cache"))
                 command = ["adb", "-s", args.serial, "shell", shlex.join([
-                    "timeout", str(max(1, args.timeout - 10)), "env",
+                    "timeout", str(max(1, args.timeout - 10)), "env", "-u", "NNTR_PREFILL_CHUNK",
                     *[f"{key}={value}" for key, value in remote_env.items()],
                     str(remote / "runtime/qwen_cpu_benchmark"), str(remote_stage),
                     str(remote / request.name), str(remote / report_path.name)])]
+            if args.verify_prefill:
+                save(args.output / f"{name}-sensors-before-audit.json", sensors())
+                audit_request = request.with_name(name + "-audit-request.json")
+                audit_report = report_path.with_name(name + "-audit.json")
+                audit_data = json.loads(request.read_text())
+                audit_data.update(warmup=0, repetitions=1, decode_tokens=1)
+                save(audit_request, audit_data)
+                audit_env = dict(env, NNTR_KV_CPU_TRACE="1")
+                if args.target == "linux":
+                    audit_command = [str(args.probe.resolve()), str(stage),
+                                     str(audit_request), str(audit_report)]
+                else:
+                    adb("push", audit_request, remote / audit_request.name)
+                    audit_remote_env = dict(remote_env, NNTR_KV_CPU_TRACE="1")
+                    audit_command = ["adb", "-s", args.serial, "shell", shlex.join([
+                        "timeout", str(max(1, args.timeout - 10)), "env", "-u", "NNTR_PREFILL_CHUNK",
+                        *[f"{key}={value}" for key, value in audit_remote_env.items()],
+                        str(remote / "runtime/qwen_cpu_benchmark"), str(remote_stage),
+                        str(remote / audit_request.name), str(remote / audit_report.name)])]
+                print(f"Verifying untimed prefill: {name}", flush=True)
+                try:
+                    audit_run = subprocess.run(audit_command, capture_output=True,
+                                               timeout=args.timeout, env=audit_env, check=False)
+                    audit_exit = audit_run.returncode
+                except subprocess.TimeoutExpired as error:
+                    audit_run = error
+                    audit_exit = None
+                    item["timeout"] = True
+                audit_report.with_suffix(".stdout.txt").write_bytes(audit_run.stdout or b"")
+                audit_report.with_suffix(".stderr.txt").write_bytes(audit_run.stderr or b"")
+                if audit_exit != 0:
+                    item.update(exit_code=audit_exit,
+                                prefill_audit={"passed": False, "report": str(audit_report)})
+                    manifest["runs"].append(item)
+                    manifest["passed"] = False
+                    save(args.output / "report.json", manifest)
+                    print(f"Untimed prefill audit failed; see {audit_report}", flush=True)
+                    return 1
+                if args.target == "android":
+                    adb("pull", remote / audit_report.name, audit_report)
+                audit_result = json.loads(audit_report.read_text())
+                if (audit_result.get("effective_prefill_chunk") != args.prefill_chunk or
+                        audit_result.get("activation_plane") != args.plane):
+                    raise ValueError("Observer did not confirm the requested plane/chunk")
+                item["prefill_audit"] = audit_prefill_trace(
+                    audit_run.stderr.decode(errors="replace"), context, args.prefill_chunk)
+                item["prefill_audit"].update(report=str(audit_report),
+                                              trace_sha256=hashlib.sha256(audit_run.stderr).hexdigest())
+                save(args.output / f"{name}-sensors-after-audit.json", sensors())
+            # The untimed audit can heat the device: cool down after it, before timing.
+            if args.cooldown_seconds:
+                time.sleep(args.cooldown_seconds)
+            save(args.output / f"{name}-sensors-before.json", sensors())
             print(f"Running {args.label}/{args.profile}: {name}", flush=True)
             try:
                 run = subprocess.run(command, capture_output=True, timeout=args.timeout, env=env, check=False)
@@ -279,6 +367,10 @@ def main():
                 if args.target == "android":
                     adb("pull", remote / report_path.name, report_path)
                 result = json.loads(report_path.read_text())
+                if args.single_block or args.verify_prefill:
+                    if (result.get("effective_prefill_chunk") != args.prefill_chunk or
+                            result.get("activation_plane") != args.plane):
+                        raise ValueError("Timed observer used a different prefill strategy")
                 item["summary"] = summarize(result)
                 if baseline:
                     prior = next((row for row in baseline["runs"] if
