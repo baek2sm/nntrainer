@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <sstream>
 
 using namespace nntrainer::kv;
 
@@ -488,7 +489,7 @@ TEST(KvCacheCore, pagedViewsAllocateOnDemandAndPreserveTokenOrder) {
       EXPECT_EQ(data[row * 4], static_cast<float>(++token));
   }
   EXPECT_THROW(manager.keyMemory(0), std::logic_error);
-  EXPECT_THROW(manager.bindStep(step), std::invalid_argument);
+  EXPECT_NO_THROW(manager.bindStep(step));
   manager.commit(std::move(step));
   auto next = manager.beginStep(2);
   EXPECT_EQ(allocator->allocations, 6u);
@@ -669,6 +670,84 @@ TEST(KvCacheCore, segmentedAttentionRejectsInvalidGeometryAndQueries) {
     EXPECT_FLOAT_EQ(value, 0);
   EXPECT_THROW(manager.append(step, 0, nullptr, nullptr, 16),
                std::invalid_argument);
+}
+
+TEST(KvCacheCore, pagedGraphIdentitiesResolveAliasesAndRequireActiveLease) {
+  auto s = spec();
+  s.page_tokens = 2;
+  s.layers.push_back(s.layers[0]);
+  s.layers[1].source = 0;
+  KvCacheManager manager;
+  manager.initialize(s);
+  auto k0 = manager.graphKeyMemory(0), v0 = manager.graphValueMemory(0);
+  auto k1 = manager.graphKeyMemory(1), v1 = manager.graphValueMemory(1);
+  ASSERT_NE(k0, k1);
+  auto step = manager.beginStep(3);
+  auto scope = manager.bindStep(step);
+  auto owner = KvStepScope::access(k0->getAddr(), v0->getAddr(), 0, 0, 3);
+  auto alias = KvStepScope::access(k1->getAddr(), v1->getAddr(), 0, 0, 3);
+  ASSERT_TRUE(owner->paged());
+  ASSERT_TRUE(alias->alias());
+  std::vector<float> kv(12, 1), q(12, 2);
+  owner->append(kv.data(), kv.data(), kv.size() * sizeof(float));
+  AttentionOptions options;
+  options.query_heads = 2;
+  options.sinks = {0, 0};
+  EXPECT_EQ(alias->attention(q, options), owner->attention(q, options));
+  manager.commit(std::move(step));
+  EXPECT_THROW(owner->attention(q, options), std::logic_error);
+  scope.reset();
+  EXPECT_THROW(owner->paged(), std::logic_error);
+}
+
+TEST(KvCacheCore, pagedSnapshotRestoreIsAtomicAndPreservesGraphIdentities) {
+  auto s = spec();
+  s.page_tokens = 2;
+  KvCacheManager manager;
+  manager.initialize(s);
+  auto handle = manager.graphKeyMemory(0);
+  auto step = manager.beginStep(3);
+  std::vector<float> data(12, 5);
+  manager.append(step, 0, data.data(), data.data(),
+                 data.size() * sizeof(float));
+  finish(manager, std::move(step));
+  std::stringstream saved;
+  manager.savePlane(saved, 0, true, 3);
+  manager.savePlane(saved, 0, false, 3);
+  std::stringstream truncated(saved.str().substr(0, saved.str().size() - 1));
+  EXPECT_THROW(manager.restorePlanes(truncated, 3), std::runtime_error);
+  EXPECT_EQ(manager.committedLength(), 3u);
+  EXPECT_EQ(manager.graphKeyMemory(0), handle);
+  manager.reset();
+  manager.restorePlanes(saved, 3);
+  EXPECT_EQ(manager.graphKeyMemory(0), handle);
+  EXPECT_EQ(manager.committedLength(), 3u);
+  auto next = manager.beginStep(1);
+  std::vector<float> tail(4, 5);
+  manager.append(next, 0, tail.data(), tail.data(), 16);
+  manager.markReady(next, 0);
+  AttentionOptions options;
+  options.query_heads = 2;
+  for (float value :
+       manager.attention(next, 0, std::vector<float>(4, 1), options))
+    EXPECT_FLOAT_EQ(value, 5);
+}
+
+TEST(KvCacheCore, pagedSinkContributesOnlyToSoftmaxDenominator) {
+  auto s = spec();
+  s.page_tokens = 1;
+  KvCacheManager manager;
+  manager.initialize(s);
+  auto step = manager.beginStep(2);
+  std::vector<float> keys(8), values(8, 6);
+  manager.append(step, 0, keys.data(), values.data(), 32);
+  manager.markReady(step, 0);
+  AttentionOptions options;
+  options.query_heads = 2;
+  options.sinks = {0, 0};
+  auto result = manager.attention(step, 0, std::vector<float>(8), options);
+  EXPECT_FLOAT_EQ(result[0], 3);
+  EXPECT_FLOAT_EQ(result[4], 4);
 }
 
 GTEST_API_ int main(int argc, char **argv) {

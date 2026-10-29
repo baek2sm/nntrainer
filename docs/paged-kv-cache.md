@@ -69,14 +69,57 @@ session-owned bytes; `KvPagePool::reservedBytes()` also includes idle and
 view-pinned blocks. A bounded pool can reject a step while stale views pin
 blocks; release the views before retrying.
 
-The existing CausalLM Tensor-placeholder/MHA graph adapter remains contiguous:
-`keyMemory()`, `valueMemory()` and `bindStep()` reject paged storage. Paged callers
-use `append()` and `attention()` directly rather than passing page storage to a
-dense Tensor consumer. Ring caches, device execution, attention sinks, automatic
-prefix caching and asynchronous completion are outside this CPU backend.
+CausalLM and SentenceTransformer inference can select this backend at model
+construction time:
+
+```sh
+NNTR_ENGINE=cpu NNTR_KV_PAGED=1 NNTR_KV_PAGE_TOKENS=16 <application> <arguments>
+```
+
+`NNTR_KV_PAGED=0` (the default) retains the contiguous backend. Page size defaults
+to 16 tokens and must be a positive integer. The current graph adapter admits
+batch-1 NCHW CPU inference with external caches. INT8, OHWI, training, the legacy
+KV manager and device backends are rejected rather than falling back to a dense
+cache. Sliding windows use attention masks over paged history, with no ring
+layout. There is no automatic prefix caching or asynchronous completion.
+
+In paged mode graph cache inputs have shape `[1, 1, 1, kv_width]`. These one-row
+allocations are stable per-layer identifiers, including distinct identifiers for
+aliased layers; they never contain cache history. Their pointers resolve through
+the checked `KvStepScope` bound around each inference call. MHA dispatches to the
+paged path before constructing any dense cache slices or entering a device arm.
+It applies the layer's RoPE to the new Q/K token block, converts K/V to the cache
+encoding, appends only owner KV, and calls the manager's direct attention reader.
+Aliased layers consume the source's pages without another append. Skipped
+prefill consumers preserve the producer/readiness contract. Attention sinks add
+a denominator-only softmax logit per query head. The new-token transformations
+use FP32 arithmetic before cache narrowing; they can differ numerically from
+legacy native-half transformation paths.
+
+The facade's `getKeyCache()` / `getValueCache()` return identity tensors in paged
+mode. They must not be treated as dense history; its dense read/write view APIs
+reject that use. The core's `keyMemory()` / `valueMemory()` also reject paged
+storage. Graph consumers use `graphKeyMemory()` / `graphValueMemory()` and the
+checked step access API instead. Pool byte counts exclude the small graph
+identity allocations and temporary new-token transformation buffers.
+
+Snapshots stream logical K/V planes directly to/from the pages, preserving the
+existing geometry, alias and model-tag checks. Loading stages a replacement
+page table and publishes it only after the complete payload succeeds. Graph
+identifiers remain stable across reset and restore. A bounded shared pool may
+need space for both the old and replacement tables during restore.
+
+The snapshot writer now emits version 2 with raw cache-encoding bytes on both
+the paged and contiguous paths, allowing interchange between them. Version 1
+FP32/FP16 snapshots remain readable. Version 1 and headerless UINT16 snapshots
+are rejected: Tensor serialization adds quantization metadata to UINT16, which
+is not a raw half-bit KV stream. New UINT16 snapshots have an explicit raw-byte
+format and do not use quantized Tensor serialization.
 
 Numerical tests in `unittest_kv_cache_core.cpp` compare paged attention against
 an independent dense softmax reference across page-crossing prefill and decode,
 multiple batches, GQA, aliases, windows and softcapping. Additional cases cover
 binary16 decoding, pinned pages, shared pool admission, reuse and allocation
-failure. These tests were added without building or running them on macOS.
+failure. A real Qwen graph regression compares contiguous and paged logits across
+page boundaries and snapshot restore; Gemma graph cases exercise paged inference.
+These tests were added without building or running them on macOS.

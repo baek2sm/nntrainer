@@ -68,6 +68,7 @@ struct RuntimeConfig {
   bool cpu_attention_fp32 = false;
   bool cpu_kv_tiled = false;
   bool cpu_kv_legacy = false;
+  bool cpu_kv_paged = false;
   bool device_attention = false;
 
   /** Capture per owning model/layer. Mutating the environment later affects
@@ -85,6 +86,8 @@ struct RuntimeConfig {
     result.cpu_attention_fp32 = nntr_env_on("NNTR_CPU_ATTENTION_FP32");
     result.cpu_kv_tiled = result.cpu && nntr_env_on("NNTR_CPU_KV_TILED");
     result.cpu_kv_legacy = result.cpu && nntr_env_on("NNTR_CPU_KV_LEGACY");
+    result.cpu_kv_paged =
+      result.cpu && !result.cpu_kv_legacy && nntr_env_on("NNTR_KV_PAGED");
     result.device_attention =
       result.engine == "cuda"
         ? nntr_env_on("NNTR_CUDA_ATTN")

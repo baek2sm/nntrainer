@@ -45,7 +45,6 @@ namespace causallm {
  * Future extensions:
  * - Cache eviction policies
  * - Cache compression / quantization
- * - Paged attention support
  */
 class KVCacheManager {
 public:
@@ -106,6 +105,7 @@ public:
   /** Synchronous CPU graph transaction; GPU compatibility paths stay separate.
    */
   bool usesCpuStorage() const { return cpu_cache_ != nullptr; }
+  bool usesPagedStorage() const { return cpu_cache_ && cpu_cache_->paged(); }
   nntrainer::kv::StepLease beginStep(unsigned int from, unsigned int to);
   void commitStep(nntrainer::kv::StepLease &&step);
   std::unique_ptr<nntrainer::kv::KvStepScope>
@@ -142,14 +142,14 @@ public:
   /**
    * @brief Get the full key cache tensor for a layer (for direct access)
    * @param[in] layer_idx attention layer index
-   * @return reference to the full key cache tensor
+   * @return full cache tensor, or a one-row graph identity in paged mode
    */
   nntrainer::Tensor &getKeyCache(unsigned int layer_idx);
 
   /**
    * @brief Get the full value cache tensor for a layer (for direct access)
    * @param[in] layer_idx attention layer index
-   * @return reference to the full value cache tensor
+   * @return full cache tensor, or a one-row graph identity in paged mode
    */
   nntrainer::Tensor &getValueCache(unsigned int layer_idx);
 

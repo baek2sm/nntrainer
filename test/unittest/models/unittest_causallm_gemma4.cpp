@@ -546,6 +546,15 @@ TEST_P(Gemma4TinyModelTest, PromptProducesExpectedLogits) {
   causallm_test::expectPromptProducesExpectedLogits(GetParam(), files);
 }
 
+TEST_P(Gemma4TinyModelTest, PagedPromptProducesExpectedLogits) {
+  causallm_test::ScopedEnv engine("NNTR_ENGINE", "cpu");
+  causallm_test::ScopedEnv legacy("NNTR_CPU_KV_LEGACY", "0");
+  causallm_test::ScopedEnv paged("NNTR_KV_PAGED", "1");
+  causallm_test::ScopedEnv page_size("NNTR_KV_PAGE_TOKENS", "2");
+  const auto files = makeFiles();
+  causallm_test::expectPromptProducesExpectedLogits(GetParam(), files);
+}
+
 INSTANTIATE_TEST_SUITE_P(
   Gemma4, Gemma4TinyModelTest,
   ::testing::Values(

@@ -500,6 +500,7 @@ protected:
 
   causallm_test::ScopedEnv engine_{"NNTR_ENGINE", "cpu"};
   causallm_test::ScopedEnv legacy_{"NNTR_CPU_KV_LEGACY", "0"};
+  causallm_test::ScopedEnv paged_{"NNTR_KV_PAGED", "0"};
   causallm::json config_, generation_, nntrainer_;
   std::unique_ptr<TinyQwen3CausalLM> model_;
 };
@@ -559,6 +560,43 @@ TEST_F(QwenCpuKVGraphTest, RejectsNonCommittedIntervalAndCanContinue) {
   EXPECT_EQ(model_->getKvLen(), 2);
   EXPECT_NO_THROW(model_->stepLogitsFromIds({4}, 2));
   EXPECT_EQ(model_->getKvLen(), 3);
+}
+
+TEST_F(QwenCpuKVGraphTest,
+       PagedRuntimeMatchesDenseAcrossPageBoundariesAndRestore) {
+  // The baseline was constructed by SetUp before enabling paged placeholders.
+  const auto dense_prefill = model_->stepLogitsFromIds({1, 4, 4}, 0);
+  const auto dense_decode = model_->stepLogitsFromIds({4}, 3);
+  causallm_test::ScopedEnv paged("NNTR_KV_PAGED", "1");
+  causallm_test::ScopedEnv page_size("NNTR_KV_PAGE_TOKENS", "2");
+  auto paged_model =
+    std::make_unique<TinyQwen3CausalLM>(config_, generation_, nntrainer_);
+  paged_model->initializeModel();
+  setupQwen3DeterministicWeights(*paged_model);
+  paged_model->prepareKVCache();
+  EXPECT_EQ(paged_model->cacheManager().cpuStats().backing_bytes, 0u);
+  const auto actual_prefill = paged_model->stepLogitsFromIds({1, 4, 4}, 0);
+  auto &cache = paged_model->cacheManager();
+  ASSERT_TRUE(cache.usesPagedStorage());
+  ASSERT_EQ(cache.getKeyCache(0).height(), 1u);
+  ASSERT_EQ(cache.getPosition(), 3u);
+  ASSERT_EQ(actual_prefill.size(), dense_prefill.size());
+  for (size_t i = 0; i < dense_prefill.size(); ++i)
+    EXPECT_NEAR(actual_prefill[i], dense_prefill[i], 2e-3f);
+  const auto files = causallm_test::makeTinyCausalLMFiles(
+    "QwenCpuKVGraphTest", "PagedSnapshot", "FP32");
+  const auto snapshot = files.weight_path.string() + ".kv";
+  cache.save(snapshot);
+  cache.reset();
+  ASSERT_EQ(cache.load(snapshot, 0), 3u);
+  const auto actual_decode = paged_model->stepLogitsFromIds({4}, 3);
+  ASSERT_EQ(actual_decode.size(), dense_decode.size());
+  for (size_t i = 0; i < dense_decode.size(); ++i)
+    EXPECT_NEAR(actual_decode[i], dense_decode[i], 2e-3f);
+  EXPECT_EQ(cache.getPosition(), 4u);
+  // Version 2 payloads are interchangeable with contiguous cache storage.
+  model_->cacheManager().load(snapshot, 3);
+  EXPECT_EQ(model_->cacheManager().getPosition(), 3u);
 }
 
 /**

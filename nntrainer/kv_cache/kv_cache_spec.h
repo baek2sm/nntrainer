@@ -2,7 +2,7 @@
 /** @file kv_cache_spec.h
  * @brief Internal, backend-independent KV geometry for CPU storage.
  * @author Codex (OpenAI)
- * @bug Paged layouts are not connected to graph attention.
+ * @bug Device-visible storage is not supported by the CPU backend.
  */
 #ifndef NNTRAINER_KV_CACHE_SPEC_H
 #define NNTRAINER_KV_CACHE_SPEC_H

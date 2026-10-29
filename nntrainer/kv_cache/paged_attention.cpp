@@ -50,6 +50,12 @@ std::vector<float> KvCacheManager::attention(const StepLease &step,
       !std::isfinite(options.scale) || options.scale < 0 ||
       !std::isfinite(options.logit_softcap) || options.logit_softcap < 0)
     throw std::invalid_argument("Invalid segmented attention options");
+  if (!options.sinks.empty() && options.sinks.size() != options.query_heads)
+    throw std::invalid_argument(
+      "Attention sink shape differs from query heads");
+  for (float sink : options.sinks)
+    if (!std::isfinite(sink))
+      throw std::invalid_argument("Attention sink must be finite");
   const size_t width = checkedMultiply(options.query_heads, s.head_dim);
   const size_t elements = checkedMultiply(step.to() - step.from(), width);
   if (queries.size() != elements)
@@ -73,6 +79,10 @@ std::vector<float> KvCacheManager::attention(const StepLease &step,
       std::fill(accumulator.begin(), accumulator.end(), 0.0);
       double maximum = -std::numeric_limits<double>::infinity();
       double denominator = 0;
+      if (!options.sinks.empty()) {
+        maximum = options.sinks[h];
+        denominator = 1;
+      }
       size_t token = 0;
       for (size_t p = 0; p < keys.size() && token < end; ++p) {
         const auto *k = static_cast<const char *>(keys[p].data());

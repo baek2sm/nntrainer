@@ -868,6 +868,13 @@ private:
    * @param[in] apply_rope true to apply rotary embedding, false to only store
    *                       the tensor into the cache dtype
    */
+  bool paged_forwarding(unsigned int batch, unsigned int from, unsigned int to,
+                        nntrainer::Tensor &query, nntrainer::Tensor &key,
+                        nntrainer::Tensor &value, nntrainer::Tensor &output,
+                        nntrainer::Tensor &key_handle,
+                        nntrainer::Tensor &value_handle,
+                        nntrainer::Tensor *sink);
+
   void apply_rotary_emb_tensor_v2(nntrainer::Tensor &in, nntrainer::Tensor &out,
                                   unsigned int dim, unsigned int from,
                                   bool apply_rope = true);

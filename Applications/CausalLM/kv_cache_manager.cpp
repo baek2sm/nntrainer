@@ -76,6 +76,9 @@ void KVCacheManager::allocate(unsigned int num_layers, unsigned int batch_size,
   }
 
   const auto runtime = RuntimeConfig::capture();
+  if (nntr_env_on("NNTR_KV_PAGED") && (!runtime.cpu || runtime.cpu_kv_legacy))
+    throw std::invalid_argument(
+      "NNTR_KV_PAGED requires the CPU core KV manager");
   const auto &selected = runtime.engine;
   const bool cpu = runtime.cpu && !runtime.cpu_kv_legacy;
   if (cpu) {
@@ -308,6 +311,26 @@ void KVCacheManager::allocateCpu(
     throw std::invalid_argument("Unsupported CPU KV geometry or storage type");
 
   CacheSpec spec;
+  spec.page_tokens = RuntimeConfig::capture().cpu_kv_paged ? 16u : 0u;
+  if (spec.page_tokens) {
+    if (const char *value = std::getenv("NNTR_KV_PAGE_TOKENS")) {
+      const std::string text(value);
+      if (text.empty() ||
+          text.find_first_not_of("0123456789") != std::string::npos)
+        throw std::invalid_argument(
+          "NNTR_KV_PAGE_TOKENS must be a positive integer");
+      size_t used = 0;
+      const auto tokens = std::stoull(text, &used);
+      if (!tokens || used != text.size() ||
+          tokens > std::numeric_limits<unsigned int>::max())
+        throw std::invalid_argument("NNTR_KV_PAGE_TOKENS is out of range");
+      spec.page_tokens = static_cast<size_t>(tokens);
+    }
+  }
+  if (spec.page_tokens &&
+      (batch_size != 1 || format != ml::train::TensorDim::Format::NCHW))
+    throw std::invalid_argument(
+      "Paged CPU graph requires batch-1 NCHW inference");
   for (unsigned int i = 0; i < num_layers; ++i) {
     LayerSpec s;
     s.batch = batch_size;
@@ -335,14 +358,15 @@ void KVCacheManager::allocateCpu(
   next->initialize(spec);
   std::vector<LayerCache> caches(num_layers);
   for (unsigned int i = 0; i < num_layers; ++i) {
-    ml::train::TensorDim dim(
-      {batch_size, 1, static_cast<unsigned int>(spec.layers[i].capacity),
-       widths[i]},
-      {format, dtype});
+    ml::train::TensorDim dim({batch_size, 1,
+                              static_cast<unsigned int>(
+                                spec.page_tokens ? 1 : spec.layers[i].capacity),
+                              widths[i]},
+                             {format, dtype});
     caches[i].key_cache = nntrainer::Tensor(dim, false);
     caches[i].value_cache = nntrainer::Tensor(dim, false);
-    caches[i].key_cache.setData(next->keyMemory(i), 0, false);
-    caches[i].value_cache.setData(next->valueMemory(i), 0, false);
+    caches[i].key_cache.setData(next->graphKeyMemory(i), 0, false);
+    caches[i].value_cache.setData(next->graphValueMemory(i), 0, false);
   }
   layer_caches_ = std::move(caches);
   cpu_cache_ = std::move(next);
@@ -355,7 +379,8 @@ void KVCacheManager::allocateCpu(
   dtype_ = dtype;
   format_ = format;
   cache_pos_ = 0;
-  reportKVShare(num_layers, batch_size, dtype, "core-cpu");
+  if (!usesPagedStorage())
+    reportKVShare(num_layers, batch_size, dtype, "core-cpu");
   if (nntr_env_on("NNTR_KV_CPU_TRACE")) {
     const auto stats = cpu_cache_->stats();
     std::fprintf(stderr,
@@ -578,6 +603,9 @@ nntrainer::Tensor &KVCacheManager::getValueCache(unsigned int layer_idx) {
 nntrainer::Tensor KVCacheManager::getKeyCacheWriteView(unsigned int layer_idx,
                                                        unsigned int batch,
                                                        unsigned int step_size) {
+  if (usesPagedStorage())
+    throw std::logic_error(
+      "Paged KV requires checked graph access, not dense views");
   if (layer_idx >= layer_caches_.size()) {
     throw std::out_of_range(
       "KVCacheManager::getKeyCacheWriteView: invalid layer_idx");
@@ -602,6 +630,9 @@ nntrainer::Tensor KVCacheManager::getKeyCacheWriteView(unsigned int layer_idx,
 
 nntrainer::Tensor KVCacheManager::getValueCacheWriteView(
   unsigned int layer_idx, unsigned int batch, unsigned int step_size) {
+  if (usesPagedStorage())
+    throw std::logic_error(
+      "Paged KV requires checked graph access, not dense views");
   if (layer_idx >= layer_caches_.size()) {
     throw std::out_of_range(
       "KVCacheManager::getValueCacheWriteView: invalid layer_idx");
@@ -627,6 +658,9 @@ nntrainer::Tensor KVCacheManager::getValueCacheWriteView(
 nntrainer::Tensor KVCacheManager::getKeyCacheReadView(unsigned int layer_idx,
                                                       unsigned int batch,
                                                       unsigned int read_len) {
+  if (usesPagedStorage())
+    throw std::logic_error(
+      "Paged KV requires checked graph access, not dense views");
   if (layer_idx >= layer_caches_.size()) {
     throw std::out_of_range(
       "KVCacheManager::getKeyCacheReadView: invalid layer_idx");
@@ -648,6 +682,9 @@ nntrainer::Tensor KVCacheManager::getKeyCacheReadView(unsigned int layer_idx,
 nntrainer::Tensor KVCacheManager::getValueCacheReadView(unsigned int layer_idx,
                                                         unsigned int batch,
                                                         unsigned int read_len) {
+  if (usesPagedStorage())
+    throw std::logic_error(
+      "Paged KV requires checked graph access, not dense views");
   if (layer_idx >= layer_caches_.size()) {
     throw std::out_of_range(
       "KVCacheManager::getValueCacheReadView: invalid layer_idx");
@@ -681,14 +718,14 @@ nntrainer::Tensor KVCacheManager::getValueCacheReadView(unsigned int layer_idx,
  * Layout is fixed-size and little-endian-as-written (both targets are LE; a
  * future big-endian port has the version field to branch on). Everything after
  * `header_bytes` is the plane payload, in the same layer order the headerless
- * format used -- so the payload of a v1 file and of a legacy file are
- * byte-identical for a non-ring model, and a legacy file still loads (see
- * load()).
+ * format used. Version 2 stores raw encoded bytes, including UINT16 half
+ * bits; legacy FP32/FP16 payloads remain readable (see load()).
  */
 namespace {
 
 constexpr char kKvMagic[8] = {'N', 'N', 'T', 'R', 'K', 'V', 'C', '\0'};
-constexpr unsigned int kKvVersion = 1u;
+constexpr unsigned int kKvVersion =
+  2u; // Raw encoded KV, including UINT16 half bits.
 constexpr unsigned int kKvTagMax = 64u;
 
 struct KvCacheFileHeader {
@@ -795,6 +832,8 @@ void KVCacheManager::save(const std::string &path, unsigned int seq_len,
   if (layer_caches_.empty()) {
     throw std::runtime_error("KVCacheManager::save: not allocated");
   }
+  if (usesPagedStorage() && seq_len > getPosition())
+    throw std::out_of_range("Cannot save unwritten paged KV");
   if (seq_len > max_seq_len_) {
     throw std::out_of_range(
       "KVCacheManager::save: seq_len exceeds max_seq_len");
@@ -841,6 +880,11 @@ void KVCacheManager::save(const std::string &path, unsigned int seq_len,
   // Gemma4Transformer::createSharedAttention). load() below skips the
   // duplicates rather than replaying them.
   for (unsigned int li = 0; li < layer_caches_.size(); ++li) {
+    if (usesPagedStorage()) {
+      cpu_cache_->savePlane(f, li, true, seq_len);
+      cpu_cache_->savePlane(f, li, false, seq_len);
+      continue;
+    }
     const auto &lc = layer_caches_[li];
     ml::train::TensorDim save_dim = lc.key_cache.getDim();
     // [kv-window-ring] A ring layer's plane is Wcap rows and the live rows
@@ -856,7 +900,8 @@ void KVCacheManager::save(const std::string &path, unsigned int seq_len,
                                   .getSharedDataTensor(save_dim, 0, true);
 
 #if defined(ENABLE_CUDA) && ENABLE_CUDA == 1
-    // Device-only KV: Tensor::save reads on the host -- stage D2H first.
+    // Persist raw encoded bytes; UINT16 Tensor serialization carries unrelated
+    // quantization metadata and must not interpret half-bit cache storage.
     auto save_slice = [&f](nntrainer::Tensor &slice) {
       void *ptr = (void *)slice.getData<char>();
       const auto md = slice.getMemoryData();
@@ -866,17 +911,21 @@ void KVCacheManager::save(const std::string &path, unsigned int seq_len,
                                        host_t.bytes()))
           throw std::runtime_error(
             "KVCacheManager::save: D2H staging of the device KV failed");
-        host_t.save(f);
+        f.write(host_t.getData<char>(), host_t.bytes());
       } else {
-        slice.save(f);
+        f.write(slice.getData<char>(), slice.bytes());
       }
     };
     save_slice(k_slice);
     save_slice(v_slice);
 #else
-    k_slice.save(f);
-    v_slice.save(f);
+    f.write(k_slice.getData<char>(), k_slice.bytes());
+    f.write(v_slice.getData<char>(), v_slice.bytes());
 #endif
+    k_slice.putData();
+    v_slice.putData();
+    if (!f)
+      throw std::runtime_error("Failed to write raw KV snapshot");
   }
 }
 
@@ -914,9 +963,11 @@ unsigned int KVCacheManager::load(const std::string &path, unsigned int seq_len,
                              " does not belong to this model: " + what);
   };
   if (versioned) {
-    if (h.version != kKvVersion)
+    if (h.version != 1u && h.version != kKvVersion)
       refuse("file format version " + std::to_string(h.version) +
              ", this build reads version " + std::to_string(kKvVersion));
+    if (h.version == 1u && dtype_ == ml::train::TensorDim::DataType::UINT16)
+      refuse("v1 UINT16 Tensor serialization is not a raw half-bit KV format");
     if (h.header_bytes != sizeof(KvCacheFileHeader))
       refuse("header is " + std::to_string(h.header_bytes) +
              " bytes, this build's is " +
@@ -969,6 +1020,8 @@ unsigned int KVCacheManager::load(const std::string &path, unsigned int seq_len,
     // A file written before the header existed: no identity, no length. Honour
     // the caller's seq_len (the only source there is) and say so once, because
     // every check above is unavailable for it.
+    if (dtype_ == ml::train::TensorDim::DataType::UINT16)
+      refuse("headerless UINT16 cache encoding is ambiguous");
     if (seq_len == 0)
       throw std::runtime_error(
         "KVCacheManager::load: " + path +
@@ -983,6 +1036,12 @@ unsigned int KVCacheManager::load(const std::string &path, unsigned int seq_len,
   if (seq_len > max_seq_len_) {
     throw std::out_of_range(
       "KVCacheManager::load: seq_len exceeds max_seq_len");
+  }
+
+  if (usesPagedStorage()) {
+    cpu_cache_->restorePlanes(f, seq_len);
+    cache_pos_ = seq_len;
+    return seq_len;
   }
 
   for (unsigned int i = 0; i < layer_caches_.size(); ++i) {
@@ -1021,21 +1080,27 @@ unsigned int KVCacheManager::load(const std::string &path, unsigned int seq_len,
       const auto md = slice.getMemoryData();
       if (md && !md->isHostAddressable()) {
         nntrainer::Tensor host_t(slice.getDim(), true);
-        host_t.read(f);
+        f.read(host_t.getData<char>(), host_t.bytes());
+        if (!f)
+          throw std::runtime_error("Truncated raw KV snapshot");
         if (!nntrainer::cuda::copy_any(
               ptr, (const void *)host_t.getData<char>(), host_t.bytes()))
           throw std::runtime_error(
             "KVCacheManager::load: H2D staging of the device KV failed");
       } else {
-        slice.read(f);
+        f.read(slice.getData<char>(), slice.bytes());
       }
     };
     load_slice(k_slice);
     load_slice(v_slice);
 #else
-    k_slice.read(f);
-    v_slice.read(f);
+    f.read(k_slice.getData<char>(), k_slice.bytes());
+    f.read(v_slice.getData<char>(), v_slice.bytes());
 #endif
+    k_slice.putData();
+    v_slice.putData();
+    if (!f)
+      throw std::runtime_error("Truncated raw KV snapshot");
   }
 
   setPosition(seq_len);

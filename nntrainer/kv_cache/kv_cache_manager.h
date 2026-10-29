@@ -11,6 +11,7 @@
 #include <kv_cache/kv_page_pool.h>
 #include <kv_cache/kv_storage.h>
 
+#include <iosfwd>
 #include <memory>
 #include <vector>
 
@@ -82,6 +83,8 @@ struct AttentionOptions {
   size_t window = 0; /**< Zero means all available history. */
   float scale = 0;   /**< Zero means 1/sqrt(head_dim). */
   float logit_softcap = 0;
+  std::vector<float>
+    sinks; /**< Optional denominator-only logit per query head. */
 };
 
 /** Cache ownership, publication and direct segmented CPU attention.
@@ -94,8 +97,7 @@ public:
   KvCacheManager(const KvCacheManager &) = delete;
   KvCacheManager &operator=(const KvCacheManager &) = delete;
 
-  /** page_tokens enables segmented CPU storage; graph Tensor binding is not
-   * supported in that mode. Pages are allocated as steps advance. */
+  /** page_tokens enables segmented CPU storage allocated as steps advance. */
   void initialize(
     const CacheSpec &spec,
     std::shared_ptr<MemAllocator> allocator = std::make_shared<MemAllocator>(),
@@ -142,6 +144,13 @@ public:
    */
   std::shared_ptr<MemoryData> keyMemory(size_t layer);
   std::shared_ptr<MemoryData> valueMemory(size_t layer);
+  bool paged() const;
+  /** One-row graph identity tensors, never used to hold cache history. */
+  std::shared_ptr<MemoryData> graphKeyMemory(size_t layer);
+  std::shared_ptr<MemoryData> graphValueMemory(size_t layer);
+  void savePlane(std::ostream &, size_t layer, bool key, size_t length) const;
+  /** Restore layer-major K/V planes atomically, preserving graph identities. */
+  void restorePlanes(std::istream &, size_t length);
 
 private:
   friend class KvStepScope;
@@ -152,12 +161,18 @@ private:
   std::shared_ptr<SessionState> state_;
 };
 
-/** Checked linear CPU access, held across the actual producer and consumer.
+/** Checked CPU access, held across the actual producer and consumer.
  * Tensor adapters must validate their exact raw slice before executing math.
  * This does not make arbitrary escaped raw Tensor pointers generation-safe.
  */
 class KvLayerAccess {
 public:
+  bool paged() const;
+  bool alias() const;
+  const LayerSpec &spec() const;
+  void append(const void *key, const void *value, size_t bytes);
+  std::vector<float> attention(const std::vector<float> &,
+                               const AttentionOptions &);
   void validateWrite(const void *key, const void *value, size_t bytes) const;
   void producerReady();
   void validateRead(const void *key, const void *value, size_t bytes) const;
@@ -181,6 +196,7 @@ public:
   ~KvStepScope();
   KvStepScope(const KvStepScope &) = delete;
   KvStepScope &operator=(const KvStepScope &) = delete;
+  static bool pagedActive();
   static std::unique_ptr<KvLayerAccess> access(const void *key_base,
                                                const void *value_base,
                                                size_t batch, size_t from,

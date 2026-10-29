@@ -1120,6 +1120,17 @@ void MHACoreLayer::finalize(nntrainer::InitLayerContext &context) {
     }
   }
 
+  if (runtime_config.cpu_kv_paged) {
+    NNTR_THROW_IF(!use_external_cache || query_dim.batch() != 1 || kv_int8 ||
+                    is_kv_ohwi_enabled() ||
+                    context.getExecutionMode() !=
+                      ml::train::ExecutionMode::INFERENCE,
+                  std::invalid_argument)
+      << "Paged KV requires batch-1 external-cache CPU inference without "
+         "INT8/OHWI";
+    kv_ring_cap = 0;
+  }
+
   theta = (float)std::get<props::RopeTheta>(mha_core_props).get();
 
   /** set Output dimension! - one output */
@@ -1430,6 +1441,11 @@ void MHACoreLayer::forwarding(nntrainer::RunLayerContext &context,
     nntrainer::Tensor output_step = output.getSharedDataTensor(
       output_step_dim, batch * output_dim.getFeatureLen(), true);
 
+    if (paged_forwarding(batch, from, to, query_step, key_step, value_step,
+                         output_step, cache_key, cache_value,
+                         use_sink ? &sink : nullptr))
+      continue;
+
     if (query_step.getDataType() == ml::train::TensorDim::DataType::FP32) {
 #if defined(ENABLE_OPENCL) && defined(ENABLE_FP16)
       // FP32 operands: the device route, else the host arms with their
@@ -1520,7 +1536,12 @@ void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
   if (use_external_cache) {
     cache_index = _from;
     incremental_step_size = _to - _from;
-    forwarding(context, training);
+    try {
+      forwarding(context, training);
+    } catch (...) {
+      incremental_step_size = 0;
+      throw;
+    }
     incremental_step_size = 0;
     return;
   }
@@ -1995,6 +2016,92 @@ static void _kvst_mark_scatter(double t1, double tk, double tv, double t2) {
   }
 }
 #endif
+
+bool MHACoreLayer::paged_forwarding(
+  unsigned int batch, unsigned int from, unsigned int to,
+  nntrainer::Tensor &query, nntrainer::Tensor &key, nntrainer::Tensor &value,
+  nntrainer::Tensor &output, nntrainer::Tensor &key_handle,
+  nntrainer::Tensor &value_handle, nntrainer::Tensor *sink) {
+  using namespace nntrainer::kv;
+  using DataType = ml::train::TensorDim::DataType;
+  if (!KvStepScope::pagedActive()) {
+    if (runtime_config.cpu_kv_paged)
+      throw std::logic_error("Paged MHA requires the model's active KV step");
+    return false;
+  }
+  if (!runtime_config.cpu || kv_int8 || kv_ring_cap || is_kv_ohwi_enabled() ||
+      key_handle.height() != 1 || value_handle.height() != 1)
+    throw std::logic_error("Paged MHA graph storage/profile mismatch");
+  auto access = KvStepScope::access(
+    key_handle.getData<char>(), value_handle.getData<char>(), batch, from, to);
+  if (!access || !access->paged())
+    throw std::logic_error("Paged MHA cache is not bound to its manager");
+  const auto &spec = access->spec();
+  if (theta > 0 && to > max_position_embeddings)
+    throw std::out_of_range("Paged MHA step exceeds its RoPE table capacity");
+  if (spec.num_kv_heads != num_heads_KV || spec.head_dim != head_dim ||
+      query.width() != num_heads_Q * head_dim || query.height() != to - from ||
+      output.size() != query.size() || key.width() != num_heads_KV * head_dim ||
+      value.width() != key.width() || key.height() != query.height() ||
+      value.height() != query.height())
+    throw std::invalid_argument("Paged MHA operand geometry mismatch");
+  // Only the new token block is staged. History stays in pool pages.
+  auto fp32_copy = [](nntrainer::Tensor &input) {
+    auto dim = input.getDim();
+    dim.setDataType(DataType::FP32);
+    nntrainer::Tensor result(dim, true);
+    result.copyData(input);
+    return result;
+  };
+  if (!access->alias()) {
+    auto k = fp32_copy(key);
+    auto v = fp32_copy(value);
+    if (theta > 0)
+      apply_rotary_emb_tensor_v2(k, k, head_dim, from, true);
+    auto dim = k.getDim();
+    dim.setDataType(key_handle.getDataType());
+    nntrainer::Tensor stored_k(dim, true), stored_v(dim, true);
+    if (spec.encoding == Encoding::Float32) {
+      stored_k.copyData(k);
+      stored_v.copyData(v);
+    } else {
+      for (size_t i = 0; i < k.size(); ++i) {
+        stored_k.getData<uint16_t>()[i] =
+          nntrainer::compute_fp32_to_fp16(k.getData<float>()[i]);
+        stored_v.getData<uint16_t>()[i] =
+          nntrainer::compute_fp32_to_fp16(v.getData<float>()[i]);
+      }
+    }
+    access->append(stored_k.getData<char>(), stored_v.getData<char>(),
+                   stored_k.bytes());
+  }
+  if (skip_prefill && to - from > 1)
+    return true;
+  auto q = fp32_copy(query);
+  if (theta > 0)
+    apply_rotary_emb_tensor_v2(q, q, head_dim, from, true);
+  AttentionOptions options;
+  options.query_heads = num_heads_Q;
+  options.causal = is_causal;
+  options.window = is_causal ? local_window_size : 0;
+  options.logit_softcap = attn_logit_softcapping;
+  if (sink) {
+    auto sink_fp32 = fp32_copy(*sink);
+    options.sinks.assign(sink_fp32.getData<float>(),
+                         sink_fp32.getData<float>() + sink_fp32.size());
+  }
+  std::vector<float> queries(q.getData<float>(), q.getData<float>() + q.size());
+  auto result = access->attention(queries, options);
+  nntrainer::Tensor fp32_output(q.getDim(), true);
+  std::copy(result.begin(), result.end(), fp32_output.getData<float>());
+  output.copyData(fp32_output);
+  if (runtime_config.cpu_trace)
+    std::fprintf(
+      stderr,
+      "[kv-paged-attention] from=%u to=%u alias=%d history_copy_bytes=0\n",
+      from, to, access->alias());
+  return true;
+}
 
 void MHACoreLayer::one_batch_incremental_forwarding(
   const unsigned int batch, const unsigned int _from, const unsigned int from,

@@ -53,6 +53,7 @@
 #include "json.hpp"
 #include "kv_ring.h" // kvRingCap / effectivePrefillChunk (shared with mha_core)
 #include "performance_metrics.h"
+#include "runtime_config.h"
 #include <fstream>
 #include <tokenizers_c.h>
 #include <tokenizers_cpp.h>
@@ -496,6 +497,8 @@ public:
    * every other layer keeps the full context window.
    */
   unsigned int getKVCacheRows(int layer_id) const {
+    if (RuntimeConfig::capture().cpu_kv_paged)
+      return static_cast<unsigned int>(MAX_SEQ_LEN);
     // The layer side (mha_core::finalize) reaches the same verdict by feeding
     // the same two facts to the same predicate: usesAttentionSink() is the
     // model's answer to mha_core's `use_sink` property, and this cache IS the

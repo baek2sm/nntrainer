@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <istream>
+#include <ostream>
 #include <utility>
 
 namespace nntrainer::kv {
@@ -390,16 +392,19 @@ KvStepScope::KvStepScope(KvCacheManager &manager, const StepLease &step) :
   manager_(manager), step_(step) {
   if (current_)
     throw std::logic_error("Nested CPU KV graph scopes are unsupported");
-  if (manager_.state_->spec.page_tokens)
-    throw std::invalid_argument("Paged KV graph attention is not supported");
+
   for (const auto &layer : manager_.state_->spec.layers)
     if (layer.batch != 1 || layer.capacity != layer.max_tokens)
       throw std::invalid_argument(
-        "CPU graph KV views require batch-1 linear storage");
+        "CPU graph KV views require batch-1 non-ring storage");
   current_ = this;
 }
 
 KvStepScope::~KvStepScope() { current_ = nullptr; }
+
+bool KvStepScope::pagedActive() {
+  return current_ && current_->manager_.paged();
+}
 
 void KvStepScope::validate() const {
   if (current_ != this)
@@ -419,24 +424,134 @@ std::unique_ptr<KvLayerAccess> KvStepScope::access(const void *key,
     throw std::logic_error("CPU MHA interval differs from its KV lease");
   const auto &state = *scope.manager_.state_;
   for (size_t i = 0; i < state.spec.layers.size(); ++i)
-    if (state.spec.layers[i].source < 0 && state.keys[i]->data() == key &&
+    if ((state.spec.page_tokens || state.spec.layers[i].source < 0) &&
+        state.keys[i] && state.values[i] && state.keys[i]->data() == key &&
         state.values[i]->data() == value)
       return std::unique_ptr<KvLayerAccess>(new KvLayerAccess(scope, i));
   throw std::logic_error("CPU MHA cache does not belong to the active KV step");
 }
 
 KvLayerAccess::KvLayerAccess(KvStepScope &scope, size_t layer) :
-  scope_(&scope),
-  scope_lifetime_(scope.lifetime_),
-  layer_(layer),
-  key_write_(scope.manager_.writeKey(scope.step_, layer)),
-  value_write_(scope.manager_.writeValue(scope.step_, layer)) {}
+  scope_(&scope), scope_lifetime_(scope.lifetime_), layer_(layer) {
+  if (!scope.manager_.paged()) {
+    key_write_ = scope.manager_.writeKey(scope.step_, layer);
+    value_write_ = scope.manager_.writeValue(scope.step_, layer);
+  }
+}
 
 KvStepScope &KvLayerAccess::checkedScope() const {
   if (scope_lifetime_.expired())
     throw std::logic_error("CPU KV access outlived its graph scope");
   scope_->validate();
   return *scope_;
+}
+
+bool KvCacheManager::paged() const {
+  return state_ && state_->spec.page_tokens;
+}
+
+std::shared_ptr<MemoryData> KvCacheManager::graphKeyMemory(size_t layer) {
+  const auto &s = layerSpec(layer);
+  if (!paged())
+    return keyMemory(layer);
+  if (!state_->keys[layer])
+    state_->keys[layer] = KvStorage::create(
+      checkedMultiply(s.batch, s.rowBytes()), std::make_shared<MemAllocator>());
+  return state_->keys[layer]->memory();
+}
+std::shared_ptr<MemoryData> KvCacheManager::graphValueMemory(size_t layer) {
+  const auto &s = layerSpec(layer);
+  if (!paged())
+    return valueMemory(layer);
+  if (!state_->values[layer])
+    state_->values[layer] = KvStorage::create(
+      checkedMultiply(s.batch, s.rowBytes()), std::make_shared<MemAllocator>());
+  return state_->values[layer]->memory();
+}
+
+bool KvLayerAccess::paged() const { return checkedScope().manager_.paged(); }
+bool KvLayerAccess::alias() const { return spec().source >= 0; }
+const LayerSpec &KvLayerAccess::spec() const {
+  return checkedScope().manager_.layerSpec(layer_);
+}
+void KvLayerAccess::append(const void *key, const void *value, size_t bytes) {
+  auto &scope = checkedScope();
+  scope.manager_.append(scope.step_, layer_, key, value, bytes);
+  scope.manager_.markReady(scope.step_, layer_);
+}
+std::vector<float> KvLayerAccess::attention(const std::vector<float> &q,
+                                            const AttentionOptions &options) {
+  auto &scope = checkedScope();
+  return scope.manager_.attention(scope.step_, layer_, q, options);
+}
+
+void KvCacheManager::savePlane(std::ostream &out, size_t layer, bool key,
+                               size_t length) const {
+  if (!paged() || hasActiveStep() || !valid() || length > committedLength())
+    throw std::logic_error(
+      "Paged KV snapshot requires an idle committed range");
+  const auto &s = layerSpec(layer);
+  size_t owner = layer;
+  while (state_->spec.layers[owner].source >= 0)
+    owner = state_->spec.layers[owner].source;
+  const auto &pages =
+    key ? state_->key_pages[owner] : state_->value_pages[owner];
+  const size_t stride = 1 + (s.max_tokens - 1) / state_->spec.page_tokens;
+  for (size_t b = 0; b < s.batch; ++b)
+    for (size_t pos = 0; pos < length;) {
+      const size_t count = std::min(length - pos, state_->spec.page_tokens);
+      const auto &page = pages.at(b * stride + pos / state_->spec.page_tokens);
+      out.write(static_cast<const char *>(page->data()), count * s.rowBytes());
+      if (!out)
+        throw std::runtime_error("Failed to write paged KV snapshot");
+      pos += count;
+    }
+}
+
+void KvCacheManager::restorePlanes(std::istream &in, size_t length) {
+  if (!paged() || hasActiveStep() || !valid())
+    throw std::logic_error("Paged KV restore requires an idle session");
+  if (!length) {
+    reset();
+    return;
+  }
+  KvCacheManager next;
+  next.initialize(state_->spec, std::make_shared<MemAllocator>(), state_->pool);
+  auto step = next.beginStep(length);
+  for (size_t i = 0; i < state_->spec.layers.size(); ++i) {
+    const auto &s = state_->spec.layers[i];
+    for (bool key : {true, false})
+      for (size_t b = 0; b < s.batch; ++b) {
+        if (s.source >= 0 || !s.has_producer) {
+          size_t left = checkedMultiply(length, s.rowBytes());
+          char scratch[4096];
+          while (left) {
+            const size_t n = std::min(left, sizeof(scratch));
+            in.read(scratch, n);
+            if (!in)
+              throw std::runtime_error("Truncated paged KV snapshot");
+            left -= n;
+          }
+        } else {
+          auto segments =
+            key ? next.writeKey(step, i, b) : next.writeValue(step, i, b);
+          for (auto &segment : segments) {
+            in.read(static_cast<char *>(segment.writableData()),
+                    segment.sizeBytes());
+            if (!in)
+              throw std::runtime_error("Truncated paged KV snapshot");
+          }
+        }
+      }
+    if (s.source < 0 && s.has_producer)
+      next.markReady(step, i);
+  }
+  next.commit(std::move(step));
+  state_->key_pages.swap(next.state_->key_pages);
+  state_->value_pages.swap(next.state_->value_pages);
+  state_->stats = next.state_->stats;
+  state_->position = length;
+  ++state_->epoch->generation;
 }
 
 void KvLayerAccess::validateWrite(const void *key, const void *value,
