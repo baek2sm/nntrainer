@@ -17,6 +17,8 @@ namespace nntrainer::kv {
 
 struct SessionState;
 struct ViewEpoch;
+class KvStepScope;
+class KvLayerAccess;
 
 /** Byte range with strong allocation ownership and a checked generation.
  * Read data is const; writableData() additionally checks the live step.
@@ -92,6 +94,8 @@ public:
   std::vector<KvView> readValue(const StepLease &, size_t layer,
                                 size_t batch = 0);
   void markReady(const StepLease &, size_t owner_layer);
+  /** Bind checked accesses to one synchronous graph invocation. */
+  std::unique_ptr<KvStepScope> bindStep(const StepLease &);
   void commit(StepLease &&);
   void abort(StepLease &&);
   void reset();
@@ -110,10 +114,57 @@ public:
   std::shared_ptr<MemoryData> valueMemory(size_t layer);
 
 private:
+  friend class KvStepScope;
+  friend class KvLayerAccess;
   void checkStep(const StepLease &) const;
   std::vector<KvView> views(const StepLease &, size_t layer, size_t batch,
                             bool key, bool write);
   std::shared_ptr<SessionState> state_;
+};
+
+/** Checked linear CPU access, held across the actual producer and consumer.
+ * Tensor adapters must validate their exact raw slice before executing math.
+ * This does not make arbitrary escaped raw Tensor pointers generation-safe.
+ */
+class KvLayerAccess {
+public:
+  void validateWrite(const void *key, const void *value, size_t bytes) const;
+  void producerReady();
+  void validateRead(const void *key, const void *value, size_t bytes) const;
+
+private:
+  friend class KvStepScope;
+  KvLayerAccess(KvStepScope &, size_t layer);
+  KvStepScope &checkedScope() const;
+  KvStepScope *scope_;
+  std::weak_ptr<char> scope_lifetime_;
+  size_t layer_;
+  std::vector<KvView> key_write_, value_write_, key_read_, value_read_;
+};
+
+/** Thread-confined bridge shared by graph and MHA DSOs through libnntrainer.
+ * No nested graph execution, asynchronous backend or ring layout is supported.
+ * The scope must be destroyed before its lease and cache manager.
+ */
+class KvStepScope {
+public:
+  ~KvStepScope();
+  KvStepScope(const KvStepScope &) = delete;
+  KvStepScope &operator=(const KvStepScope &) = delete;
+  static std::unique_ptr<KvLayerAccess> access(const void *key_base,
+                                               const void *value_base,
+                                               size_t batch, size_t from,
+                                               size_t to);
+
+private:
+  friend class KvCacheManager;
+  friend class KvLayerAccess;
+  KvStepScope(KvCacheManager &, const StepLease &);
+  void validate() const;
+  static thread_local KvStepScope *current_;
+  KvCacheManager &manager_;
+  const StepLease &step_;
+  std::shared_ptr<char> lifetime_ = std::make_shared<char>(0);
 };
 
 } // namespace nntrainer::kv

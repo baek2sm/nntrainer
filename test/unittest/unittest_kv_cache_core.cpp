@@ -162,6 +162,86 @@ TEST(KvCacheCore, deviceMemoryRejectedByCpuAdapter) {
   EXPECT_EQ(allocator->allocations, 0u);
 }
 
+TEST(KvCacheCore, graphScopeChecksRealSlicesAndProducerCompletion) {
+  KvCacheManager manager;
+  auto s = spec();
+  s.layers.push_back(s.layers[0]);
+  manager.initialize(s);
+  auto step = manager.beginStep(2);
+  auto scope = manager.bindStep(step);
+  auto *key = manager.keyMemory(0)->getAddr<void>();
+  auto *value = manager.valueMemory(0)->getAddr<void>();
+  auto access = KvStepScope::access(key, value, 0, 0, 2);
+  ASSERT_NE(access, nullptr);
+  const size_t bytes = 2 * s.layers[0].rowBytes();
+  access->validateWrite(key, value, bytes);
+  EXPECT_THROW(access->validateWrite(value, key, bytes), std::logic_error);
+  EXPECT_THROW(access->validateRead(key, value, bytes), std::logic_error);
+  std::memset(key, 0, bytes);
+  std::memset(value, 0, bytes);
+  access->producerReady();
+  access->validateRead(key, value, bytes);
+  EXPECT_THROW(manager.commit(std::move(step)), std::logic_error);
+  EXPECT_THROW(KvStepScope::access(key, value, 0, 1, 2), std::logic_error);
+  EXPECT_THROW(KvStepScope::access(value, key, 0, 0, 2), std::logic_error);
+  auto other =
+    KvStepScope::access(manager.keyMemory(1)->getAddr<void>(),
+                        manager.valueMemory(1)->getAddr<void>(), 0, 0, 2);
+  other->producerReady();
+  manager.commit(std::move(step));
+  EXPECT_THROW(access->validateRead(key, value, bytes), std::logic_error);
+}
+
+TEST(KvCacheCore, graphScopeRejectsStaleAccessAfterAbort) {
+  KvCacheManager manager;
+  manager.initialize(spec());
+  auto step = manager.beginStep(1);
+  auto scope = manager.bindStep(step);
+  auto access =
+    KvStepScope::access(manager.keyMemory(0)->getAddr<void>(),
+                        manager.valueMemory(0)->getAddr<void>(), 0, 0, 1);
+  manager.abort(std::move(step));
+  EXPECT_THROW(access->producerReady(), std::logic_error);
+  EXPECT_EQ(manager.committedLength(), 0u);
+}
+
+TEST(KvCacheCore, layerAccessCannotOutliveItsGraphScope) {
+  KvCacheManager manager;
+  manager.initialize(spec());
+  auto step = manager.beginStep(1);
+  auto scope = manager.bindStep(step);
+  auto access =
+    KvStepScope::access(manager.keyMemory(0)->getAddr<void>(),
+                        manager.valueMemory(0)->getAddr<void>(), 0, 0, 1);
+  scope.reset();
+  auto next_scope = manager.bindStep(step);
+  EXPECT_THROW(access->producerReady(), std::logic_error);
+}
+
+TEST(KvCacheCore, graphScopeUsesDeclaredHybridProducersAndRejectsRing) {
+  KvCacheManager manager;
+  auto s = spec();
+  s.layers.push_back(s.layers[0]);
+  s.layers[1].has_producer = false;
+  manager.initialize(s);
+  {
+    auto step = manager.beginStep(1);
+    auto scope = manager.bindStep(step);
+    auto access =
+      KvStepScope::access(manager.keyMemory(0)->getAddr<void>(),
+                          manager.valueMemory(0)->getAddr<void>(), 0, 0, 1);
+    EXPECT_THROW(KvStepScope::access(manager.keyMemory(1)->getAddr<void>(),
+                                     manager.valueMemory(1)->getAddr<void>(), 0,
+                                     0, 1),
+                 std::out_of_range);
+    access->producerReady();
+    manager.commit(std::move(step));
+  }
+  manager.initialize(spec(4, 8));
+  auto step = manager.beginStep(1);
+  EXPECT_THROW(manager.bindStep(step), std::invalid_argument);
+}
+
 TEST(KvCacheCore, publishOnlyAfterAllOwnersAreReady) {
   KvCacheManager manager;
   auto s = spec();

@@ -135,7 +135,7 @@ std::vector<KvView> KvCacheManager::views(const StepLease &step, size_t layer,
                                           size_t batch, bool key, bool write) {
   checkStep(step);
   const auto &s = state_->spec.layers.at(layer);
-  if (batch >= s.batch || (write && s.source >= 0))
+  if (!s.has_producer || batch >= s.batch || (write && s.source >= 0))
     throw std::out_of_range("Invalid KV batch or alias write");
   if (!write) {
     size_t owner = layer;
@@ -185,7 +185,8 @@ std::vector<KvView> KvCacheManager::readValue(const StepLease &step, size_t l,
 
 void KvCacheManager::markReady(const StepLease &step, size_t layer) {
   checkStep(step);
-  if (state_->spec.layers.at(layer).source >= 0)
+  if (state_->spec.layers.at(layer).source >= 0 ||
+      !state_->spec.layers.at(layer).has_producer)
     throw std::invalid_argument("KV alias has no producer");
   state_->ready[layer] = true;
 }
@@ -193,7 +194,8 @@ void KvCacheManager::markReady(const StepLease &step, size_t layer) {
 void KvCacheManager::commit(StepLease &&step) {
   checkStep(step);
   for (size_t i = 0; i < state_->ready.size(); ++i)
-    if (state_->spec.layers[i].source < 0 && !state_->ready[i])
+    if (state_->spec.layers[i].source < 0 &&
+        state_->spec.layers[i].has_producer && !state_->ready[i])
       throw std::logic_error("KV commit before all producers completed");
   state_->position = step.to_;
   state_->epoch->active_step = 0;
@@ -244,6 +246,93 @@ std::shared_ptr<MemoryData> KvCacheManager::keyMemory(size_t layer) {
 std::shared_ptr<MemoryData> KvCacheManager::valueMemory(size_t layer) {
   layerSpec(layer);
   return state_->values[layer]->memory();
+}
+
+thread_local KvStepScope *KvStepScope::current_ = nullptr;
+
+std::unique_ptr<KvStepScope> KvCacheManager::bindStep(const StepLease &step) {
+  checkStep(step);
+  return std::unique_ptr<KvStepScope>(new KvStepScope(*this, step));
+}
+
+KvStepScope::KvStepScope(KvCacheManager &manager, const StepLease &step) :
+  manager_(manager), step_(step) {
+  if (current_)
+    throw std::logic_error("Nested CPU KV graph scopes are unsupported");
+  for (const auto &layer : manager_.state_->spec.layers)
+    if (layer.batch != 1 || layer.capacity != layer.max_tokens)
+      throw std::invalid_argument(
+        "CPU graph KV views require batch-1 linear storage");
+  current_ = this;
+}
+
+KvStepScope::~KvStepScope() { current_ = nullptr; }
+
+void KvStepScope::validate() const {
+  if (current_ != this)
+    throw std::logic_error("CPU KV access escaped its graph scope");
+  manager_.checkStep(step_);
+}
+
+std::unique_ptr<KvLayerAccess> KvStepScope::access(const void *key,
+                                                   const void *value,
+                                                   size_t batch, size_t from,
+                                                   size_t to) {
+  if (!current_)
+    return nullptr; // Existing unmanaged Tensor paths remain compatible.
+  auto &scope = *current_;
+  scope.validate();
+  if (batch || from != scope.step_.from() || to != scope.step_.to())
+    throw std::logic_error("CPU MHA interval differs from its KV lease");
+  const auto &state = *scope.manager_.state_;
+  for (size_t i = 0; i < state.spec.layers.size(); ++i)
+    if (state.spec.layers[i].source < 0 && state.keys[i]->data() == key &&
+        state.values[i]->data() == value)
+      return std::unique_ptr<KvLayerAccess>(new KvLayerAccess(scope, i));
+  throw std::logic_error("CPU MHA cache does not belong to the active KV step");
+}
+
+KvLayerAccess::KvLayerAccess(KvStepScope &scope, size_t layer) :
+  scope_(&scope),
+  scope_lifetime_(scope.lifetime_),
+  layer_(layer),
+  key_write_(scope.manager_.writeKey(scope.step_, layer)),
+  value_write_(scope.manager_.writeValue(scope.step_, layer)) {}
+
+KvStepScope &KvLayerAccess::checkedScope() const {
+  if (scope_lifetime_.expired())
+    throw std::logic_error("CPU KV access outlived its graph scope");
+  scope_->validate();
+  return *scope_;
+}
+
+void KvLayerAccess::validateWrite(const void *key, const void *value,
+                                  size_t bytes) const {
+  checkedScope();
+  if (key_write_.size() != 1 || value_write_.size() != 1 ||
+      key_write_[0].writableData() != key ||
+      value_write_[0].writableData() != value ||
+      key_write_[0].sizeBytes() != bytes ||
+      value_write_[0].sizeBytes() != bytes)
+    throw std::logic_error(
+      "CPU producer Tensor is outside its checked KV write view");
+}
+
+void KvLayerAccess::producerReady() {
+  auto &scope = checkedScope();
+  scope.manager_.markReady(scope.step_, layer_);
+  key_read_ = scope.manager_.readKey(scope.step_, layer_);
+  value_read_ = scope.manager_.readValue(scope.step_, layer_);
+}
+
+void KvLayerAccess::validateRead(const void *key, const void *value,
+                                 size_t bytes) const {
+  checkedScope();
+  if (key_read_.size() != 1 || value_read_.size() != 1 ||
+      key_read_[0].data() != key || value_read_[0].data() != value ||
+      key_read_[0].sizeBytes() != bytes || value_read_[0].sizeBytes() != bytes)
+    throw std::logic_error(
+      "CPU consumer Tensor is outside its checked KV read view");
 }
 
 } // namespace nntrainer::kv

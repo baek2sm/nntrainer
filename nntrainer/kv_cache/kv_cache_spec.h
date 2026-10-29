@@ -40,6 +40,8 @@ struct LayerSpec {
   size_t max_tokens = 0;
   size_t capacity = 0;
   int source = -1;
+  bool has_producer =
+    true; /**< False only for declared non-attention blocks. */
   Encoding encoding = Encoding::Float16;
   StorageType storage_type = StorageType::UInt16;
 
@@ -84,7 +86,8 @@ struct CacheSpec {
       const size_t aligned = checkedAdd(plane, 63) & ~size_t{63};
       if (s.source < -1 ||
           (s.source >= 0 && (static_cast<size_t>(s.source) >= i ||
-                             !s.sameGeometry(layers[s.source]))))
+                             !s.sameGeometry(layers[s.source]) ||
+                             !layers[s.source].has_producer)))
         throw std::invalid_argument("Invalid KV source or alias geometry");
       if (s.source < 0)
         bytes = checkedAdd(bytes, checkedMultiply(aligned, 2));
