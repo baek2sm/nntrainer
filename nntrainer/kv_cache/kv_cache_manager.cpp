@@ -20,6 +20,8 @@ struct ViewEpoch {
 struct SessionState {
   CacheSpec spec;
   std::vector<std::shared_ptr<KvStorage>> keys, values;
+  std::vector<std::vector<std::shared_ptr<KvStorage>>> key_pages, value_pages;
+  std::shared_ptr<MemAllocator> allocator;
   std::vector<bool> ready;
   std::shared_ptr<ViewEpoch> epoch = std::make_shared<ViewEpoch>();
   size_t position = 0;
@@ -88,9 +90,17 @@ void KvCacheManager::initialize(const CacheSpec &spec,
     throw std::logic_error("KV step is in flight");
   auto next = std::make_shared<SessionState>();
   next->spec = spec;
-  next->stats.backing_bytes = bytes;
+  next->stats.backing_bytes = spec.page_tokens ? 0 : bytes;
+  next->allocator = allocator;
+  next->key_pages.resize(spec.layers.size());
+  next->value_pages.resize(spec.layers.size());
   for (const auto &s : spec.layers) {
-    if (s.source >= 0) {
+    if (spec.page_tokens) {
+      next->keys.push_back(nullptr);
+      next->values.push_back(nullptr);
+      if (s.source < 0)
+        ++next->stats.owner_layers;
+    } else if (s.source >= 0) {
       next->keys.push_back(next->keys[s.source]);
       next->values.push_back(next->values[s.source]);
     } else {
@@ -115,6 +125,38 @@ StepLease KvCacheManager::beginStep(size_t count) {
     if (count > s.capacity)
       throw std::out_of_range("KV step exceeds physical capacity; split it");
   const size_t to = state_->position + count;
+  if (state_->spec.page_tokens) {
+    const size_t page_tokens = state_->spec.page_tokens;
+    const size_t pages = 1 + (to - 1) / page_tokens;
+    // Stage all allocations before changing the live session.
+    auto keys = state_->key_pages;
+    auto values = state_->value_pages;
+    size_t backing = state_->stats.backing_bytes;
+    for (size_t i = 0; i < state_->spec.layers.size(); ++i) {
+      const auto &s = state_->spec.layers[i];
+      if (s.source >= 0)
+        continue;
+      const size_t page_bytes = checkedMultiply(page_tokens, s.rowBytes());
+      const size_t aligned = checkedAdd(page_bytes, 63) & ~size_t{63};
+      // A fixed stride keeps existing batch page indices stable as pages grow.
+      const size_t stride = 1 + (s.max_tokens - 1) / page_tokens;
+      const size_t slots = checkedMultiply(s.batch, stride);
+      keys[i].resize(slots);
+      values[i].resize(slots);
+      for (size_t b = 0; b < s.batch; ++b)
+        for (size_t p = 0; p < pages; ++p) {
+          const size_t index = b * stride + p;
+          if (!keys[i][index]) {
+            keys[i][index] = KvStorage::create(page_bytes, state_->allocator);
+            values[i][index] = KvStorage::create(page_bytes, state_->allocator);
+            backing = checkedAdd(backing, checkedMultiply(aligned, 2));
+          }
+        }
+    }
+    state_->key_pages.swap(keys);
+    state_->value_pages.swap(values);
+    state_->stats.backing_bytes = backing;
+  }
   state_->overwrites = false;
   for (const auto &s : state_->spec.layers)
     state_->overwrites |= to > s.capacity;
@@ -147,6 +189,31 @@ std::vector<KvView> KvCacheManager::views(const StepLease &step, size_t layer,
   const size_t from =
     write ? step.from_ : (step.to_ > s.capacity ? step.to_ - s.capacity : 0);
   const size_t count = step.to_ - from;
+  if (state_->spec.page_tokens) {
+    const size_t page_tokens = state_->spec.page_tokens;
+    const size_t stride = 1 + (s.max_tokens - 1) / page_tokens;
+    size_t owner = layer;
+    while (state_->spec.layers[owner].source >= 0)
+      owner = state_->spec.layers[owner].source;
+    const auto &pages =
+      key ? state_->key_pages[owner] : state_->value_pages[owner];
+    std::vector<KvView> result;
+    for (size_t pos = from; pos < step.to_;) {
+      const size_t page = pos / page_tokens;
+      const size_t offset = pos % page_tokens;
+      const size_t rows = std::min(step.to_ - pos, page_tokens - offset);
+      KvView v;
+      v.storage_ = pages.at(batch * stride + page);
+      v.epoch_ = state_->epoch;
+      v.generation_ = state_->epoch->generation;
+      v.step_ = write ? step.id_ : 0;
+      v.offset_ = offset * s.rowBytes();
+      v.bytes_ = rows * s.rowBytes();
+      result.push_back(std::move(v));
+      pos += rows;
+    }
+    return result;
+  }
   const size_t row = from % s.capacity;
   const size_t first = std::min(count, s.capacity - row);
   std::vector<KvView> result;
@@ -212,6 +279,13 @@ void KvCacheManager::reset() {
     throw std::logic_error("Cannot reset an uninitialized or active KV cache");
   state_->valid = true;
   state_->position = 0;
+  if (state_->spec.page_tokens) {
+    for (auto &pages : state_->key_pages)
+      pages.clear();
+    for (auto &pages : state_->value_pages)
+      pages.clear();
+    state_->stats.backing_bytes = 0;
+  }
   ++state_->epoch->generation;
 }
 
@@ -220,6 +294,8 @@ void KvCacheManager::setPosition(size_t position) {
     throw std::logic_error("Cannot seek an unavailable KV session");
   if (position > state_->spec.layers.front().max_tokens)
     throw std::out_of_range("KV position exceeds capacity");
+  if (state_->spec.page_tokens && position > state_->position)
+    throw std::logic_error("Cannot seek beyond committed paged KV");
   state_->position = position;
   ++state_->epoch->generation;
 }
@@ -241,10 +317,14 @@ const LayerSpec &KvCacheManager::layerSpec(size_t layer) const {
 }
 std::shared_ptr<MemoryData> KvCacheManager::keyMemory(size_t layer) {
   layerSpec(layer);
+  if (state_->spec.page_tokens)
+    throw std::logic_error("Paged KV has no contiguous Tensor bridge");
   return state_->keys[layer]->memory();
 }
 std::shared_ptr<MemoryData> KvCacheManager::valueMemory(size_t layer) {
   layerSpec(layer);
+  if (state_->spec.page_tokens)
+    throw std::logic_error("Paged KV has no contiguous Tensor bridge");
   return state_->values[layer]->memory();
 }
 
@@ -259,6 +339,8 @@ KvStepScope::KvStepScope(KvCacheManager &manager, const StepLease &step) :
   manager_(manager), step_(step) {
   if (current_)
     throw std::logic_error("Nested CPU KV graph scopes are unsupported");
+  if (manager_.state_->spec.page_tokens)
+    throw std::invalid_argument("Paged KV graph attention is not supported");
   for (const auto &layer : manager_.state_->spec.layers)
     if (layer.batch != 1 || layer.capacity != layer.max_tokens)
       throw std::invalid_argument(

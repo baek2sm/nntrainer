@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 /** @file kv_cache_spec.h
- * @brief Internal, backend-independent KV geometry for contiguous CPU storage.
+ * @brief Internal, backend-independent KV geometry for CPU storage.
  * @author Codex (OpenAI)
- * @bug Only contiguous token-major CPU layouts are supported.
+ * @bug Paged layouts are not connected to graph attention.
  */
 #ifndef NNTRAINER_KV_CACHE_SPEC_H
 #define NNTRAINER_KV_CACHE_SPEC_H
@@ -63,6 +63,8 @@ struct LayerSpec {
 
 struct CacheSpec {
   std::vector<LayerSpec> layers;
+  /** Zero selects contiguous storage; otherwise allocate pages on demand. */
+  size_t page_tokens = 0;
 
   /** Validate the entire declaration before making any allocation. */
   size_t validate() const {
@@ -81,6 +83,10 @@ struct CacheSpec {
              (s.storage_type == StorageType::Float16 ||
               s.storage_type == StorageType::UInt16))))
         throw std::invalid_argument("Invalid KV encoding/backing combination");
+      if (page_tokens && s.capacity != s.max_tokens)
+        throw std::invalid_argument("Paged KV does not support ring storage");
+      if (page_tokens)
+        checkedMultiply(page_tokens, s.rowBytes());
       const size_t plane = s.planeBytes();
       // Count actual aligned backing bytes, not just the logical payload.
       const size_t aligned = checkedAdd(plane, 63) & ~size_t{63};

@@ -457,6 +457,59 @@ TEST(KvCacheCore, emptyOrMovedViewAccessIsRejected) {
   EXPECT_THROW(view.data(), std::logic_error);
 }
 
+TEST(KvCacheCore, pagedViewsAllocateOnDemandAndPreserveTokenOrder) {
+  auto allocator = std::make_shared<CountingAllocator>();
+  auto s = spec(8, 8);
+  s.page_tokens = 2;
+  s.layers.push_back(s.layers[0]);
+  s.layers[1].source = 0;
+  KvCacheManager manager;
+  manager.initialize(s, allocator);
+  EXPECT_EQ(allocator->allocations, 0u);
+  auto step = manager.beginStep(3);
+  auto write = manager.writeKey(step, 0);
+  ASSERT_EQ(write.size(), 2u);
+  EXPECT_EQ(allocator->allocations, 4u);
+  size_t token = 0;
+  for (auto &view : write) {
+    auto data = static_cast<float *>(view.writableData());
+    for (size_t row = 0; row < view.sizeBytes() / 16; ++row)
+      data[row * 4] = static_cast<float>(++token);
+  }
+  manager.markReady(step, 0);
+  auto read = manager.readKey(step, 1);
+  ASSERT_EQ(read.size(), 2u);
+  token = 0;
+  for (auto &view : read) {
+    auto data = static_cast<const float *>(view.data());
+    for (size_t row = 0; row < view.sizeBytes() / 16; ++row)
+      EXPECT_EQ(data[row * 4], static_cast<float>(++token));
+  }
+  EXPECT_THROW(manager.keyMemory(0), std::logic_error);
+  EXPECT_THROW(manager.bindStep(step), std::invalid_argument);
+  manager.commit(std::move(step));
+  auto next = manager.beginStep(2);
+  EXPECT_EQ(allocator->allocations, 6u);
+  EXPECT_THROW(read[0].data(), std::logic_error);
+  finish(manager, std::move(next));
+  manager.reset();
+  EXPECT_EQ(manager.stats().backing_bytes, 0u);
+}
+
+TEST(KvCacheCore, pagedAllocationFailureLeavesSessionUnchanged) {
+  auto allocator = std::make_shared<CountingAllocator>();
+  auto s = spec();
+  s.page_tokens = 2;
+  KvCacheManager manager;
+  manager.initialize(s, allocator);
+  allocator->fail_at = 1;
+  EXPECT_THROW(manager.beginStep(2), std::bad_alloc);
+  EXPECT_EQ(manager.committedLength(), 0u);
+  EXPECT_FALSE(manager.hasActiveStep());
+  EXPECT_EQ(manager.stats().backing_bytes, 0u);
+  EXPECT_EQ(allocator->frees, 1u);
+}
+
 GTEST_API_ int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

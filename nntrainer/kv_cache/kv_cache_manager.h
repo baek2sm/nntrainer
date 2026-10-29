@@ -81,6 +81,8 @@ public:
   KvCacheManager(const KvCacheManager &) = delete;
   KvCacheManager &operator=(const KvCacheManager &) = delete;
 
+  /** page_tokens enables segmented CPU storage; graph Tensor binding is not
+   * supported in that mode. Pages are allocated as steps advance. */
   void initialize(
     const CacheSpec &spec,
     std::shared_ptr<MemAllocator> allocator = std::make_shared<MemAllocator>());
