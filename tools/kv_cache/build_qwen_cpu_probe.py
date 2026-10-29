@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build a logits probe against a root or standalone CausalLM Meson CPU build.
 
-Use --header-revision only when observing old binaries while source headers have
-changed. A probe must be rebuilt whenever the linked CausalLM ABI changes.
+Use --header-tree for an older complete project ABI, or --header-revision for
+the legacy three-header override. Rebuild when the linked CausalLM ABI changes.
 Existing libraries are linked without a Ninja rebuild, including Android builds.
 """
 import argparse
@@ -18,8 +18,17 @@ def main():
     parser.add_argument("--build", type=Path, default=Path("build-kv-cpu"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--header-revision")
+    parser.add_argument("--source", type=Path,
+                        help="Alternate standalone runner source (default: logits probe)")
+    parser.add_argument("--header-tree", type=Path,
+                        help="Matching project source/header checkout for a preserved ABI")
+    parser.add_argument("--header-tree-revision",
+                        help="Provenance label for --header-tree, e.g. git archive revision")
     args = parser.parse_args()
+    if args.header_revision and args.header_tree:
+        parser.error("Choose --header-revision or --header-tree")
     root = Path(__file__).resolve().parents[2]
+    source = (args.source or root / "tools/kv_cache/qwen_cpu_probe.cpp").resolve()
     build = args.build.resolve()
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -54,6 +63,52 @@ def main():
         else:
             compile_args.append(argv[i])
             i += 1
+    header_hashes = {}
+    if args.header_tree:
+        tree = args.header_tree.resolve()
+        # json.hpp is downloaded/generated into the app directory and is not
+        # present in git archives. Reuse that exact dependency without adding
+        # current project headers back to the preserved ABI search path.
+        generated = output.parent / "generated-dependencies"
+        generated.mkdir(exist_ok=True)
+        dependency = root / "Applications/CausalLM/json.hpp"
+        if dependency.is_file():
+            destination = generated / "json.hpp"
+            if not destination.exists():
+                destination.symlink_to(dependency)
+            compile_args.insert(1, "-I" + str(generated))
+            header_hashes["generated/json.hpp"] = hashlib.sha256(dependency.read_bytes()).hexdigest()
+
+        def map_include(value):
+            path = Path(value)
+            absolute = (compile_dir / path).resolve() if not path.is_absolute() else path.resolve()
+            try:
+                relative = absolute.relative_to(root)
+            except ValueError:
+                return value
+            if relative.parts[:2] == ("Applications", "CausalLM"):
+                if any(part in ("third_party", "xgrammar", "lib") for part in relative.parts[2:]):
+                    return value
+            elif not relative.parts or relative.parts[0] not in ("nntrainer", "api"):
+                return value
+            mapped = tree / relative
+            if not mapped.is_dir():
+                raise RuntimeError(f"Matching header tree lacks {relative}")
+            return str(mapped)
+
+        for index, argument in enumerate(compile_args):
+            if argument.startswith("-I") and len(argument) > 2:
+                compile_args[index] = "-I" + map_include(argument[2:])
+            elif index and compile_args[index - 1] in ("-I", "-isystem"):
+                compile_args[index] = map_include(argument)
+        for relative in ("Applications/CausalLM/models/transformer.h",
+                         "Applications/CausalLM/models/causal_lm.h",
+                         "Applications/CausalLM/kv_cache_manager.h",
+                         "Applications/CausalLM/models/performance_metrics.h",
+                         "Applications/CausalLM/factory.h"):
+            path = tree / relative
+            if path.exists():
+                header_hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     if args.header_revision:
         include = output.parent / "baseline-headers"
         include.mkdir(exist_ok=True)
@@ -64,10 +119,26 @@ def main():
                 "git", "show", f"{args.header_revision}:{path}"], cwd=root)
             (include / Path(path).name).write_bytes(content)
         compile_args.insert(1, "-I" + str(include))
+    header_root = args.header_tree.resolve() if args.header_tree else root
+    for relative in ("Applications/CausalLM/models/transformer.h",
+                     "Applications/CausalLM/models/causal_lm.h",
+                     "Applications/CausalLM/kv_cache_manager.h",
+                     "Applications/CausalLM/models/performance_metrics.h",
+                     "Applications/CausalLM/models/factory.h",
+                     "nntrainer/kv_cache/kv_cache_manager.h",
+                     "nntrainer/kv_cache/kv_cache_spec.h"):
+        path = header_root / relative
+        if args.header_revision and relative in (
+                "Applications/CausalLM/models/transformer.h",
+                "Applications/CausalLM/models/causal_lm.h",
+                "Applications/CausalLM/kv_cache_manager.h"):
+            path = include / Path(relative).name
+        if path.exists():
+            header_hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     obj = output.with_suffix(".o")
     # The app uses -ffast-math on Android. The observer must still detect NaN/
     # infinity instead of having std::isfinite optimized to an unconditional true.
-    compile_args += ["-fno-fast-math", "-c", str(root / "tools/kv_cache/qwen_cpu_probe.cpp"),
+    compile_args += ["-fno-fast-math", "-c", str(source),
                      "-o", str(obj)]
     subprocess.run(compile_args, cwd=compile_dir, check=True)
     i = link_args.index("-o")
@@ -82,14 +153,17 @@ def main():
                       "-Wl,-rpath," + str(build / "nntrainer")]
     subprocess.run(link_args, cwd=build, check=True)
     metadata = {"header_revision": args.header_revision,
+                "header_tree": str(args.header_tree.resolve()) if args.header_tree else None,
+                "header_tree_revision": args.header_tree_revision,
+                "header_sha256": header_hashes,
                 "git_head": subprocess.check_output(
                     ["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
                 "source_tree_dirty": bool(subprocess.check_output(
                     ["git", "status", "--porcelain"], cwd=root)),
                 "source_diff_sha256": hashlib.sha256(subprocess.check_output(
                     ["git", "diff"], cwd=root)).hexdigest(),
-                "probe_source_sha256": hashlib.sha256(
-                    (root / "tools/kv_cache/qwen_cpu_probe.cpp").read_bytes()).hexdigest(),
+                "probe_source": str(source),
+                "probe_source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 "target": target, "main_object": main_object,
                 "android": is_android,
                 "compile_directory": str(compile_dir),

@@ -13,6 +13,10 @@ produce KV (for example convolution blocks in a hybrid model). MHA validates
 its actual Tensor slices against core write views before producing K/V, marks
 the owner ready after both writes, and validates read views before attention.
 Commit refuses missing producers. Graph exceptions abort the unpublished step.
+This is KV publication, not atomic rollback of the complete model. Hybrid
+convolution state and other mutable graph tensors are outside the lease;
+after a mid-graph failure, recreate/reset the complete model before continuing
+such a session. Changing only the KV position does not restore that state.
 
 The bridge does not protect arbitrary escaped raw Tensor pointers, does not
 provide asynchronous completion, and does not make non-KV encoder models use
@@ -64,11 +68,14 @@ Use the performance-specific observer; the correctness observer dumps logits
 and is unsuitable for controlled timings.
 
 ```bash
+python3 tools/kv_cache/freeze_cpu_runtime.py --build build-cpu \
+  --output build-cpu/benchmark/runtime-candidate
 python3 tools/kv_cache/build_qwen_cpu_probe.py --build build-cpu \
   --source tools/kv_cache/qwen_cpu_benchmark.cpp \
   --output build-cpu/benchmark/qwen_cpu_benchmark
 python3 tools/kv_cache/benchmark_qwen3_cpu.py --target linux \
   --probe build-cpu/benchmark/qwen_cpu_benchmark \
+  --runtime-dir build-cpu/benchmark/runtime-candidate \
   --model "$KV_MODEL_DIR" --output build-cpu/benchmark/results \
   --profile legacy-packed --label candidate \
   --context 1024 --context 4096 --decode-tokens 32 \
@@ -79,6 +86,9 @@ Set `KV_MODEL_DIR` to the prepared model directory containing its configuration
 and weight files. The benchmark uses fixed token IDs to prevent early EOS;
 it measures workload cost, not language quality. Load/packing, initialization,
 warmup, first-token timing and decode timing are recorded separately.
+The runtime freezer reads Meson targets instead of recursively searching the
+build tree, which may contain older validation snapshots. It records source
+paths/hashes and rejects missing targets, duplicate names and existing output.
 
 On Android, use an NDK-built runner, matching runtime libraries, ARM-packed
 weights and `--target android --serial "$ANDROID_SERIAL" --runtime-dir

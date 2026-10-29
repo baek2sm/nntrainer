@@ -208,8 +208,8 @@ def trace_passed(observation, allow_compatibility):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--serial", default="bacd420f")
-    parser.add_argument("--remote-root", default="/data/local/tmp/nntr_kv_cpu_bacd420f")
+    parser.add_argument("--serial", required=True, help="Explicit target device serial")
+    parser.add_argument("--remote-root", help="Dedicated root; defaults to nntr_kv_cpu_<serial>")
     parser.add_argument("--hf", type=Path, default=Path("build-kv-cpu/models/hf/qwen3-0.6b"))
     parser.add_argument("--model", type=Path, action="append")
     parser.add_argument("--probe", type=Path)
@@ -237,9 +237,13 @@ def main():
                         help="Baseline mode: record missing alias/copy witnesses without failing functional parity")
     parser.add_argument("--cpu-attention-fp32", action="store_true",
                         help="Opt in to preserving FP32 query/attention inputs on CPU")
+    parser.add_argument("--cpu-kv-tiled", action="store_true",
+                        help="Opt in to bounded ARM K/V tile packing instead of full-prefix packing")
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.serial):
         parser.error("Invalid explicit device serial")
+    if args.remote_root is None:
+        args.remote_root = f"/data/local/tmp/nntr_kv_cpu_{args.serial}"
     if args.remote_root != f"/data/local/tmp/nntr_kv_cpu_{args.serial}":
         parser.error("Remote root must be the dedicated /data/local/tmp/nntr_kv_cpu_<serial> directory")
     if args.tokens < 2 or args.threads < 1 or (args.prefill_chunk is not None and args.prefill_chunk < 1):
@@ -253,8 +257,10 @@ def main():
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
     if args.reuse_reference:
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(args.hf, local_files_only=True)
+        # Existing requests already contain rendered prompts and exact IDs.
+        # Only decoding is needed here; avoid importing torch/transformers.
+        from tokenizers import Tokenizer
+        tokenizer = Tokenizer.from_file(str(args.hf / "tokenizer.json"))
         if json.loads((args.output / "reference.json").read_text())["tokens"] != args.tokens:
             parser.error("Existing reference token budget differs")
     else:
@@ -270,6 +276,7 @@ def main():
                 "harness_sha256": sha256(Path(__file__)),
                 "allow_compatibility_trace": args.allow_compatibility_trace,
                 "cpu_attention_fp32": args.cpu_attention_fp32,
+                "cpu_kv_tiled": args.cpu_kv_tiled,
                 "android_baseline": str(args.android_baseline) if args.android_baseline else None,
                 "require_baseline_bitwise": args.require_baseline_bitwise,
                 "models": [], "runs": []}
@@ -333,6 +340,7 @@ def main():
            "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": str(args.threads),
            "NNTR_TOKENIZER_CACHE": "0", "NNTR_KV_CPU_TRACE": "1",
            "NNTR_CPU_ATTENTION_FP32": "1" if args.cpu_attention_fp32 else "0",
+           "NNTR_CPU_KV_TILED": "1" if args.cpu_kv_tiled else "0",
            "LD_LIBRARY_PATH": str(runtime), "NNTR_LOG_DIR": str(base / "logs"),
            "XDG_CACHE_HOME": str(base / "cache")}
     if args.prefill_chunk is not None:

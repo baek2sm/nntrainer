@@ -1,16 +1,27 @@
 # Android Arm CPU validation
 
+**Historical scope:** the main body records the preserved 2026-10-28 builds.
+The 2026-10-29 review-followup results are a separate section at the end and
+in [cpu-performance.md](cpu-performance.md); their current runtime and counts
+do not replace the older manifests.
+
 This continues the Linux CPU evidence in [linux-cpu-execution.md](linux-cpu-execution.md)
 and [qwen3-cpu-validation.md](qwen3-cpu-validation.md). Qwen3-0.6B remains the
 validation model. Generated checkpoints, binaries, trace logs and logits remain
 under ignored build directories; model files are not committed.
 
-Final result: **64 successful model probe runs and 80 native unit tests** on
+2026-10-28 result: **64 successful model probe runs and 80 native unit tests** on
 `bacd420f`, including eight model
 runs on the final corrected runtime with token and full-logit bitwise parity
 against the earlier successful FP32-attention profile. Ten initialization
 rejections from two intermediate guard builds are preserved separately below;
 both integration issues were corrected before the final pass.
+
+This records the preserved 2026-10-28 correctness builds. The later default
+packing policy and controlled timing work are documented in
+[cpu-performance.md](cpu-performance.md). The current validator requires
+`--serial` explicitly; bounded ARM tile packing is selected explicitly with
+`--cpu-kv-tiled` when replaying the historical tiled profile.
 
 ## Environment review (2026-10-28)
 
@@ -85,7 +96,7 @@ Prepare references without using the phone:
 ```bash
 PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 \
   /home/jayden/miniforge3/envs/rkv-hf/bin/python \
-  tools/kv_cache/validate_qwen3_android.py \
+  tools/kv_cache/validate_qwen3_android.py --serial bacd420f \
   --prepare-only --output build-kv-android/validation/default \
   --tokens 32 --threads 4 --include-session --snapshot-resume
 ```
@@ -172,7 +183,7 @@ The baseline runtime is from before the Arm attention changes, with
 ```bash
 PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 \
   /home/jayden/miniforge3/envs/rkv-hf/bin/python \
-  tools/kv_cache/validate_qwen3_android.py \
+  tools/kv_cache/validate_qwen3_android.py --serial bacd420f \
   --reuse-reference --output build-kv-android/validation/baseline \
   --tokens 32 --threads 4 --include-session --snapshot-resume \
   --allow-compatibility-trace \
@@ -287,7 +298,7 @@ including the 164-token context and two-turn snapshot restoration:
 ```bash
 PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 \
   /home/jayden/miniforge3/envs/rkv-hf/bin/python \
-  tools/kv_cache/validate_qwen3_android.py \
+  tools/kv_cache/validate_qwen3_android.py --serial bacd420f \
   --reuse-reference --output build-kv-android/validation/post-fp32-per-row \
   --tokens 32 --threads 4 --include-session --snapshot-resume \
   --cpu-attention-fp32 --min-prefill 999999 --skip-model-push \
@@ -427,10 +438,10 @@ python3 tools/kv_cache/build_qwen_cpu_probe.py --build builddir_app/cpu \
 
 PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 \
   /home/jayden/miniforge3/envs/rkv-hf/bin/python \
-  tools/kv_cache/validate_qwen3_android.py \
+  tools/kv_cache/validate_qwen3_android.py --serial bacd420f \
   --reuse-reference --output build-kv-android/validation/final-cpu \
   --tokens 32 --threads 4 --include-session --snapshot-resume \
-  --cpu-attention-fp32 --skip-model-push \
+  --cpu-attention-fp32 --cpu-kv-tiled --skip-model-push \
   --probe build-kv-android/validation/final-cpu/qwen_cpu_probe \
   --runtime-dir build-kv-android/validation/final-cpu/runtime \
   --linux-reference build-kv-cpu/validation/qwen3-post/default \
@@ -452,3 +463,54 @@ final), with **32 strict opt-in trace files** and **16 same-device snapshot
 comparisons**. The ten earlier initialization rejections are historical
 diagnostic attempts, not successful inference runs. Runtime/source hashes
 keep the earlier matrix and final corrected build distinct.
+
+## 2026-10-29 review followup: current candidate
+
+The current candidate adds checked scope/read/write/readiness enforcement to
+the actual model execution path and restores **packed as the default**.
+Default packing can materialize the full K/V history. Safety enforcement of
+checked views must not be confused with a zero-history-copy claim. The
+candidate's source/library hashes are frozen in
+`build-kv-perf/runtime/android-candidate/build.json`.
+
+Natural-output revalidation uses the same existing reference requests and
+logits without an HF forward pass:
+
+| Android current profile | Cases | Result and trace interpretation |
+| --- | ---: | --- |
+| Legacy-half packed, flags `0/0` | 8 | Full-bitwise baseline parity; compatibility functional validation |
+| FP32-attention packed, flags `1/0` | 8 | Full-bitwise FP32 reference parity; history packing remains allowed |
+| FP32-attention tiled, flags `1/1` | 8 | Full-bitwise FP32 reference parity and strict alias/copy trace audit |
+
+Flags above are `NNTR_CPU_ATTENTION_FP32` / `NNTR_CPU_KV_TILED`. All 24 cases
+retain identical tokens and every logit byte, including live continuations
+and snapshot restoration, against their same-arithmetic references. All
+logits are finite. The strict direct-cache profile is FP32 attention with
+per-row consumption, or FP32 attention with tiled opt-in and separately
+accounted bounded tile copies. Packed profiles are functional compatibility
+validation rather than a claim of zero history materialization.
+
+Results are retained under `build-kv-perf/correctness/` in
+`android-candidate-packed/`, `android-candidate-fp32-packed/` and
+`android-candidate-tiled/`; the last directory also has
+`strict-trace-audit.json`. A separate Linux candidate suite passes all eight
+existing full-logit comparisons in `correctness/linux-final/`. Linux and
+Android case counts are kept separate.
+
+The same current Android runtime passes native **85** plus actual Qwen/LFM2
+graph **7**, for **92 PASS**, recorded in
+`build-kv-android/validation/checks/review-final.validation.json` and its native
+and actual-graph manifests. Details and exact commands are in
+[android-build-checks.md](android-build-checks.md). These 92 tests are distinct
+from the 24 full-model natural-output cases above.
+
+Performance measurements and the initial order-sensitive 4K gate failure are
+reported in [cpu-performance.md](cpu-performance.md). All 1K/4K measurements
+use a 128-row activation plane and 128-token prefill chunks; they do not
+measure an unchunked single 4K forward. Packed stays the default, and tiled
+latency/memory observations are not used as a general speedup claim.
+
+Current replay commands now require explicit `--serial` and can select
+`--cpu-kv-tiled`. These CLI clarifications are for replay with the current
+tool; the original execution environment remains exactly as recorded in each
+preserved historical manifest, which was not rewritten.
