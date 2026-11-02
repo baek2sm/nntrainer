@@ -1045,6 +1045,13 @@ void CausalLM::destroyKVSession(nntrainer::kv::SessionId session) {
   kv_cache.destroySession(session);
 }
 
+bool CausalLM::parkKVSession() {
+  if (!kv_cache.parkSession())
+    return false;
+  setSessionTokenPosition(0);
+  return true;
+}
+
 nntrainer::kv::SessionId
 CausalLM::forkKVSession(nntrainer::kv::SessionId parent) {
   if (!kv_cache.isAllocated())
@@ -2020,10 +2027,14 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
         const auto stats = kv_cache.prefixCacheStats();
         std::fprintf(stderr,
                      "[kv-prefix] session=%llu from=%u reused=%u of %u "
-                     "cached_blocks=%zu hit_blocks=%zu\n",
+                     "cached_blocks=%zu hit_blocks=%zu "
+                     "resident_blocks=%zu flash_blocks=%zu flash_bytes=%zu "
+                     "flash_writes=%zu flash_hits=%zu flash_errors=%zu\n",
                      static_cast<unsigned long long>(kv_cache.activeSession()),
                      prefill_from, prefix_skip, prefill_count, stats.blocks,
-                     stats.hit_blocks);
+                     stats.hit_blocks, stats.resident_blocks,
+                     stats.flash_blocks, stats.flash_bytes, stats.flash_writes,
+                     stats.flash_hits, stats.flash_errors);
       }
     }
   }

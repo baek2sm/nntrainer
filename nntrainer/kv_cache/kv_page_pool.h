@@ -42,6 +42,9 @@ public:
   size_t budgetBytes() const;
   /** Free unused pages, for example before admitting a different geometry. */
   void trim();
+  /** Best-effort release of idle and reclaimable pages to a byte target.
+   * Pinned session/view allocations can prevent reaching the target. */
+  void reclaimTo(size_t target_bytes);
   /** Register a budget-pressure hook; returns a token for removeReclaimer(). */
   uint64_t addReclaimer(Reclaimer reclaimer);
   void removeReclaimer(uint64_t token) noexcept;

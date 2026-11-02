@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace nntrainer::kv {
@@ -27,6 +28,24 @@ struct PrefixCacheStats {
   size_t hit_blocks = 0;      /**< Blocks adopted by sessions. */
   size_t inserted_blocks = 0; /**< Blocks published by sessions. */
   size_t evicted_blocks = 0;  /**< Blocks dropped by LRU, budget or clear. */
+  size_t resident_blocks = 0;
+  size_t flash_blocks = 0;
+  size_t flash_bytes = 0; /**< Logical file bytes, including headers. */
+  size_t flash_writes = 0;
+  size_t flash_hits = 0;
+  size_t flash_errors = 0;
+};
+
+/** Optional process-local second tier on a filesystem backed by flash/SSD.
+ * Files live in a private subdirectory and are removed on destruction. No
+ * cross-process or cross-model reuse is attempted. Zero budget disables it.
+ */
+struct FlashCacheOptions {
+  std::string directory;
+  size_t budget_bytes = 0;
+  /** Best-effort pool headroom after session release; pinned pages win.
+   * Requires a finite pool budget. Zero defaults to one complete KV block. */
+  size_t reserve_bytes = 0;
 };
 
 /** Content-addressed cache of full KV pages, keyed by the token chain that
@@ -41,8 +60,10 @@ struct PrefixCacheStats {
  * write into a shared page copies it first.
  *
  * The cache holds page handles from one KvPagePool. Under pool budget pressure
- * (and when max_blocks is reached) it drops least recently used leaf blocks
- * that no session references, returning their pages to the pool. Blocks a
+ * (and when max_blocks is reached), unused LRU blocks are demoted to the
+ * optional bounded Flash tier. Without that tier, or on I/O failure, unused
+ * leaves are dropped. Parent/token metadata stays in DRAM for cold blocks;
+ * cold LRU leaves are deleted when the Flash budget is exhausted. Blocks a
  * session still uses are kept; dropping them would not free memory.
  *
  * The first KvCacheManager attached to the cache binds its page layout; later
@@ -54,19 +75,25 @@ struct PrefixCacheStats {
  */
 class KvPrefixCache {
 public:
-  /** @param max_blocks 0 bounds the cache only by the pool budget. */
+  /** @param max_blocks Resident block limit, including session-pinned pages.
+   * 0 bounds residency only by the pool budget. */
   explicit KvPrefixCache(std::shared_ptr<KvPagePool> pool,
-                         size_t max_blocks = 0);
+                         size_t max_blocks = 0, FlashCacheOptions flash = {});
   ~KvPrefixCache();
   KvPrefixCache(const KvPrefixCache &) = delete;
   KvPrefixCache &operator=(const KvPrefixCache &) = delete;
 
   const std::shared_ptr<KvPagePool> &pool() const { return pool_; }
   size_t maxBlocks() const;
+  bool flashEnabled() const;
   PrefixCacheStats stats() const;
   /** Drop every block that no session references; returns the count. */
   size_t evictUnused();
-  /** Forget all blocks. Sessions keep the pages they already reference. */
+  /** Demote unused pages to meet the resident block limit and pool reserve.
+   * Call after releasing session pages. Active pages are never demoted. */
+  void trim() noexcept;
+  /** Forget all blocks. Sessions keep the pages they already reference.
+   * Throws on file removal failure, retaining metadata for a later retry. */
   void clear();
 
 private:

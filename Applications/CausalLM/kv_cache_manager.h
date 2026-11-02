@@ -144,6 +144,10 @@ public:
 
   /** Counters of the prefix cache (all zero when it is disabled). */
   nntrainer::kv::PrefixCacheStats prefixCacheStats() const;
+  /** Release this idle session's page references when Flash caching is active.
+   * Future use must supply the full history for token-addressed prefix reuse.
+   */
+  bool parkSession();
 
   /**
    * @brief Reuse already computed rows for the leading @p tokens of the

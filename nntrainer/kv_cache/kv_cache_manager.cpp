@@ -241,6 +241,8 @@ void KvCacheManager::destroySession(SessionId session) {
   // Exported views keep their pages alive but can no longer be accessed.
   ++it->second->epoch->generation;
   sessions_.erase(it);
+  if (state_->prefix)
+    state_->prefix->trim();
 }
 
 SessionId KvCacheManager::forkSession(SessionId parent) {
@@ -646,6 +648,8 @@ void KvCacheManager::reset() {
     state_->stats.backing_bytes = 0;
   }
   ++state_->epoch->generation;
+  if (state_->prefix)
+    state_->prefix->trim();
 }
 
 void KvCacheManager::setPosition(size_t position) {
@@ -660,6 +664,8 @@ void KvCacheManager::setPosition(size_t position) {
   if (state_->tokens.size() > position)
     state_->tokens.resize(position);
   ++state_->epoch->generation;
+  if (state_->prefix)
+    state_->prefix->trim();
 }
 
 void KvCacheManager::requireIdle() const {

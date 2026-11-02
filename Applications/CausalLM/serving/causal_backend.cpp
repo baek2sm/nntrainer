@@ -155,9 +155,13 @@ Generated CausalBackend::generate(uint64_t cache, const Generation &request) {
         }
       }
     }
-    return {text, count, metrics.generation_tokens,
-            model.getLastPrefixReusedTokens(),
-            model.lastGenerationReachedEOS() ? "stop" : "length"};
+    Generated result{text, count, metrics.generation_tokens,
+                     model.getLastPrefixReusedTokens(),
+                     model.lastGenerationReachedEOS() ? "stop" : "length"};
+    // OpenAI requests always carry the full history. Unpin idle session pages
+    // so the bounded DRAM pool can demote them, even for pinned API sessions.
+    model.parkKVSession();
+    return result;
   } catch (const ApiError &) {
     throw;
   } catch (const std::exception &e) {

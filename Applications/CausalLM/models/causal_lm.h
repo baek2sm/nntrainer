@@ -271,6 +271,16 @@ public:
    */
   WIN_EXPORT void destroyKVSession(nntrainer::kv::SessionId session);
 
+  /** Release the selected idle session's page references in Flash mode.
+   * Full blocks remain in the shared DRAM/Flash prefix cache; a partial tail
+   * is recomputed next time. Next run must provide the complete history.
+   * Returns false without changes when Flash caching is disabled. */
+  WIN_EXPORT bool parkKVSession();
+
+  nntrainer::kv::PrefixCacheStats getKVPrefixCacheStats() const {
+    return kv_cache.prefixCacheStats();
+  }
+
   /**
    * @brief Fork @p parent: create a new KV session that shares its
    *        committed history and then diverges from it.

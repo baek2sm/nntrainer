@@ -449,10 +449,22 @@ endif
 # in-tree Applications/CausalLM/meson.build target). Public CPU models only —
 # the architectures main.cpp registers; proprietary/QNN models are not
 # registered here.
+server_src = []
+server_args = []
+server_deps = []
+if get_option('enable-causallm-server')
+  server_src = [causallm_root / 'serving/service.cpp',
+                causallm_root / 'serving/causal_backend.cpp',
+                causallm_root / 'serving/http_server.cpp']
+  server_args += '-DENABLE_CAUSALLM_SERVER'
+  if host_machine.system() == 'windows'
+    server_deps += cxx.find_library('ws2_32')
+  endif
+endif
 executable('nntr_causallm',
-    causallm_root / 'main.cpp',
-    dependencies: [nntrainer_dep, causallm_dep, openmp_dep, thread_dep, log_dep],
-    cpp_args: causallm_inc_args,
+    [causallm_root / 'main.cpp'] + server_src,
+    dependencies: [nntrainer_dep, causallm_dep, openmp_dep, thread_dep, log_dep] + server_deps,
+    cpp_args: causallm_inc_args + server_args,
     install: false,
 )
 

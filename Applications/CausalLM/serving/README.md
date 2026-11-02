@@ -40,6 +40,114 @@ reuses matching committed pages, including across sessions. An edited history
 therefore cannot blindly append to an unrelated cache. Usage reports the native
 cache's reused token count. Without prefix caching, the full prompt is recomputed.
 
+### DRAM and Flash tiers
+
+Enable the filesystem tier with explicit byte budgets. Select a directory on
+the SSD/flash device you want to use (a tmpfs such as `/dev/shm` uses RAM).
+
+```sh
+NNTR_ENGINE=cpu NNTR_CPU_KV_LEGACY=0 \
+NNTR_KV_PAGED=1 NNTR_KV_PREFIX_CACHE=1 \
+NNTR_KV_PAGE_TOKENS=16 \
+NNTR_KV_DRAM_BUDGET_BYTES=268435456 \
+NNTR_KV_FLASH_DIR=/path/on/ssd/nntr-kv \
+NNTR_KV_FLASH_BUDGET_BYTES=2147483648 \
+NNTR_KV_RESTORE_RESERVE_BYTES=16777216 \
+NNTR_KV_CPU_TRACE=1 \
+build-kv-cpu/Applications/CausalLM/nntr_causallm \
+  build-kv-cpu/models/qwen3-0.6b-fp32 --serve \
+  --host 127.0.0.1 --port 8080 --model-id qwen3-0.6b \
+  --max-sessions 32 --queue-capacity 32
+```
+
+The example limits the KV page pool to 256 MiB and Flash files to 2 GiB, with
+a target of 16 MiB free in the pool after idle session pages are released.
+It uses 16-token pages so short conversations also publish reusable blocks.
+The default page width is tuned for attention throughput (512 tokens on x86,
+128 elsewhere); histories shorter than one page cannot spill full blocks.
+The DRAM limit covers rounded KV allocations, including idle pool pages. It
+does not include model weights, graph workspace, cache metadata or filesystem
+page cache. The Flash limit covers logical file sizes including headers;
+filesystem allocation units and directory metadata are additional overhead.
+
+Unused resident LRU blocks move to Flash instead of being discarded. Exact
+token-prefix matches restore complete K/V blocks into the same bounded pool;
+the loader reclaims space before allocating a block. Cold LRU leaves are
+deleted when Flash fills, preserving parent-chain reachability. Files are
+validated by header, length and checksum before publishing restored pages.
+Capacity misses, missing/corrupt files and write failures fall back to
+recomputation or ordinary cache eviction. A request's active working set must
+still fit in DRAM; active session/view pages cannot be swapped out.
+
+In Flash mode, successful serving requests release their native session page
+references immediately, so idle sessions do not pin the entire DRAM budget.
+Logical session IDs and the `/sessions` API retain their existing lifetime
+and LRU capacity rules. Every next request must still include the complete
+history. Full token pages can be restored across session eviction or session
+deletion; partial tail pages are recomputed. `max_sessions` is a logical
+session limit, independent of the cache byte budgets.
+
+`NNTR_KV_PREFIX_CACHE_BLOCKS` limits resident indexed blocks. Set it to `0` to
+use only the byte budgets. `NNTR_KV_RESTORE_RESERVE_BYTES=0` defaults to one
+full K/V block across all owner layers. The reserve is best effort while
+pages are pinned, and the DRAM budget must fit a block plus the reserve.
+`NNTR_KV_FLASH_BUDGET_BYTES=0` disables the Flash tier; enabling it requires
+paged CPU prefix caching and a finite DRAM budget.
+
+`NNTR_KV_CPU_TRACE=1` prints `resident_blocks`, `flash_blocks`, `flash_bytes`,
+`flash_writes`, `flash_hits` and `flash_errors` at prefix lookup. Cold transfers
+are synchronous on the inference worker; control APIs remain on their
+separate metadata path. Files use private per-cache subdirectories and are
+removed at normal destruction. This is a process-local performance cache:
+server restarts do not recover sessions or reuse old files. An unclean process
+exit can leave its private directory for the operator to remove.
+
+### Android build and validation
+
+After building/installing the Android engine with `build_android.sh`, enable
+the server in the standalone application graph as well:
+
+```sh
+meson configure builddir_app/cpu -Denable-causallm-server=true
+ninja -C builddir_app/cpu nntr_causallm
+```
+
+Deploy `nntr_causallm`, `libcausallm.so`, `libnntrainer.so`,
+`libccapi-nntrainer.so` and the matching NDK `libc++_shared.so` together. Set
+`LD_LIBRARY_PATH` to that runtime directory and `TMPDIR` to a writable device
+directory. Use a writable path such as `/data/local/tmp/.../flash` for
+`NNTR_KV_FLASH_DIR`. The serving/session/API options are the same as Ubuntu.
+
+The existing NDK test harness now includes `unittest_serving` alongside
+`unittest_kv_cache_core`. Set `NNTR_SERVING_FIXTURE_DIR` to the deployed
+`test/unittest/models/causallm_reference/qwen2_tiny` directory. The full Qwen3
+HTTP test accepts `NNTR_SERVING_QWEN3_DIR` for a converted model directory;
+it is separate from the small fixture tests.
+
+Verified on Ubuntu x86-64 and a Galaxy S23 Ultra (SM-S918N, Android 14,
+arm64-v8a), using NDK 27.2.12479018 / android-29:
+
+| Check | Ubuntu | Android device |
+| --- | --- | --- |
+| KV core, including Flash I/O failures and mixed encodings | 58 passed | 58 passed |
+| Serving, HTTP/SSE, session controls and native Flash reuse | 18 passed | 18 passed |
+| Qwen3 0.6B FP32, two live logical sessions, A/B/A/B | passed | passed |
+| Reused tokens on the second A and B requests | 24 / 24 | 24 / 24 |
+| Flash loads observed / I/O errors at final lookup | 12 / 0 | 12 / 0 |
+| Session listing during inference (one observation) | 0.85 ms | 8.09 ms |
+
+Both full-model runs used `--max-sessions 2`, 8-token pages, 64 MiB DRAM,
+128 MiB Flash and a 62 MiB reserve target to force demotion. A/B generation
+after restoration matched each original request; SSE text also matched, and
+the tested outputs agreed across platforms. These latency observations are
+functional checks, not a performance benchmark. The 64 MiB test budget fits
+these short requests; longer active contexts require more DRAM.
+
+Results, XML and the HTTP validation driver are under the ignored
+`build-kv-cpu/validation/tiered-cache/` and
+`build-kv-android/validation/tiered-cache/` directories. The combined report is
+`build-kv-cpu/validation/tiered-cache/validation.json`.
+
 This separation follows llama.cpp's HTTP routes, request queue, inference context
 and sequence cache design:
 https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README-dev.md

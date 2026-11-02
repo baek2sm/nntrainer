@@ -12,7 +12,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <random>
 #include <sstream>
 
 using namespace nntrainer::kv;
@@ -1422,6 +1425,238 @@ TEST(KvCacheCore, forkSessionValidatesParentAndPosition) {
   EXPECT_EQ(manager.stats().backing_bytes, 0u);
   EXPECT_TRUE(manager.committedTokens().empty());
   EXPECT_EQ(appendAndReadKeys(manager, 9), std::vector<float>({9}));
+}
+
+namespace {
+struct FlashDirectory {
+  std::filesystem::path path;
+  FlashDirectory() {
+    std::random_device random;
+    for (;;) {
+      path = std::filesystem::temp_directory_path() /
+             ("nntr-flash-test-" + std::to_string(random()));
+      if (std::filesystem::create_directory(path))
+        break;
+    }
+  }
+  ~FlashDirectory() {
+    std::error_code error;
+    std::filesystem::remove_all(path, error);
+  }
+  FlashCacheOptions options(size_t budget = 4096, size_t reserve = 256) const {
+    return {path.string(), budget, reserve};
+  }
+};
+} // namespace
+
+TEST(KvCacheCore, flashRestoresExactPlanesAndContinuesGeneration) {
+  FlashDirectory dir;
+  auto pool = std::make_shared<KvPagePool>(512);
+  auto prefix =
+    std::make_shared<KvPrefixCache>(pool, 0, dir.options(4096, 384));
+  KvCacheManager manager;
+  manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                     nullptr, prefix);
+  appendTokens(manager, {1, 2, 3, 4, 5, 6});
+  std::ostringstream before;
+  manager.savePlane(before, 0, true, 6);
+  manager.savePlane(before, 0, false, 6);
+  manager.reset();
+  EXPECT_LE(pool->reservedBytes(), 128u); // 384 bytes remain for restores.
+  ASSERT_EQ(prefix->stats().flash_blocks, 2u);
+  const std::vector<TokenId> prompt{1, 2, 3, 4, 5, 6};
+  ASSERT_EQ(manager.reusePrefix(prompt.data(), prompt.size()), 6u);
+  EXPECT_EQ(prefix->stats().flash_hits, 2u);
+  std::ostringstream after;
+  manager.savePlane(after, 0, true, 6);
+  manager.savePlane(after, 0, false, 6);
+  EXPECT_EQ(before.str(), after.str());
+  EXPECT_EQ(appendAndReadKeys(manager, 9),
+            (std::vector<float>{1, 2, 3, 4, 5, 6, 9}));
+  EXPECT_LE(pool->reservedBytes(), pool->budgetBytes());
+}
+
+TEST(KvCacheCore, flashPoolPressureSpillsAndReusesAcrossSessions) {
+  FlashDirectory dir;
+  auto pool = std::make_shared<KvPagePool>(256);
+  auto prefix =
+    std::make_shared<KvPrefixCache>(pool, 0, dir.options(4096, 128));
+  KvCacheManager manager;
+  manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                     nullptr, prefix);
+  appendTokens(manager, {1, 2});
+  manager.reset();
+  appendTokens(manager, {3, 4, 5, 6}); // Pressure spills the unrelated prefix.
+  EXPECT_GE(prefix->stats().flash_writes, 1u);
+  manager.reset();
+  manager.selectSession(manager.createSession());
+  const std::vector<TokenId> prompt{1, 2};
+  ASSERT_EQ(manager.reusePrefix(prompt.data(), prompt.size()), 2u);
+  EXPECT_EQ(appendAndReadKeys(manager, 7), (std::vector<float>{1, 2, 7}));
+  EXPECT_LE(pool->reservedBytes(), 256u);
+}
+
+TEST(KvCacheCore, flashBudgetEvictsColdLruAndCleansOwnedDirectory) {
+  FlashDirectory dir;
+  {
+    auto pool = std::make_shared<KvPagePool>(256);
+    // A file contains a 32-byte header and two 32-byte planes: 96 bytes.
+    auto prefix =
+      std::make_shared<KvPrefixCache>(pool, 1, dir.options(96, 128));
+    KvCacheManager manager;
+    manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                       nullptr, prefix);
+    for (TokenId id = 1; id <= 6; ++id) {
+      appendTokens(manager, {id, id});
+      manager.reset();
+      EXPECT_LE(prefix->stats().flash_bytes, 96u);
+      EXPECT_LE(prefix->stats().flash_blocks, 1u);
+    }
+    const std::vector<TokenId> old{1, 1}, recent{5, 5};
+    EXPECT_EQ(manager.reusePrefix(old.data(), old.size()), 0u);
+    EXPECT_EQ(manager.reusePrefix(recent.data(), recent.size()), 2u);
+    EXPECT_GT(prefix->stats().evicted_blocks, 0u);
+  }
+  EXPECT_TRUE(std::filesystem::is_empty(dir.path));
+}
+
+TEST(KvCacheCore, flashCorruptionIsCacheMissAndNeverPublishesPartialLoad) {
+  FlashDirectory dir;
+  auto pool = std::make_shared<KvPagePool>(384);
+  auto prefix = std::make_shared<KvPrefixCache>(pool, 0, dir.options());
+  KvCacheManager manager;
+  manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                     nullptr, prefix);
+  appendTokens(manager, {1, 2, 3, 4});
+  manager.reset();
+  for (const auto &entry :
+       std::filesystem::recursive_directory_iterator(dir.path))
+    if (entry.path().extension() == ".kv") {
+      std::fstream file(entry.path(),
+                        std::ios::in | std::ios::out | std::ios::binary);
+      file.seekp(40); // Change payload while retaining a valid header/length.
+      file.put('\xff');
+    }
+  const std::vector<TokenId> prompt{1, 2, 3, 4};
+  EXPECT_EQ(manager.reusePrefix(prompt.data(), prompt.size()), 0u);
+  EXPECT_EQ(manager.committedLength(), 0u);
+  EXPECT_EQ(prefix->stats().flash_hits, 0u);
+  EXPECT_GE(prefix->stats().flash_errors, 1u);
+  appendTokens(manager, prompt); // The corrupt chain can be republished.
+  EXPECT_EQ(appendAndReadKeys(manager, 5), (std::vector<float>{1, 2, 3, 4, 5}));
+}
+
+TEST(KvCacheCore, flashPinnedPagesPreventDemotionAndCapacityMissIsRetryable) {
+  FlashDirectory dir;
+  auto pool = std::make_shared<KvPagePool>(256);
+  auto prefix =
+    std::make_shared<KvPrefixCache>(pool, 0, dir.options(4096, 128));
+  KvCacheManager manager;
+  manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                     nullptr, prefix);
+  appendTokens(manager, {1, 2});
+  manager.reset();
+  appendTokens(manager, {3, 4, 5, 6});
+  prefix->trim();
+  EXPECT_EQ(pool->reservedBytes(), 256u); // Both pairs are session-pinned.
+  const auto pinned = manager.activeSession();
+  manager.selectSession(manager.createSession());
+  const std::vector<TokenId> prompt{1, 2};
+  EXPECT_EQ(manager.reusePrefix(prompt.data(), prompt.size()), 0u);
+  EXPECT_EQ(manager.committedLength(), 0u);
+  EXPECT_GE(prefix->stats().flash_blocks, 1u);
+  manager.destroySession(pinned);
+  EXPECT_EQ(manager.reusePrefix(prompt.data(), prompt.size()), 2u);
+}
+
+TEST(KvCacheCore, flashInvalidBudgetsRejectedAndTinyDiskFallsBackToEviction) {
+  FlashDirectory dir;
+  EXPECT_THROW(KvPrefixCache(std::make_shared<KvPagePool>(), 0, dir.options()),
+               std::invalid_argument);
+  auto pool = std::make_shared<KvPagePool>(128);
+  auto prefix =
+    std::make_shared<KvPrefixCache>(pool, 0, dir.options(4096, 128));
+  KvCacheManager manager;
+  EXPECT_THROW(manager.initialize(pagedSpec(),
+                                  std::make_shared<nntrainer::MemAllocator>(),
+                                  nullptr, prefix),
+               std::invalid_argument);
+  pool = std::make_shared<KvPagePool>(256);
+  prefix = std::make_shared<KvPrefixCache>(pool, 1, dir.options(1, 128));
+  manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                     nullptr, prefix);
+  appendTokens(manager, {1, 2});
+  manager.reset();
+  appendTokens(manager, {3, 4});
+  EXPECT_EQ(prefix->stats().flash_bytes, 0u);
+  EXPECT_GT(prefix->stats().evicted_blocks, 0u);
+}
+
+TEST(KvCacheCore, flashWriteFailureKeepsLiveRowsAndFallsBackToEviction) {
+  FlashDirectory dir;
+  auto pool = std::make_shared<KvPagePool>(256);
+  auto prefix =
+    std::make_shared<KvPrefixCache>(pool, 1, dir.options(4096, 128));
+  KvCacheManager manager;
+  manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                     nullptr, prefix);
+  appendTokens(manager, {1, 2});
+  // Make the cache's private directory unusable, without depending on uid or
+  // filesystem permission enforcement in CI.
+  auto private_dir = std::filesystem::directory_iterator(dir.path)->path();
+  std::filesystem::remove(private_dir);
+  {
+    std::ofstream replacement(private_dir);
+    replacement << "unavailable";
+  }
+  manager.reset();
+  EXPECT_NO_THROW(appendTokens(manager, {3, 4}));
+  EXPECT_GT(prefix->stats().flash_errors, 0u);
+  EXPECT_LE(prefix->stats().flash_bytes, 4096u);
+  EXPECT_EQ(appendAndReadKeys(manager, 5), (std::vector<float>{3, 4, 5}));
+}
+
+TEST(KvCacheCore, flashRoundTripPreservesMixedEncodingsAndAliasLayers) {
+  FlashDirectory dir;
+  auto s = pagedSpec();
+  auto half = s.layers[0];
+  half.encoding = Encoding::Float16;
+  half.storage_type = StorageType::Float16;
+  s.layers.push_back(half);
+  auto alias = s.layers[0];
+  alias.source = 0;
+  s.layers.push_back(alias);
+  auto pool = std::make_shared<KvPagePool>(768);
+  auto prefix =
+    std::make_shared<KvPrefixCache>(pool, 0, dir.options(4096, 512));
+  KvCacheManager manager;
+  manager.initialize(s, std::make_shared<nntrainer::MemAllocator>(), nullptr,
+                     prefix);
+  const std::vector<TokenId> ids{1, 2, 3, 4};
+  auto step = manager.beginStep(ids.size(), ids.data());
+  std::vector<float> keys(16, 1.25f), values(16, 2.5f);
+  manager.append(step, 0, keys.data(), values.data(),
+                 keys.size() * sizeof(float));
+  manager.markReady(step, 0);
+  std::vector<uint16_t> half_keys(16, 0x3c00), half_values(16, 0x4000);
+  manager.append(step, 1, half_keys.data(), half_values.data(),
+                 half_keys.size() * sizeof(uint16_t));
+  manager.markReady(step, 1);
+  manager.commit(std::move(step));
+  auto planes = [&] {
+    std::ostringstream out;
+    for (size_t i = 0; i < s.layers.size(); ++i) {
+      manager.savePlane(out, i, true, 4);
+      manager.savePlane(out, i, false, 4);
+    }
+    return out.str();
+  };
+  const auto before = planes();
+  manager.reset();
+  ASSERT_GT(prefix->stats().flash_blocks, 0u);
+  ASSERT_EQ(manager.reusePrefix(ids.data(), ids.size()), 4u);
+  EXPECT_EQ(before, planes());
+  EXPECT_GT(prefix->stats().flash_hits, 0u);
 }
 
 GTEST_API_ int main(int argc, char **argv) {

@@ -76,6 +76,11 @@ void KVCacheManager::allocate(unsigned int num_layers, unsigned int batch_size,
   }
 
   const auto runtime = RuntimeConfig::capture();
+  const char *flash_budget = std::getenv("NNTR_KV_FLASH_BUDGET_BYTES");
+  if (flash_budget && std::string(flash_budget) != "0" &&
+      !runtime.cpu_kv_prefix_cache)
+    throw std::invalid_argument(
+      "NNTR_KV_FLASH_BUDGET_BYTES requires paged CPU prefix caching");
   if (nntr_env_on("NNTR_KV_PAGED") && (!runtime.cpu || runtime.cpu_kv_legacy))
     throw std::invalid_argument(
       "NNTR_KV_PAGED requires the CPU core KV manager");
@@ -378,6 +383,10 @@ void KVCacheManager::allocateCpu(
   std::shared_ptr<KvPrefixCache> prefix_cache;
   if (spec.page_tokens && runtime.cpu_kv_prefix_cache) {
     if (!prefix_cache_allowed_) {
+      if (const char *budget = std::getenv("NNTR_KV_FLASH_BUDGET_BYTES");
+          budget && std::string(budget) != "0")
+        throw std::invalid_argument(
+          "Flash KV is unsupported for a model with external decoder state");
       std::fprintf(stderr,
                    "[kv-prefix] disabled: this model keeps decoder state "
                    "outside the KV cache\n");
@@ -392,8 +401,30 @@ void KVCacheManager::allocateCpu(
             "NNTR_KV_PREFIX_CACHE_BLOCKS must be a non-negative integer");
         max_blocks = static_cast<size_t>(std::stoull(text));
       }
+      auto byteOption = [](const char *name) -> size_t {
+        const char *value = std::getenv(name);
+        if (!value)
+          return 0;
+        const std::string text(value);
+        if (text.empty() ||
+            text.find_first_not_of("0123456789") != std::string::npos ||
+            text.size() > 18)
+          throw std::invalid_argument(std::string(name) +
+                                      " must be a non-negative byte count");
+        const auto bytes = std::stoull(text);
+        if (bytes > std::numeric_limits<size_t>::max())
+          throw std::invalid_argument(std::string(name) + " overflows size_t");
+        return static_cast<size_t>(bytes);
+      };
+      nntrainer::kv::FlashCacheOptions flash;
+      flash.budget_bytes = byteOption("NNTR_KV_FLASH_BUDGET_BYTES");
+      flash.reserve_bytes = byteOption("NNTR_KV_RESTORE_RESERVE_BYTES");
+      if (const char *directory = std::getenv("NNTR_KV_FLASH_DIR"))
+        flash.directory = directory;
+      const size_t dram_budget = byteOption("NNTR_KV_DRAM_BUDGET_BYTES");
       prefix_cache = std::make_shared<KvPrefixCache>(
-        std::make_shared<KvPagePool>(), max_blocks);
+        std::make_shared<KvPagePool>(dram_budget), max_blocks,
+        std::move(flash));
     }
   }
   auto next = std::make_unique<nntrainer::kv::KvCacheManager>();
@@ -450,6 +481,14 @@ KVCacheManager::beginStep(unsigned int from, unsigned int to,
 nntrainer::kv::PrefixCacheStats KVCacheManager::prefixCacheStats() const {
   const auto prefix = cpu_cache_ ? cpu_cache_->prefixCache() : nullptr;
   return prefix ? prefix->stats() : nntrainer::kv::PrefixCacheStats{};
+}
+
+bool KVCacheManager::parkSession() {
+  const auto prefix = cpu_cache_ ? cpu_cache_->prefixCache() : nullptr;
+  if (!prefix || !prefix->flashEnabled())
+    return false;
+  reset();
+  return true;
 }
 
 unsigned int

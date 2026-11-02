@@ -137,6 +137,19 @@ LOCAL_C_INCLUDES := $(CAUSALLM_COMMON_INCLUDES)
 include $(BUILD_EXECUTABLE)
 
 include $(CLEAR_VARS)
+LOCAL_MODULE := unittest_serving
+LOCAL_CFLAGS := $(CAUSALLM_COMMON_CFLAGS)
+LOCAL_CPPFLAGS := -DSERVING_FIXTURE_DIR=\".\" -DSERVING_QWEN3_DIR=\".\"
+LOCAL_LDLIBS := -llog -landroid
+LOCAL_SRC_FILES := ../serving/unittest_serving.cpp ../serving/service.cpp \
+    ../serving/causal_backend.cpp ../serving/http_server.cpp
+LOCAL_SHARED_LIBRARIES := causallm nntrainer ccapi-nntrainer
+LOCAL_STATIC_LIBRARIES := googletest_main
+LOCAL_C_INCLUDES := $(CAUSALLM_COMMON_INCLUDES) $(LOCAL_PATH)/../third_party \
+    $(LOCAL_PATH)/../third_party/minja/include
+include $(BUILD_EXECUTABLE)
+
+include $(CLEAR_VARS)
 LOCAL_MODULE := unittest_kv_cache_manager
 LOCAL_CFLAGS := $(CAUSALLM_COMMON_CFLAGS)
 LOCAL_LDLIBS := -llog -landroid

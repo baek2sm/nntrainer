@@ -610,7 +610,8 @@ TEST(Serving, RealPagedCacheInterleavedHistories) {
   setenv("NNTR_ENGINE", "cpu", 1);
   setenv("NNTR_KV_PAGED", "1", 1);
   setenv("NNTR_KV_PREFIX_CACHE", "1", 1);
-  const std::string dir = SERVING_FIXTURE_DIR;
+  const char *configured = std::getenv("NNTR_SERVING_FIXTURE_DIR");
+  const std::string dir = configured ? configured : SERVING_FIXTURE_DIR;
   auto load = [&](const std::string &name) {
     Json j;
     std::ifstream file(dir + "/" + name);
@@ -650,6 +651,84 @@ TEST(Serving, RealPagedCacheInterleavedHistories) {
   EXPECT_TRUE(service.submit("GET", "/sessions", {}).get()["data"].empty());
   EXPECT_THROW(backend.renderChat({}), ApiError);
 }
+TEST(Serving, FlashTierUnpinsIdleSessionsAndRestoresNativeGeneration) {
+  // Preserve the caller's environment, including when running other native
+  // model tests in this process after this one.
+  struct Environment {
+    std::vector<std::pair<std::string, std::optional<std::string>>> saved;
+    void set(const std::string &name, const std::string &value) {
+      const char *old = std::getenv(name.c_str());
+      saved.emplace_back(name,
+                         old ? std::optional<std::string>(old) : std::nullopt);
+      setenv(name.c_str(), value.c_str(), 1);
+    }
+    ~Environment() {
+      for (const auto &entry : saved)
+        if (entry.second)
+          setenv(entry.first.c_str(), entry.second->c_str(), 1);
+        else
+          unsetenv(entry.first.c_str());
+    }
+  } env;
+  const auto directory =
+    std::filesystem::temp_directory_path() /
+    ("nntr-serving-flash-" +
+     std::to_string(
+       std::chrono::steady_clock::now().time_since_epoch().count()));
+  struct Cleanup {
+    std::filesystem::path path;
+    ~Cleanup() {
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+    }
+  } cleanup{directory};
+  env.set("NNTR_ENGINE", "cpu");
+  env.set("NNTR_CPU_KV_LEGACY", "0");
+  env.set("NNTR_KV_PAGED", "1");
+  env.set("NNTR_KV_PREFIX_CACHE", "1");
+  env.set("NNTR_KV_PAGE_TOKENS", "2");
+  env.set("NNTR_KV_DRAM_BUDGET_BYTES", "2048");
+  env.set("NNTR_KV_RESTORE_RESERVE_BYTES", "1792");
+  env.set("NNTR_KV_FLASH_BUDGET_BYTES", "8192");
+  env.set("NNTR_KV_FLASH_DIR", directory.string());
+  const char *configured = std::getenv("NNTR_SERVING_FIXTURE_DIR");
+  const std::string dir = configured ? configured : SERVING_FIXTURE_DIR;
+  auto load = [&](const std::string &name) {
+    Json result;
+    std::ifstream file(dir + "/" + name);
+    file >> result;
+    return result;
+  };
+  auto nntr = load("nntr_config.json");
+  nntr["tokenizer_file"] = dir + "/tokenizer.json";
+  auto cfg = load("config.json"), gen = load("generation_config.json");
+  causallm::Qwen2CausalLM model(cfg, gen, nntr);
+  model.initialize();
+  model.load_weight(dir + "/nntr_qwen2_tiny_fp32.bin");
+  CausalBackend backend(model, nullptr);
+  // Exercise calls on the owning thread, so reading counters never races the
+  // service worker. Two native session IDs stay alive throughout the swap.
+  Generation a;
+  a.prompt = "hello world tok3";
+  a.max_tokens = 1;
+  a.temperature = 0;
+  const auto first = backend.create(a.prompt);
+  const auto original = backend.generate(first, a);
+  EXPECT_EQ(model.getSessionTokenPosition(), 0u);
+  const auto second = backend.create(a.prompt);
+  auto b = a;
+  b.prompt = "tok4 tok5 tok6";
+  backend.generate(second, b);
+  EXPECT_GT(model.getKVPrefixCacheStats().flash_writes, 0u);
+  const auto restored = backend.generate(first, a);
+  EXPECT_EQ(restored.text, original.text);
+  EXPECT_GT(restored.cached_tokens, 0u);
+  EXPECT_GT(model.getKVPrefixCacheStats().flash_hits, 0u);
+  EXPECT_LE(model.getKVPrefixCacheStats().flash_bytes, 8192u);
+  backend.destroy(first);
+  backend.destroy(second);
+}
+
 // Opt-in full-size model test: the model is not a required CI download.
 TEST(Serving, Qwen3_06B_NativeHttp) {
   const char *configured = std::getenv("NNTR_SERVING_QWEN3_DIR");

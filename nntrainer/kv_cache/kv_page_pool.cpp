@@ -81,6 +81,12 @@ size_t KvPagePool::budgetBytes() const { return core_->budget_bytes; }
 
 void KvPagePool::trim() { core_->trim(); }
 
+void KvPagePool::reclaimTo(size_t target_bytes) {
+  core_->trim();
+  while (core_->reserved_bytes > target_bytes && core_->reclaim())
+    core_->trim();
+}
+
 uint64_t KvPagePool::addReclaimer(Reclaimer reclaimer) {
   if (!reclaimer)
     throw std::invalid_argument("KV page reclaimer must be callable");
