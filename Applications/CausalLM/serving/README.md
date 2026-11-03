@@ -35,10 +35,21 @@ pages. The first request settles the prefill plane before allocating storage.
 Every completion contains the **full prompt or complete message history**.
 Chat requests use the model's existing `ChatTemplate`; no generic role delimiters
 are substituted if the model has no template. Each run starts at logical
-position zero. The existing token-prefix cache compares actual token IDs and
-reuses matching committed pages, including across sessions. An edited history
-therefore cannot blindly append to an unrelated cache. Usage reports the native
-cache's reused token count. Without prefix caching, the full prompt is recomputed.
+position zero. The token-prefix cache uses a compressed radix tree to compare
+actual token IDs and reuse matching committed pages, including across sessions.
+An edited history therefore cannot blindly append to an unrelated cache. Usage
+reports the native cache's reused token count. Without prefix caching, the full
+prompt is recomputed.
+
+Radix edges store common token runs and split where histories diverge, including
+inside a KV page. Only complete pages are shared or restored from this index:
+a cache match ending inside a page is rounded down to the preceding page
+boundary and the remaining tokens are recomputed. A session can still reuse its
+own matching partial page. Page-boundary terminals retain stable block IDs for
+session references, LRU and Flash files. Eviction prunes empty branches and
+merges token-only unary nodes; `PrefixCacheStats::radix_nodes` reports the index
+size excluding its root. This index is enabled by the existing
+`NNTR_KV_PREFIX_CACHE=1` option and does not change the attention storage layout.
 
 ### DRAM and Flash tiers
 
@@ -147,6 +158,17 @@ Results, XML and the HTTP validation driver are under the ignored
 `build-kv-cpu/validation/tiered-cache/` and
 `build-kv-android/validation/tiered-cache/` directories. The combined report is
 `build-kv-cpu/validation/tiered-cache/validation.json`.
+
+The radix prefix index was subsequently verified on the same Android device:
+63 KV core tests (including radix splitting, merging, prefix-oracle comparisons,
+and branched Flash recovery), 26 KV adapter tests and 19 serving tests all passed
+without skips. The serving suite included Qwen3 0.6B FP32. A separate two-session
+A/B/A/B run with the budgets above reused 24 tokens per repeated request,
+observed 12 Flash loads with zero I/O errors, and preserved ordinary and SSE
+response text. XML, build logs, binary/source hashes and the HTTP driver are in
+`build-kv-android/validation/radix-prefix-cache/validation.json` and its directory.
+See [radix validation and Android timing results](../../../docs/kv-cache-radix-validation.md)
+for the checked scenarios and the limits of the performance comparison.
 
 This separation follows llama.cpp's HTTP routes, request queue, inference context
 and sequence cache design:

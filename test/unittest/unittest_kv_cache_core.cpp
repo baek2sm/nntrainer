@@ -1235,6 +1235,112 @@ TEST(KvCacheCore, prefixSharedPageIsCopiedBeforeAppend) {
   EXPECT_EQ(manager.reusePrefix(copied.data(), copied.size()), 4u);
 }
 
+TEST(KvCacheCore, radixSplitsCompressedEdgesAndMatchesOnlyCompletePages) {
+  auto prefix = std::make_shared<KvPrefixCache>(std::make_shared<KvPagePool>());
+  auto s = pagedSpec();
+  s.page_tokens = 4;
+  KvCacheManager manager;
+  manager.initialize(s, std::make_shared<nntrainer::MemAllocator>(), nullptr,
+                     prefix);
+  const std::vector<std::vector<TokenId>> histories{{1, 2, 3, 4, 5, 6, 7, 8},
+                                                    {1, 2, 3, 4, 5, 6, 9, 8},
+                                                    {1, 2, 3, 4, 5, 0, 7, 8},
+                                                    {1, 2, 0, 4, 5, 6, 7, 8}};
+  for (const auto &history : histories) {
+    manager.reset();
+    appendTokens(manager, history);
+  }
+  EXPECT_EQ(prefix->stats().blocks, 6u);
+  EXPECT_EQ(prefix->stats().radix_nodes, 9u); // Three interior branch nodes.
+  for (const auto &history : histories) {
+    manager.reset();
+    ASSERT_EQ(manager.reusePrefix(history.data(), history.size()), 8u);
+    std::ostringstream keys;
+    manager.savePlane(keys, 0, true, 8);
+    std::vector<float> expected;
+    for (auto id : history)
+      expected.insert(expected.end(), 4, static_cast<float>(id));
+    EXPECT_EQ(keys.str(),
+              std::string(reinterpret_cast<const char *>(expected.data()),
+                          expected.size() * sizeof(float)));
+  }
+  manager.reset();
+  const std::vector<TokenId> mismatch{1, 2, 3, 4, 5, 6, 0, 8};
+  EXPECT_EQ(manager.reusePrefix(mismatch.data(), mismatch.size()), 4u);
+  manager.reset();
+  EXPECT_EQ(manager.reusePrefix(histories[0].data(), 6), 4u);
+  manager.reset();
+  EXPECT_EQ(manager.reusePrefix(histories[0].data(), 2), 0u);
+  EXPECT_EQ(prefix->stats().inserted_blocks, 6u); // No duplicate publications.
+}
+
+TEST(KvCacheCore, radixEvictionMergesBranchesWithoutInvalidatingSessionIds) {
+  auto prefix = std::make_shared<KvPrefixCache>(std::make_shared<KvPagePool>());
+  KvCacheManager manager;
+  manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                     nullptr, prefix);
+  appendTokens(manager, {1, 2, 3, 4});
+  manager.selectSession(manager.createSession());
+  appendTokens(manager, {1, 9, 3, 4});
+  EXPECT_EQ(prefix->stats().radix_nodes, 5u);
+  manager.reset();
+  EXPECT_EQ(prefix->evictUnused(), 2u); // Keep the original session's branch.
+  EXPECT_EQ(prefix->stats().radix_nodes, 2u);
+  const std::vector<TokenId> original{1, 2, 3, 4};
+  ASSERT_EQ(manager.reusePrefix(original.data(), original.size()), 4u);
+  manager.selectSession(KvCacheManager::kDefaultSession);
+  EXPECT_EQ(appendAndReadKeys(manager, 5), (std::vector<float>{1, 2, 3, 4, 5}));
+  // Clear drops the index, while existing sessions retain their page handles.
+  prefix->clear();
+  EXPECT_EQ(prefix->stats().radix_nodes, 0u);
+  manager.selectSession(manager.createSession());
+  EXPECT_EQ(manager.reusePrefix(original.data(), original.size()), 0u);
+  appendTokens(manager, original);
+  EXPECT_EQ(prefix->stats().radix_nodes, 2u);
+  manager.reset();
+  EXPECT_EQ(manager.reusePrefix(original.data(), original.size()), 4u);
+}
+
+TEST(KvCacheCore, radixMatchesLinearPrefixOracleAcrossInsertionsAndEvictions) {
+  auto prefix = std::make_shared<KvPrefixCache>(std::make_shared<KvPagePool>());
+  auto s = pagedSpec();
+  s.page_tokens = 4;
+  KvCacheManager manager;
+  manager.initialize(s, std::make_shared<nntrainer::MemAllocator>(), nullptr,
+                     prefix);
+  std::mt19937 random(42);
+  std::vector<std::vector<TokenId>> stored;
+  for (size_t iteration = 0; iteration < 100; ++iteration) {
+    if (iteration % 17 == 0) {
+      manager.reset();
+      prefix->evictUnused();
+      stored.clear();
+      EXPECT_EQ(prefix->stats().radix_nodes, 0u);
+    }
+    std::vector<TokenId> history(8);
+    for (auto &token : history)
+      token = random() % 3;
+    manager.reset();
+    appendTokens(manager, history);
+    stored.push_back(history);
+    auto query = stored[random() % stored.size()];
+    if (iteration % 2)
+      query[random() % query.size()] = random() % 3;
+    const size_t length = 1 + random() % query.size();
+    size_t expected = 0;
+    for (const auto &candidate : stored) {
+      size_t common = 0;
+      while (common < length && query[common] == candidate[common])
+        ++common;
+      expected = std::max(expected, common / s.page_tokens * s.page_tokens);
+    }
+    manager.reset();
+    EXPECT_EQ(manager.reusePrefix(query.data(), length), expected);
+    EXPECT_EQ(manager.committedTokens(),
+              std::vector<TokenId>(query.begin(), query.begin() + expected));
+  }
+}
+
 TEST(KvCacheCore, prefixCacheReleasesUnusedBlocksUnderPoolBudget) {
   auto pool = std::make_shared<KvPagePool>(256); // Two K/V page pairs.
   auto prefix = std::make_shared<KvPrefixCache>(pool);
@@ -1474,6 +1580,70 @@ TEST(KvCacheCore, flashRestoresExactPlanesAndContinuesGeneration) {
   EXPECT_EQ(appendAndReadKeys(manager, 9),
             (std::vector<float>{1, 2, 3, 4, 5, 6, 9}));
   EXPECT_LE(pool->reservedBytes(), pool->budgetBytes());
+}
+
+TEST(KvCacheCore, radixBranchesSurviveFlashDemotionAndRestoreExactPages) {
+  FlashDirectory dir;
+  auto pool = std::make_shared<KvPagePool>(512);
+  auto prefix =
+    std::make_shared<KvPrefixCache>(pool, 0, dir.options(4096, 384));
+  KvCacheManager manager;
+  manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                     nullptr, prefix);
+  const std::vector<std::vector<TokenId>> histories{{1, 2, 3, 4}, {1, 9, 3, 4}};
+  std::vector<std::string> planes;
+  for (const auto &history : histories) {
+    appendTokens(manager, history);
+    std::ostringstream saved;
+    manager.savePlane(saved, 0, true, 4);
+    manager.savePlane(saved, 0, false, 4);
+    planes.push_back(saved.str());
+    manager.reset();
+  }
+  EXPECT_EQ(prefix->stats().radix_nodes, 5u);
+  ASSERT_GT(prefix->stats().flash_blocks, 0u);
+  for (size_t i = 0; i < histories.size(); ++i) {
+    const auto &history = histories[i];
+    ASSERT_EQ(manager.reusePrefix(history.data(), history.size()), 4u);
+    std::ostringstream restored;
+    manager.savePlane(restored, 0, true, 4);
+    manager.savePlane(restored, 0, false, 4);
+    EXPECT_EQ(restored.str(), planes[i]);
+    manager.reset();
+  }
+  EXPECT_GT(prefix->stats().flash_hits, 0u);
+  EXPECT_EQ(prefix->stats().flash_errors, 0u);
+  EXPECT_LE(pool->reservedBytes(), pool->budgetBytes());
+}
+
+TEST(KvCacheCore, radixCorruptFlashBranchDoesNotInvalidateItsSibling) {
+  FlashDirectory dir;
+  auto pool = std::make_shared<KvPagePool>(512);
+  auto prefix =
+    std::make_shared<KvPrefixCache>(pool, 0, dir.options(4096, 384));
+  KvCacheManager manager;
+  manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                     nullptr, prefix);
+  const std::vector<TokenId> corrupt{1, 2, 3, 4}, healthy{1, 9, 3, 4};
+  appendTokens(manager, corrupt);
+  manager.reset();
+  appendTokens(manager, healthy);
+  manager.reset();
+  const auto directory = std::filesystem::directory_iterator(dir.path)->path();
+  ASSERT_TRUE(std::filesystem::exists(directory / "1.kv"));
+  {
+    std::ofstream file(directory / "1.kv", std::ios::binary | std::ios::trunc);
+    file << "corrupt";
+  }
+  EXPECT_EQ(manager.reusePrefix(corrupt.data(), corrupt.size()), 0u);
+  EXPECT_EQ(prefix->stats().radix_nodes, 2u); // Surviving branch recompressed.
+  ASSERT_EQ(manager.reusePrefix(healthy.data(), healthy.size()), 4u);
+  EXPECT_EQ(appendAndReadKeys(manager, 5), (std::vector<float>{1, 9, 3, 4, 5}));
+  EXPECT_GT(prefix->stats().flash_errors, 0u);
+  manager.reset();
+  appendTokens(manager, corrupt); // Reinsert the erased branch after the merge.
+  manager.reset();
+  EXPECT_EQ(manager.reusePrefix(corrupt.data(), corrupt.size()), 4u);
 }
 
 TEST(KvCacheCore, flashPoolPressureSpillsAndReusesAcrossSessions) {

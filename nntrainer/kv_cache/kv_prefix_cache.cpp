@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
  * @file kv_prefix_cache.cpp
- * @brief Token-chain block index with LRU eviction of unreferenced pages.
+ * @brief Compressed token radix tree with LRU eviction of KV pages.
  * @author SeungBaek <sb92.hong@samsung.com>
  * @bug Thread confined like KvPagePool; no asynchronous device access.
  */
@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <list>
+#include <map>
 #include <random>
 #include <stdexcept>
 #include <unordered_map>
@@ -32,21 +33,6 @@ uint64_t checksum(uint64_t hash, const void *data, size_t bytes) {
   return hash;
 }
 
-uint64_t splitmix(uint64_t x) {
-  x += 0x9e3779b97f4a7c15ull;
-  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
-  x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
-  return x ^ (x >> 31);
-}
-
-/** Bucket key only; matches always compare the parent and tokens exactly. */
-uint64_t blockDigest(uint64_t parent, const TokenId *tokens, size_t count) {
-  uint64_t hash = splitmix(parent);
-  for (size_t i = 0; i < count; ++i)
-    hash = splitmix(hash ^ tokens[i]);
-  return hash;
-}
-
 bool sameLayout(const LayerSpec &a, const LayerSpec &b) {
   return a.batch == b.batch && a.num_kv_heads == b.num_kv_heads &&
          a.head_dim == b.head_dim && a.encoding == b.encoding &&
@@ -57,10 +43,20 @@ bool sameLayout(const LayerSpec &a, const LayerSpec &b) {
 } // namespace
 
 struct KvPrefixCache::Core {
+  /** Edges hold compressed token runs. Only full-page boundaries own blocks;
+   * interior branch nodes index tokens without owning or copying KV pages.
+   * Node addresses stay stable through splits and merges for Block::node.
+   */
+  struct RadixNode {
+    std::vector<TokenId> edge;
+    std::map<TokenId, std::unique_ptr<RadixNode>> children;
+    RadixNode *parent = nullptr;
+    uint64_t block = 0;
+  };
+
   struct Block {
     uint64_t parent = 0;
-    uint64_t digest = 0;
-    std::vector<TokenId> tokens;
+    RadixNode *node = nullptr;
     LayerPages keys, values;
     size_t children = 0;
     size_t flash_bytes = 0;
@@ -76,7 +72,8 @@ struct KvPrefixCache::Core {
   uint64_t next_id = 1;
   uint64_t epoch = 1;
   std::unordered_map<uint64_t, Block> blocks;
-  std::unordered_multimap<uint64_t, uint64_t> index;
+  RadixNode root;
+  size_t radix_nodes = 0;  /**< Excludes the root and includes branch nodes. */
   std::list<uint64_t> lru; /**< Front is the most recently used block. */
   PrefixCacheStats stats;
   FlashCacheOptions flash;
@@ -252,16 +249,112 @@ struct KvPrefixCache::Core {
   }
 
   uint64_t find(uint64_t parent, const TokenId *tokens) const {
-    const auto range =
-      index.equal_range(blockDigest(parent, tokens, page_tokens));
-    for (auto it = range.first; it != range.second; ++it) {
-      const auto found = blocks.find(it->second);
-      if (found != blocks.end() && found->second.parent == parent &&
-          std::equal(found->second.tokens.begin(), found->second.tokens.end(),
-                     tokens))
-        return it->second;
+    const RadixNode *node = parent ? blocks.at(parent).node : &root;
+    size_t at = 0;
+    while (at < page_tokens) {
+      const auto child = node->children.find(tokens[at]);
+      if (child == node->children.end())
+        return 0;
+      node = child->second.get();
+      if (node->edge.size() > page_tokens - at ||
+          !std::equal(node->edge.begin(), node->edge.end(), tokens + at))
+        return 0;
+      at += node->edge.size();
     }
-    return 0;
+    return node->block;
+  }
+
+  /** Prepare every allocation before linking a new edge or splitting one.
+   * Failure leaves the existing tree and its block pointers unchanged.
+   */
+  RadixNode *insertIndex(uint64_t parent, const TokenId *tokens, uint64_t id) {
+    RadixNode *node = parent ? blocks.at(parent).node : &root;
+    size_t at = 0;
+    while (at < page_tokens) {
+      auto found = node->children.find(tokens[at]);
+      if (found == node->children.end()) {
+        auto leaf = std::make_unique<RadixNode>();
+        leaf->edge.assign(tokens + at, tokens + page_tokens);
+        leaf->parent = node;
+        leaf->block = id;
+        auto *result = leaf.get();
+        node->children.emplace(tokens[at], std::move(leaf));
+        ++radix_nodes;
+        return result;
+      }
+      auto &child = found->second;
+      size_t common = 0;
+      while (common < child->edge.size() && at + common < page_tokens &&
+             child->edge[common] == tokens[at + common])
+        ++common;
+      if (common == child->edge.size()) {
+        at += common;
+        node = child.get();
+        continue;
+      }
+
+      auto branch = std::make_unique<RadixNode>();
+      branch->edge.assign(child->edge.begin(), child->edge.begin() + common);
+      branch->parent = node;
+      std::vector<TokenId> suffix(child->edge.begin() + common,
+                                  child->edge.end());
+      // Reserve the old child's slot before mutating its edge or ownership.
+      auto old = branch->children.emplace(suffix.front(), nullptr).first;
+      RadixNode *result = branch.get();
+      size_t added = 1;
+      if (at + common == page_tokens) {
+        branch->block = id;
+      } else {
+        auto leaf = std::make_unique<RadixNode>();
+        leaf->edge.assign(tokens + at + common, tokens + page_tokens);
+        leaf->parent = branch.get();
+        leaf->block = id;
+        result = leaf.get();
+        branch->children.emplace(leaf->edge.front(), std::move(leaf));
+        ++added;
+      }
+      child->edge.swap(suffix);
+      child->parent = branch.get();
+      old->second = std::move(child);
+      child = std::move(branch);
+      radix_nodes += added;
+      return result;
+    }
+    node->block = id;
+    return node;
+  }
+
+  /** Remove a terminal leaf and recompress token-only unary ancestors.
+   * If allocating a merged label fails, the unary node remains searchable.
+   * Reclamation itself must still release KV pages under memory pressure.
+   */
+  void eraseIndex(RadixNode *node) noexcept {
+    node->block = 0;
+    while (node != &root && !node->block) {
+      auto *parent = node->parent;
+      const TokenId first = node->edge.front();
+      if (node->children.empty()) {
+        parent->children.erase(first);
+        --radix_nodes;
+        node = parent;
+        continue;
+      }
+      if (node->children.size() == 1) {
+        auto &child = node->children.begin()->second;
+        try {
+          auto edge = node->edge;
+          edge.insert(edge.end(), child->edge.begin(), child->edge.end());
+          child->edge.swap(edge);
+        } catch (...) {
+          return;
+        }
+        child->parent = parent;
+        auto replacement = std::move(child);
+        parent->children.find(first)->second = std::move(replacement);
+        --radix_nodes;
+      }
+      return;
+    }
   }
 
   void touch(uint64_t id) noexcept {
@@ -288,12 +381,7 @@ struct KvPrefixCache::Core {
       return; // Cannot forget a file still charged to the disk budget.
     if (resident(found->second))
       --resident_blocks;
-    auto range = index.equal_range(found->second.digest);
-    for (auto it = range.first; it != range.second; ++it)
-      if (it->second == id) {
-        index.erase(it);
-        break;
-      }
+    eraseIndex(found->second.node);
     if (found->second.parent) {
       auto parent = blocks.find(found->second.parent);
       if (parent != blocks.end() && parent->second.children)
@@ -387,6 +475,7 @@ PrefixCacheStats KvPrefixCache::stats() const {
   auto result = core_->stats;
   result.blocks = core_->blocks.size();
   result.resident_blocks = core_->resident_blocks;
+  result.radix_nodes = core_->radix_nodes;
   for (const auto &entry : core_->blocks)
     result.flash_blocks += entry.second.flash_bytes != 0;
   return result;
@@ -421,7 +510,8 @@ void KvPrefixCache::clear() {
     if (entry.second.flash_bytes)
       throw std::runtime_error("Cannot remove Flash KV cache files");
   core.stats.evicted_blocks += core.blocks.size();
-  core.index.clear();
+  core.root.children.clear();
+  core.radix_nodes = 0;
   core.lru.clear();
   core.blocks.clear();
   core.resident_blocks = 0;
@@ -541,8 +631,6 @@ uint64_t KvPrefixCache::insert(uint64_t parent, const TokenId *tokens,
 
   Core::Block block;
   block.parent = parent;
-  block.tokens.assign(tokens, tokens + core.page_tokens);
-  block.digest = blockDigest(parent, tokens, core.page_tokens);
   block.keys = keys;
   block.values = values;
   const uint64_t id = core.next_id;
@@ -552,7 +640,7 @@ uint64_t KvPrefixCache::insert(uint64_t parent, const TokenId *tokens,
     block.lru = core.lru.begin();
     auto placed = core.blocks.emplace(id, std::move(block)).first;
     try {
-      core.index.emplace(placed->second.digest, id);
+      placed->second.node = core.insertIndex(parent, tokens, id);
     } catch (...) {
       core.blocks.erase(placed);
       throw;

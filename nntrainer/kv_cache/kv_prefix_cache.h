@@ -34,6 +34,7 @@ struct PrefixCacheStats {
   size_t flash_writes = 0;
   size_t flash_hits = 0;
   size_t flash_errors = 0;
+  size_t radix_nodes = 0; /**< Compressed token nodes, excluding the root. */
 };
 
 /** Optional process-local second tier on a filesystem backed by flash/SSD.
@@ -48,14 +49,15 @@ struct FlashCacheOptions {
   size_t reserve_bytes = 0;
 };
 
-/** Content-addressed cache of full KV pages, keyed by the token chain that
- * produced them.
+/** Compressed token radix tree indexing full KV pages by their prefix.
  *
  * A block covers page_tokens consecutive positions [i * page_tokens,
  * (i + 1) * page_tokens) of a sequence and holds one page per owner layer for
- * both K and V. Blocks form a tree: a block is identified by its parent block
- * and its own token ids, which are compared exactly, so a match is never a
- * hash collision. Only full pages are cached; a partial tail stays private to
+ * both K and V. Radix edges contain token runs and split at the first differing
+ * token; token-only branch nodes hold no KV storage. Full-page boundaries are
+ * terminal nodes with stable block IDs for session references, LRU and Flash.
+ * Matching compares token runs exactly and returns only complete KV pages,
+ * even when a radix branch is inside a page. A partial tail stays private to
  * its session. A cached page is never written again: a session that has to
  * write into a shared page copies it first.
  *
