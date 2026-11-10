@@ -161,3 +161,6 @@ cohorts and CSV. TurboQuant is disabled in all three variants.
 
 Absent-token miss optimizations and expanded device measurements are recorded
 in [sparse-kv-prefix-miss.md](sparse-kv-prefix-miss.md).
+
+Quality improvements, Quick.KV experiment evidence and reproduction commands
+are tracked in [sparse-kv-quality-todo.md](sparse-kv-quality-todo.md).

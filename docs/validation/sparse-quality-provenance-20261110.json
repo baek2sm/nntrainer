@@ -1,0 +1,195 @@
+{
+  "date": "2026-11-10",
+  "nntrainer_base": "9bf6f1fad",
+  "quickkv_head": "d8f8626197c4734e67d8fbac959ac572302ed1fa",
+  "source_status": "Benchmark sources/results are untracked. HEAD alone does not reproduce this study.",
+  "historical_run": {
+    "path": "benchmarks/results/sparse_bench_json_trace_v1/chunk_repair_v1/run.json",
+    "sha256": "ebd378cf985dd288d1a7452a79413520c30b957a04da0bde7cdc69c0f9d6f3f1",
+    "config": {
+      "command": "run",
+      "manifest": "benchmarks/results/sparse_bench_json_trace_v1/manifest.json",
+      "out": "benchmarks/results/sparse_bench_json_trace_v1/chunk_repair_v1",
+      "resume": false,
+      "model": "Qwen/Qwen3-0.6B",
+      "revision": "main",
+      "device": "cpu",
+      "dtype": "float32",
+      "methods": [
+        "rope",
+        "gap",
+        "cacheblend_superset",
+        "gap_chunk16",
+        "gap_chunk32",
+        "gap_chunk64"
+      ],
+      "budgets": [
+        0.15
+      ],
+      "check_layer": 1,
+      "repeats": 3,
+      "threads": 4,
+      "selection_seed": 0,
+      "atol": 1e-05,
+      "logit_atol": 0.0001,
+      "rtol": 0.0001,
+      "split": "all",
+      "masks": "m3af,m0cf,m2aa,m096,m0c4,m190,m006,m005",
+      "limit": null,
+      "shards": 1,
+      "shard_index": 0,
+      "kv_only": false,
+      "include_absent": true,
+      "query_families": [
+        "wording-2"
+      ],
+      "query_limit": 1,
+      "max_tokens": 96,
+      "min_reference_tokens": 32,
+      "token_level": true,
+      "heads": true,
+      "save_kv": "none"
+    },
+    "manifest_sha256": "7b3123ed64e53928503a966f1ef34580fb4117bfd925c44a45397a67c9dd59e0",
+    "packages": {
+      "torch": "2.13.0+cu132",
+      "transformers": "5.14.1",
+      "numpy": "2.2.6",
+      "tokenizers": "0.22.2",
+      "matplotlib": null
+    },
+    "python": "3.10.12 (main, Aug 31 2026, 10:18:17) [GCC 11.4.0]",
+    "model_commit": "c1899de289a04d12100db370d81485cdf75e47ca",
+    "tokenizer_sha256": "bbe1e35651c3a31dc968a76e0de20c9b2e38027dfc3a932824ad8bf2f1521fb6",
+    "benchmark_sources": {
+      "report.html": "c288e54d8ee8d279f4de4cf9902d255e83ce89bf8220feefc8c23c59c7ab5789",
+      "__main__.py": "6d938a92a5225e240ff2750c335ff996d638f70443402bdb33315f6058a486c0",
+      "study.py": "2946e1ba3f904e50e4d619338efe18bd04aa1d9bc46665f09743470260af4c6d",
+      "__init__.py": "43bc6cf9abb0e40f00a31ef18ecc24914f975aeeeee6f961ff420d910072b679",
+      "device_tools_trace.json": "cf4d0dffbd5cc713ca59684c6fc61fce4e4ff171030f9ce30a79fc5f8b4ee229",
+      "report.py": "25711a62b4108b8422de017a2274fd773a5ec726c2b3f03010bdb74cc1b471e2",
+      "dashboard.py": "c61d39ded45879d36478c88cea7ee1fce0e4a281f18a3a9f705387a0d11970a1",
+      "device_tools.json": "7477125955ede57f419b828eea6d9a7e76a343e8345004f2e4ddb6f16ee8acd2",
+      "cases.py": "f30bb013d3b3986a1257208a6827cca47ec30116e47a459178f4fe40f8ec549f",
+      "backend.py": "60d7d2307ee3782010c14f25cae7a0e6cf106d5d9f5e71805400b92ca128dffe",
+      "device_tools_json_trace.json": "6d7501b722624395566c3b58f6fe5305742a01dbe4c7f307193c8f5651148efb",
+      "metrics.py": "2fd757a072608e04693856ea83f1e09505a31433d5dde3dccc137f41a4506bc7",
+      "runner.py": "18dbed76d189ead4e896db17519391ed9c0fc646b577fe40e14e608fbd143f41",
+      "saliency.py": "48bd0df44d7fc9b7e9f82863d1994a2020f67b00dc793b3387d9a172f7ac2241"
+    }
+  },
+  "historical_findings": {
+    "path": "benchmarks/results/sparse_bench_json_trace_v1/chunk_repair_report_v1/chunk_findings.json",
+    "sha256": "a37471b7292f0606a9b8af56711b0a7d4f3f8fc29712d06db5fd7fd3d2e3e83d",
+    "scope": {
+      "masks": 8,
+      "queries_per_mask": 1,
+      "query_target": "get_weather",
+      "generation_cap": 96,
+      "logical_reads_only": true,
+      "equal_token_budget": false
+    },
+    "methods": {
+      "cacheblend_superset@0.15": {
+        "queries": 8,
+        "token_matches": 1,
+        "mean_common_prefix_fraction": 0.49901115618661257,
+        "mean_selected_eligible_fraction": 0.15304098818293582,
+        "mean_teacher_tvd": 0.04478843235492193
+      },
+      "gap@0.15": {
+        "queries": 8,
+        "token_matches": 1,
+        "mean_common_prefix_fraction": 0.4492634985028494,
+        "mean_selected_eligible_fraction": 0.15304098818293582,
+        "mean_teacher_tvd": 0.04537478512364606
+      },
+      "gap_chunk16": {
+        "queries": 8,
+        "token_matches": 1,
+        "mean_common_prefix_fraction": 0.42396587945523034,
+        "mean_selected_eligible_fraction": 0.2253989246273565,
+        "mean_teacher_tvd": 0.042193726413206165
+      },
+      "gap_chunk32": {
+        "queries": 8,
+        "token_matches": 0,
+        "mean_common_prefix_fraction": 0.45696277386516826,
+        "mean_selected_eligible_fraction": 0.43790068890953887,
+        "mean_teacher_tvd": 0.03112175475462447
+      },
+      "gap_chunk64": {
+        "queries": 8,
+        "token_matches": 6,
+        "mean_common_prefix_fraction": 0.8526340996168582,
+        "mean_selected_eligible_fraction": 0.6930166590172122,
+        "mean_teacher_tvd": 0.010525039393600777
+      },
+      "rope": {
+        "queries": 8,
+        "token_matches": 1,
+        "mean_common_prefix_fraction": 0.4463899352844586,
+        "mean_selected_eligible_fraction": 0.0,
+        "mean_teacher_tvd": 0.05414656806227832
+      }
+    }
+  },
+  "current_local_snapshot": {
+    "path": "/tmp/quickkv-sparse-quality-20261110.tar.gz",
+    "sha256": "86cf9b4f836e5f618c74243cb47960b282cc37e3c6d652055cc944fbe87aee36",
+    "distribution": "Local snapshot only; publish a source artifact before remote reproduction. Historical backend/runner versions cannot be recovered from their hashes.",
+    "files_sha256": {
+      "benchmarks/sparse_bench/README.md": "5da385ad9e91ef6f1165c1880eccabd7ec22be461a63de6db2e52d377289de22",
+      "benchmarks/sparse_bench/__init__.py": "43bc6cf9abb0e40f00a31ef18ecc24914f975aeeeee6f961ff420d910072b679",
+      "benchmarks/sparse_bench/__main__.py": "6d938a92a5225e240ff2750c335ff996d638f70443402bdb33315f6058a486c0",
+      "benchmarks/sparse_bench/backend.py": "bed9c649b7b8bb28e7a09bf855d5451c14bfbaffb416facf1674423a2b15cf68",
+      "benchmarks/sparse_bench/cases.py": "f30bb013d3b3986a1257208a6827cca47ec30116e47a459178f4fe40f8ec549f",
+      "benchmarks/sparse_bench/dashboard.py": "e56a0ad6d6f70a51d28491c06fe942a3977b13d8067cccefc0feb7c77bdae276",
+      "benchmarks/sparse_bench/device_tools.json": "7477125955ede57f419b828eea6d9a7e76a343e8345004f2e4ddb6f16ee8acd2",
+      "benchmarks/sparse_bench/device_tools_json_trace.json": "6d7501b722624395566c3b58f6fe5305742a01dbe4c7f307193c8f5651148efb",
+      "benchmarks/sparse_bench/device_tools_trace.json": "cf4d0dffbd5cc713ca59684c6fc61fce4e4ff171030f9ce30a79fc5f8b4ee229",
+      "benchmarks/sparse_bench/metrics.py": "2fd757a072608e04693856ea83f1e09505a31433d5dde3dccc137f41a4506bc7",
+      "benchmarks/sparse_bench/report.html": "1fffb409bb30c27bfa6b683f3f1791bb4a925d4db2dd4535d280f82315100371",
+      "benchmarks/sparse_bench/report.py": "9f03a5d0ee35f635f8be6950778040c399b40f771d50a54f1756c4bd86313708",
+      "benchmarks/sparse_bench/runner.py": "8bec04796de564bea79b92936ac3d4ebf356e078ab976b213e6cd026e5a2187f",
+      "benchmarks/sparse_bench/saliency.py": "48bd0df44d7fc9b7e9f82863d1994a2020f67b00dc793b3387d9a172f7ac2241",
+      "benchmarks/sparse_bench/study.py": "2946e1ba3f904e50e4d619338efe18bd04aa1d9bc46665f09743470260af4c6d",
+      "tests/benchmarks/test_sparse_bench.py": "0db076296af4f43b081f4db9cfafdef0fb1eb3c7a4d38cb669b8e81e02fbf4e0",
+      "pyproject.toml": "c9a346d4286bdbb1e4ef3abb1ec9d16145854680caa0400cc9753b680945ad3d",
+      "benchmarks/results/sparse_bench_json_trace_v1/chunk_repair_v1/run.json": "ebd378cf985dd288d1a7452a79413520c30b957a04da0bde7cdc69c0f9d6f3f1",
+      "benchmarks/results/sparse_bench_json_trace_v1/chunk_repair_report_v1/chunk_findings.json": "a37471b7292f0606a9b8af56711b0a7d4f3f8fc29712d06db5fd7fd3d2e3e83d",
+      "benchmarks/results/sparse_bench_json_trace_v1/manifest.json": "06584075bdf71fa99c2a7185cb60d5e70cda41415bb6f9352d1e0787af460b22"
+    }
+  },
+  "changed_since_historical_run": [
+    "backend.py",
+    "dashboard.py",
+    "report.html",
+    "report.py",
+    "runner.py"
+  ],
+  "verification_scope": "Documentation and local reproduction preflight; no new full-model quality or device run.",
+  "verification": {
+    "manifest_masks": 1024,
+    "manifest_hash_matches": true,
+    "snapshot_file_hashes_match": true,
+    "historical_numbers_and_document_links_checked": true,
+    "quickkv_contract_tests": {
+      "result": "18 passed",
+      "cwd": "/tmp/sparse-quality-check-24w9536z",
+      "python": "/home/seungbaek/projects/vllm/.venv/bin/python",
+      "extra_sys_path": [
+        "/home/seungbaek/.local/lib/python3.10/site-packages",
+        "/usr/lib/python3/dist-packages"
+      ],
+      "environment": {
+        "MPLCONFIGDIR": "/tmp/sparse-quality-mpl",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "HF_HUB_OFFLINE": "1"
+      },
+      "command": "python -m pytest -q -p no:cacheprovider tests/benchmarks/test_sparse_bench.py",
+      "notes": "Initial environment lacked matplotlib/six. Existing local and system packages were appended to sys.path for the successful run; no dependencies installed. NVML and plot layout warnings remain."
+    },
+    "full_model_or_device_experiments_rerun": false
+  }
+}
