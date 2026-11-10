@@ -46,6 +46,13 @@ public:
   void setSparseRestore(SparseRestore restore) {
     sparse_restore_ = std::move(restore);
   }
+  /** Require enough additional reusable rows to justify gathering an exact
+   * prefix again. Defaults to one native KV page; zero is invalid. */
+  void setMinimumSparseGain(size_t rows) {
+    if (!rows)
+      throw std::invalid_argument("Sparse prefix gain must be positive");
+    minimum_sparse_gain_ = rows;
+  }
   bool approximate() const { return sessions_.at(active_).approximate; }
   struct Session {
     uint32_t handle = 0;
@@ -204,21 +211,23 @@ public:
     }
     // Sparse candidates reference a single original history. Keep exact radix
     // hits at equal length; only a longer sparse hit pays gather/rotation cost.
-    if (sparse_restore_ && tokens.size() > minimum_suffix_) {
+    const size_t exact = candidates.empty() ? 0 : candidates.back().second;
+    if (sparse_restore_ && tokens.size() > minimum_suffix_ &&
+        exact < tokens.size() - minimum_suffix_ &&
+        tokens.size() - minimum_suffix_ - exact >= minimum_sparse_gain_) {
       struct Candidate {
         uint32_t handle;
         std::vector<nntrainer::kv::SparsePrefixRun> runs;
       };
       std::vector<Candidate> sparse;
-      const size_t exact = candidates.empty() ? 0 : candidates.back().second;
       for (const auto &entry : prefixes_) {
         const auto &p = entry.second;
         auto runs = nntrainer::kv::matchSparseTokens(
           p.tokens.data(), p.tokens.size(), tokens.data(),
           tokens.size() - minimum_suffix_);
         const size_t length = nntrainer::kv::sparsePrefixLength(runs);
-        if (length > exact && !runs.empty() &&
-            (runs.size() > 1 || runs.front().source != 0))
+        if (length > exact && length - exact >= minimum_sparse_gain_ &&
+            !runs.empty() && (runs.size() > 1 || runs.front().source != 0))
           sparse.push_back({entry.first, std::move(runs)});
       }
       std::stable_sort(sparse.begin(), sparse.end(),
@@ -266,8 +275,8 @@ public:
    * Terminals borrow one handle; pages and boundary metadata can be shared. */
   void publish(const Tokens &tokens, unsigned position, unsigned pending,
                Capture capture_override = {}) {
-    if (approximate() || !max_prefixes_ || tokens.empty() ||
-        tokens.size() != position)
+    if (!max_prefixes_ || tokens.empty() || tokens.size() != position ||
+        approximate())
       return;
     // Equal token histories can have different quantizer states depending on
     // prefill chunking. Retain the first valid state; never combine its pages
@@ -433,6 +442,7 @@ private:
   PrefixCompatible prefix_compatible_;
   size_t max_sessions_, max_prefixes_;
   size_t minimum_suffix_ = 1;
+  size_t minimum_sparse_gain_ = 64;
   uint32_t next_session_ = 1, active_ = 0;
   uint64_t clock_ = 0;
   std::map<uint32_t, Session> sessions_;

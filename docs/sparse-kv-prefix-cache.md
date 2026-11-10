@@ -33,7 +33,12 @@ default and tracks approximate history separately from exact cache entries.
 * Runs merge when source and destination are both contiguous. They may cross
   pages and finish inside a page. Matching never substitutes text or assumes
   that tokenization is unchanged after editing text.
-* HTP keeps the existing exact lookup and prefers an exact hit at equal length.
+* HTP keeps the existing exact lookup. Its automatic policy requires at least
+  64 additional reusable tokens over the best exact hit before gathering a
+  sparse prefix. Full exact hits and requests too short to gain 64 tokens
+  bypass sparse search. This prevents a one-token gain from triggering a full
+  prefix copy and rotation. `DeviceKVManager::setMinimumSparseGain()` can change
+  this policy explicitly; the direct CPU core API remains caller-controlled.
   Sparse gathering allocates destination pages, leaves source pages immutable,
   and corrects K using each layer's head geometry and model frequencies.
 * Approximate sessions and continuations are not published into the exact
@@ -140,3 +145,6 @@ It creates a model-local test configuration in memory, keeps the last prompt
 token for fresh inference, checks the actual producer RoPE geometry, exercises
 both full subset reuse and a newly evaluated suffix, checks fact retention,
 and verifies exact source replay and absence of cache contamination.
+
+Existing-path performance comparisons and the small-gain regression fix are
+recorded in [sparse-kv-prefix-regression.md](sparse-kv-prefix-regression.md).

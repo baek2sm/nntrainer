@@ -450,6 +450,7 @@ executable('nntr_safetensors_info',
 
 if get_option('enable-htp-device-check')
   foreach check_name, check_source : {
+    'htp_sparse_regression': 'tools/kv_cache/benchmark_htp_sparse_regression.cpp',
     'htp_sparse_prefix_check': 'tools/kv_cache/check_htp_sparse_prefix.cpp',
     'htp_page_prefix_check': 'tools/kv_cache/check_htp_page_prefix.cpp',
     'htp_sessions_check': 'tools/kv_cache/check_htp_sessions.cpp',

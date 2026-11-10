@@ -266,8 +266,6 @@ int main() {
     assert(m.tokens().size() == 64 && m.stats().hits == 1);
   }
   assert(live.empty());
-  std::cout
-    << "Device sessions, compressed radix, LRU, failure isolation: PASS\n";
   {
     unsigned restored = 0;
     uint32_t next = 100;
@@ -277,6 +275,7 @@ int main() {
     m.publish({1, 2, 3, 4, 5, 6}, 6, 0);
     // Default remains exact; a deletion inside the compressed edge misses.
     assert(m.reuse({1, 3, 5, 9}) == 0);
+    m.setMinimumSparseGain(1);
     m.setSparseRestore(
       [&](uint32_t, const std::vector<nntrainer::kv::SparsePrefixRun> &runs,
           size_t rows) {
@@ -305,4 +304,39 @@ int main() {
     auto before = m.tokens();
     assert(m.reuse({1, 3, 5, 9}) == 0 && m.tokens() == before);
   }
+  {
+    uint32_t next = 1;
+    bool sparse_called = false;
+    Manager m([&](unsigned, unsigned) { return next++; },
+              [](uint32_t, unsigned) {}, [](uint32_t) {}, [] {}, 2, 4);
+    m.setPrefixLengths([](uint32_t) { return std::vector<unsigned>{512}; });
+    Manager::Tokens source(700);
+    for (unsigned i = 0; i < source.size(); ++i)
+      source[i] = 100 + i;
+    m.publish(source, source.size(), 0);
+    m.setSparseRestore([&](uint32_t,
+                           const std::vector<nntrainer::kv::SparsePrefixRun> &,
+                           size_t) { sparse_called = true; });
+    Manager::Tokens request(source.begin(), source.begin() + 512);
+    request.push_back(source[600]); // only one extra reusable token
+    request.insert(request.end(), 80, 999999);
+    assert(m.reuse(request) == 512 && !sparse_called && !m.approximate());
+    request.resize(512);
+    request.insert(request.end(), source.begin() + 600, source.begin() + 663);
+    request.insert(request.end(), 80, 999999);
+    assert(m.reuse(request) == 512 && !sparse_called && !m.approximate());
+    request.resize(512);
+    request.insert(request.end(), source.begin() + 600, source.begin() + 664);
+    request.push_back(999999);
+    assert(m.reuse(request) == 576 && sparse_called && m.approximate());
+    bool rejected = false;
+    try {
+      m.setMinimumSparseGain(0);
+    } catch (const std::invalid_argument &) {
+      rejected = true;
+    }
+    assert(rejected);
+  }
+  std::cout << "Device sessions, radix, sparse gain policy, LRU, failure "
+               "isolation: PASS\n";
 }
