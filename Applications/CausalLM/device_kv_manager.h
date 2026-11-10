@@ -44,6 +44,9 @@ public:
   /** Install explicitly to permit approximate token-deletion reuse. The
    * callback must stage/validate before changing live backend state. */
   void setSparseRestore(SparseRestore restore) {
+    if (restore)
+      for (auto &entry : prefixes_)
+        prepareSparse(entry.second);
     sparse_restore_ = std::move(restore);
   }
   /** Require enough additional reusable rows to justify gathering an exact
@@ -222,6 +225,9 @@ public:
       std::vector<Candidate> sparse;
       for (const auto &entry : prefixes_) {
         const auto &p = entry.second;
+        if (!std::binary_search(p.vocabulary.begin(), p.vocabulary.end(),
+                                tokens.front()))
+          continue;
         size_t source_rows = p.tokens.size();
         if (prefix_lengths_) {
           source_rows = 0;
@@ -233,7 +239,7 @@ public:
         // host prefill checkpoint stops one row earlier. Match backed rows.
         auto runs = nntrainer::kv::matchSparseTokens(
           p.tokens.data(), source_rows, tokens.data(),
-          tokens.size() - minimum_suffix_);
+          tokens.size() - minimum_suffix_, &p.vocabulary);
         const size_t length = nntrainer::kv::sparsePrefixLength(runs);
         if (length > exact && length - exact >= minimum_sparse_gain_ &&
             !runs.empty() && (runs.size() > 1 || runs.front().source != 0))
@@ -310,9 +316,11 @@ public:
     const auto &capture = capture_override  ? capture_override
                           : prefix_capture_ ? prefix_capture_
                                             : capture_;
-    Prefix p{tokens, capture(position, pending), ++clock_, 0,
-             static_cast<bool>(capture_override)};
+    Prefix p{tokens, capture(position, pending),          ++clock_,
+             0,      static_cast<bool>(capture_override), {}};
     try {
+      if (sparse_restore_)
+        prepareSparse(p);
       p.first = prefix_min_ ? prefix_min_(p.handle) : 0;
       prefixes_.emplace(p.handle, p);
       rebuild();
@@ -350,9 +358,19 @@ private:
     Tokens tokens;
     uint32_t handle;
     uint64_t used;
-    unsigned first; /**< Minimum prefix with all required sliding rows. */
-    bool external;  /**< Captured using a caller-supplied backend. */
+    unsigned first;    /**< Minimum prefix with all required sliding rows. */
+    bool external;     /**< Captured using a caller-supplied backend. */
+    Tokens vocabulary; /**< Sorted unique IDs, built only for sparse lookup. */
   };
+  static void prepareSparse(Prefix &prefix) {
+    if (!prefix.vocabulary.empty())
+      return;
+    auto vocabulary = prefix.tokens;
+    std::sort(vocabulary.begin(), vocabulary.end());
+    vocabulary.erase(std::unique(vocabulary.begin(), vocabulary.end()),
+                     vocabulary.end());
+    prefix.vocabulary = std::move(vocabulary);
+  }
   static size_t nodes(const Node &n) {
     size_t count = 0;
     for (const auto &c : n.children)

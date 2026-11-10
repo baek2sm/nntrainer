@@ -6,6 +6,7 @@
 #ifndef NNTRAINER_SPARSE_PREFIX_H
 #define NNTRAINER_SPARSE_PREFIX_H
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -30,16 +31,26 @@ struct SparsePrefixRun {
 /** Greedy ordered subsequence, stopping at the first unmatched request token.
  * A source token is used at most once. Earliest matches maximize the reusable
  * request prefix, including repeated IDs. No token from another template is
- * ever spliced into the same plan. */
-inline std::vector<SparsePrefixRun> matchSparseTokens(const uint32_t *source,
-                                                      size_t source_count,
-                                                      const uint32_t *request,
-                                                      size_t request_count) {
+ * ever spliced into the same plan. Optional vocabulary must be sorted unique
+ * IDs containing every source token; conservative extra IDs are allowed. It
+ * only accelerates rejection and does not replace the ordered match. */
+inline std::vector<SparsePrefixRun>
+matchSparseTokens(const uint32_t *source, size_t source_count,
+                  const uint32_t *request, size_t request_count,
+                  const std::vector<uint32_t> *vocabulary = nullptr) {
   if ((source_count && !source) || (request_count && !request))
     throw std::invalid_argument("Sparse prefix requires token IDs");
   std::vector<SparsePrefixRun> runs;
   size_t src = 0;
   for (size_t dst = 0; dst < request_count; ++dst) {
+    // A published source may cache sorted unique IDs. Test only at a mismatch,
+    // keeping contiguous hits linear and rejecting absent IDs without scanning
+    // the rest of a long source. The vocabulary may conservatively include
+    // unavailable rows; it must never omit IDs in source[0:source_count].
+    if (src < source_count && source[src] != request[dst] && vocabulary &&
+        !std::binary_search(vocabulary->begin(), vocabulary->end(),
+                            request[dst]))
+      break;
     while (src < source_count && source[src] != request[dst])
       ++src;
     if (src == source_count)

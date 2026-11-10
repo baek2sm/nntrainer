@@ -41,6 +41,12 @@ default and tracks approximate history separately from exact cache entries.
   this policy explicitly; the direct CPU core API remains caller-controlled.
   Sparse gathering allocates destination pages, leaves source pages immutable,
   and corrects K using each layer's head geometry and model frequencies.
+* HTP builds sorted unique token IDs for retained histories only when sparse
+  lookup is enabled. An absent first token rejects a source before querying
+  backing boundaries; an absent token after a common header stops the matcher
+  without scanning the remaining source. This index only rejects impossible
+  matches; IDs that are present still use the ordered match and backed-row
+  checks. Exact-only publication does not build this index.
 * Approximate sessions and continuations are not published into the exact
   cache. Forking and session switching preserve this provenance. The CPU core
   can truncate to an exact leading region and then resume exact publication.
@@ -152,3 +158,6 @@ recorded in [sparse-kv-prefix-regression.md](sparse-kv-prefix-regression.md).
 A repeated Q8-only cold/exact/sparse benefit matrix at 4K–24K on S26U is
 recorded in [sparse-kv-prefix-benefit.md](sparse-kv-prefix-benefit.md), with raw
 cohorts and CSV. TurboQuant is disabled in all three variants.
+
+Absent-token miss optimizations and expanded device measurements are recorded
+in [sparse-kv-prefix-miss.md](sparse-kv-prefix-miss.md).

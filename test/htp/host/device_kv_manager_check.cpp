@@ -353,6 +353,38 @@ int main() {
       });
     assert(m.reuse({1, 3, 5, 6, 99}) == 3);
   }
+  {
+    unsigned next_handle = 1, boundary_calls = 0, sparse_calls = 0;
+    Manager m([&](unsigned, unsigned) { return next_handle++; },
+              [](uint32_t, unsigned) {}, [](uint32_t) {}, [] {}, 2, 2);
+    m.setMinimumSparseGain(1);
+    m.setPrefixLengths([&](uint32_t) {
+      ++boundary_calls;
+      return std::vector<unsigned>{4};
+    });
+    m.publish({10, 20, 30, 40}, 4, 0); // Index can be enabled after publishing.
+    auto restore = [&](uint32_t,
+                       const std::vector<nntrainer::kv::SparsePrefixRun> &,
+                       size_t) { ++sparse_calls; };
+    m.setSparseRestore(restore);
+    boundary_calls = 0;
+    assert(m.reuse({999, 20, 30, 40, 50}) == 0);
+    assert(boundary_calls == 0 && sparse_calls == 0);
+    assert(m.reuse({10, 999, 30, 40, 50}) == 0);
+    assert(sparse_calls == 0 && !m.approximate());
+    assert(m.reuse({10, 30, 40, 999}) == 3 && sparse_calls == 1);
+    m.setSparseRestore({});
+    m.forgetTokens();
+    m.publish({100, 200, 300, 400}, 4, 0);
+    m.setSparseRestore(restore);
+    assert(m.reuse({100, 300, 400, 999}) == 3 && sparse_calls == 2);
+    m.forgetTokens();
+    m.publish({1000, 2000, 3000, 4000}, 4, 0); // Evict the first history.
+    assert(m.reuse({10, 30, 40, 999}) == 0);
+    assert(m.reuse({1000, 3000, 4000, 999}) == 3 && sparse_calls == 3);
+    m.clearPrefixes();
+    assert(m.reuse({1000, 3000, 4000, 999}) == 0);
+  }
   std::cout << "Device sessions, radix, sparse gain policy, LRU, failure "
                "isolation: PASS\n";
 }

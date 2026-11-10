@@ -2355,6 +2355,21 @@ TEST(KvCacheCore, sparseRadixMatchesIndependentPrefixSubsequenceOracle) {
       id = random() % 6;
     size_t expected = 0;
     for (const auto &source : sources) {
+      auto vocabulary = source;
+      std::sort(vocabulary.begin(), vocabulary.end());
+      vocabulary.erase(std::unique(vocabulary.begin(), vocabulary.end()),
+                       vocabulary.end());
+      const auto plain = matchSparseTokens(source.data(), source.size(),
+                                           request.data(), request.size());
+      const auto indexed =
+        matchSparseTokens(source.data(), source.size(), request.data(),
+                          request.size(), &vocabulary);
+      ASSERT_EQ(plain.size(), indexed.size());
+      for (size_t r = 0; r < plain.size(); ++r) {
+        EXPECT_EQ(plain[r].source, indexed[r].source);
+        EXPECT_EQ(plain[r].destination, indexed[r].destination);
+        EXPECT_EQ(plain[r].count, indexed[r].count);
+      }
       // DP allows source deletions and requires every leading request token.
       // It does not use the implementation's greedy scan or radix traversal.
       std::vector<bool> reachable(request.size() + 1, false);

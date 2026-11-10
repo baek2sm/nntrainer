@@ -192,3 +192,7 @@ PYRAW
 python3 tools/kv_cache/summarize_sparse_benefit.py \
   /tmp/benefit-cold.json /tmp/benefit-cache.json /tmp/benefit-summary
 ```
+
+A subsequent absent-token lookup optimization and expanded miss-only comparison
+are recorded in [sparse-kv-prefix-miss.md](sparse-kv-prefix-miss.md). The table
+above preserves the original measurements.
