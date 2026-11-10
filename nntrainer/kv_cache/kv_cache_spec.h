@@ -16,8 +16,8 @@
 namespace nntrainer::kv {
 
 /** Mathematical encoding and Tensor backing type are deliberately separate. */
-enum class Encoding { Float32, Float16 };
-enum class StorageType { Float32, Float16, UInt16 };
+enum class Encoding { Float32, Float16, TurboQuant4BitNC };
+enum class StorageType { Float32, Float16, UInt16, UInt8 };
 
 /** Checked arithmetic, including the allocator's alignment rounding. */
 inline size_t checkedAdd(size_t a, size_t b) {
@@ -45,11 +45,20 @@ struct LayerSpec {
   Encoding encoding = Encoding::Float16;
   StorageType storage_type = StorageType::UInt16;
 
-  size_t elementBytes() const { return encoding == Encoding::Float32 ? 4 : 2; }
-  size_t rowBytes() const {
-    return checkedMultiply(checkedMultiply(num_kv_heads, head_dim),
-                           elementBytes());
+  size_t elementBytes() const {
+    if (encoding == Encoding::TurboQuant4BitNC)
+      throw std::logic_error("Packed KV has no scalar element size");
+    return encoding == Encoding::Float32 ? 4 : 2;
   }
+  /** Each packed head has D/2 bytes of indices and two FP32 metadata slots.
+   * K stores its norm and cached norm-correction multiplier; V stores scale
+   * and minimum. Legacy keys with a zero multiplier are still readable. */
+  size_t headBytes() const {
+    return encoding == Encoding::TurboQuant4BitNC
+             ? checkedAdd(head_dim / 2, 8)
+             : checkedMultiply(head_dim, elementBytes());
+  }
+  size_t rowBytes() const { return checkedMultiply(num_kv_heads, headBytes()); }
   size_t planeBytes() const {
     return checkedMultiply(checkedMultiply(batch, capacity), rowBytes());
   }
@@ -81,7 +90,10 @@ struct CacheSpec {
              s.storage_type == StorageType::Float32) ||
             (s.encoding == Encoding::Float16 &&
              (s.storage_type == StorageType::Float16 ||
-              s.storage_type == StorageType::UInt16))))
+              s.storage_type == StorageType::UInt16)) ||
+            (s.encoding == Encoding::TurboQuant4BitNC &&
+             s.storage_type == StorageType::UInt8 && s.head_dim >= 64 &&
+             s.head_dim <= 1024 && !(s.head_dim & (s.head_dim - 1)))))
         throw std::invalid_argument("Invalid KV encoding/backing combination");
       if (page_tokens && s.capacity != s.max_tokens)
         throw std::invalid_argument("Paged KV does not support ring storage");

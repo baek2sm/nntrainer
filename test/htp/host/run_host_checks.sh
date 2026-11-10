@@ -424,7 +424,7 @@ graph_check() { # graph_check <graph.c> <exe> [m1_ops.c] [profile_on_demand]
     -o "$2" \
     "$HERE/graph_host_check.c" "$1" \
     "${3:-$BACKEND/hvx/hvx_m1_ops_f32.c}" "$BACKEND/hvx/hvx_conv_gate_f32.c" \
-    "$BACKEND/hvx/hvx_attn_m1_f32.c" "$BACKEND/hvx/hvx_worker_pool.c" \
+    "$BACKEND/hvx/hvx_attn_m1_f32.c" "$BACKEND/hvx/hvx_turboquant.c" "$BACKEND/../../kv_cache/turboquant_codec.c" "$BACKEND/hvx/hvx_worker_pool.c" \
     "$BACKEND/hvx/hvx_scale_add_f32.c" "$BACKEND/hvx/hvx_q4_gemv_f32.c" -lm
 }
 graph_check "$BACKEND/hmx/hexkl_graph.c" "$OUT/graph_host_check"
@@ -528,7 +528,7 @@ token_check() { # token_check <hexkl_token.c> <exe> [hexkl_graph.c]
     -o "$2" \
     "$HERE/token_host_check.c" "$1" "${3:-$BACKEND/hmx/hexkl_graph.c}" \
     "$BACKEND/hvx/hvx_m1_ops_f32.c" "$BACKEND/hvx/hvx_conv_gate_f32.c" \
-    "$BACKEND/hvx/hvx_attn_m1_f32.c" "$BACKEND/hvx/hvx_worker_pool.c" \
+    "$BACKEND/hvx/hvx_attn_m1_f32.c" "$BACKEND/hvx/hvx_turboquant.c" "$BACKEND/../../kv_cache/turboquant_codec.c" "$BACKEND/hvx/hvx_worker_pool.c" \
     "$BACKEND/hvx/hvx_scale_add_f32.c" "$BACKEND/hvx/hvx_q4_gemv_f32.c" -lm
 }
 token_check "$BACKEND/hmx/hexkl_token.c" "$OUT/token_host_check"
@@ -785,7 +785,7 @@ done
   -pthread -include malloc.h \
   -I "$HERE/hvx_emu" -I "$HERE/stub" -I "$BACKEND/.." -I "$BACKEND/hvx" \
   -o "$OUT/attn_m1_host_check" \
-  "$HERE/attn_m1_host_check.c" "$BACKEND/hvx/hvx_attn_m1_f32.c" \
+  "$HERE/attn_m1_host_check.c" "$BACKEND/hvx/hvx_attn_m1_f32.c" "$BACKEND/hvx/hvx_turboquant.c" "$BACKEND/../../kv_cache/turboquant_codec.c" \
   "$BACKEND/hvx/hvx_worker_pool.c" -lm
 
 "$OUT/attn_m1_host_check"
@@ -802,7 +802,7 @@ done
   -DNNTR_ATTN_Q8_NARROW_PREFETCH=1 \
   -I "$HERE/hvx_emu" -I "$HERE/stub" -I "$BACKEND/.." -I "$BACKEND/hvx" \
   -o "$OUT/attn_m1_v81_host_check" \
-  "$HERE/attn_m1_host_check.c" "$BACKEND/hvx/hvx_attn_m1_f32.c" \
+  "$HERE/attn_m1_host_check.c" "$BACKEND/hvx/hvx_attn_m1_f32.c" "$BACKEND/hvx/hvx_turboquant.c" "$BACKEND/../../kv_cache/turboquant_codec.c" \
   "$BACKEND/hvx/hvx_worker_pool.c" -lm
 
 "$OUT/attn_m1_v81_host_check"
@@ -820,7 +820,7 @@ for mut in 's/  job.lo = attn_m1_det_lo(L, window);/  job.lo = attn_m1_det_lo(L 
     -pthread -include malloc.h \
     -I "$HERE/hvx_emu" -I "$HERE/stub" -I "$BACKEND/.." -I "$BACKEND/hvx" \
     -o "$OUT/attn_m1_mutant" \
-    "$HERE/attn_m1_host_check.c" "$OUT/hvx_attn_m1_mut.c" \
+    "$HERE/attn_m1_host_check.c" "$OUT/hvx_attn_m1_mut.c" "$BACKEND/hvx/hvx_turboquant.c" "$BACKEND/../../kv_cache/turboquant_codec.c" \
     "$BACKEND/hvx/hvx_worker_pool.c" -lm
   if "$OUT/attn_m1_mutant" > "$OUT/attn_m1_mutant.log"; then
     echo "ATTN M1 MUTANT PASSED (the check is blind): $mut"; exit 1

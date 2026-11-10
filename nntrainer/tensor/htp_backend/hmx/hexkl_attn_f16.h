@@ -45,6 +45,12 @@ typedef struct {
   const uint8_t *kt_tiles;
   const uint8_t *v_tiles;
   uint32_t kv_tile_cols;
+  /** Optional bounded packed-cache reader. Writes n_col consecutive 32x32
+   * K^T/V tiles in [column_tile, dot_tile] order directly into VTCM.
+   * Runs on the calling thread while softmax workers may still be active. */
+  void (*load_tiles)(void *context, uint32_t head, uint32_t row0,
+                     uint32_t n_col, uint8_t *kt, uint8_t *v);
+  void *load_context;
 } hexkl_attn_f16_io;
 
 /** @brief On-DSP wall time per phase, microseconds, summed over the call. */

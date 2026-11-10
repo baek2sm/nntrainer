@@ -207,6 +207,9 @@ bool HtpAttentionState::htpDecodeAttention(
       std::vector<float>().swap(htp_rope_table_);
   }
   if (r == 2) {
+    NNTR_THROW_IF(config_.kv_cache_quant_kind == 2, std::runtime_error)
+      << "TurboQuant resident decode is missing its DSP prefill history; FP16 "
+         "seeding is invalid";
     // Seed the DSP cache from this layer's rows [0, pos): fp16 bits on
     // every platform's cache (FP16 or UINT16 storage), f32 when it is.
     // Release shared CPU cache blocks after seeding the DSP. Decode no

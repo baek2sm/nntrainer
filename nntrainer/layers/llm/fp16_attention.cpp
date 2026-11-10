@@ -30,6 +30,8 @@ static std::mutex rope_init_mtx;
 #include <chrono>
 #include <cstdlib>
 #include <fp16.h>
+#include <kv_cache/kv_cache_manager.h>
+#include <kv_cache/turboquant.h>
 #include <layer_context.h>
 
 #include <fp16_attention.h>
@@ -252,9 +254,25 @@ void Fp16Attention::finalize(nntrainer::InitLayerContext &context, bool skip) {
       kv_cache_fixed_scales = kind != "q8_row";
     } else if (kind == "q4") {
       kv_cache_quant_kind = 1;
+    } else if (kind == "turboquant_4bit_nc") {
+      kv_cache_quant_kind = 2;
+      kv::TurboQuant4BitNC codec(head_dim); // Validate before allocating.
+      NNTR_THROW_IF(!use_external_cache || !is_causal, std::invalid_argument)
+        << "TurboQuant requires external-cache causal attention";
+      turbo_max_tokens_ = max_timestep;
+      const size_t chunk = std::max<size_t>(
+        query_dim.height(),
+        std::get<attention_props::MaxNewTokens>(mha_core_props).get());
+      turbo_capacity_ =
+        local_window_size && local_window_size < max_timestep
+          ? std::min<size_t>(max_timestep, local_window_size + chunk)
+          : max_timestep;
+      turbo_caches_.clear();
+      turbo_caches_.resize(batch_size);
     } else if (!kind.empty()) {
       throw std::invalid_argument("mha_core: kv_cache_quant must be \"\", "
-                                  "\"q8\", \"q8_row\" or \"q4\", got \"" +
+                                  "\"q8\", \"q8_row\", \"q4\" or "
+                                  "\"turboquant_4bit_nc\", got \"" +
                                   kind + "\"");
     }
   }
@@ -301,6 +319,165 @@ void Fp16Attention::finalize(nntrainer::InitLayerContext &context, bool skip) {
 
 /************************************************************** */
 
+void Fp16Attention::forwardingTurboQuant(RunLayerContext &context) {
+  auto &query = context.getInput(INOUT_INDEX::QUERY);
+  auto &key = context.getInput(INOUT_INDEX::KEY);
+  auto &value = context.getInput(INOUT_INDEX::VALUE);
+  auto &output = context.getOutput(INOUT_INDEX::OUTPUT);
+  const size_t rows =
+    incremental_step_size ? incremental_step_size : query.height();
+  NNTR_THROW_IF(rows == 0 || rows > query.height() || rows > key.height() ||
+                  rows > value.height() || cache_index > turbo_max_tokens_ ||
+                  rows > turbo_max_tokens_ - cache_index ||
+                  query.batch() != turbo_caches_.size(),
+                std::invalid_argument)
+    << "Invalid TurboQuant attention step";
+  const size_t q_width = num_heads_Q * head_dim;
+  const size_t kv_width = num_heads_KV * head_dim;
+  kv::AttentionOptions options;
+  options.query_heads = num_heads_Q;
+  options.window = local_window_size;
+  options.logit_softcap = attn_logit_softcapping;
+  auto read = [this](Tensor &src, size_t offset, size_t count, float *dst) {
+    if (src.getDataType() == TensorDim::DataType::FP32) {
+      const float *p = src.getData<float>() + offset;
+      if (compute_ops_)
+        p = static_cast<const float *>(
+          compute_ops_->host_view(p, count * sizeof(float)));
+      std::copy_n(p, count, dst);
+    } else if (src.getDataType() == TensorDim::DataType::FP16 ||
+               src.getDataType() == TensorDim::DataType::UINT16) {
+      const uint16_t *p = src.getData<uint16_t>() + offset;
+      for (size_t i = 0; i < count; ++i)
+        dst[i] = compute_fp16_to_fp32(p[i]);
+    } else {
+      throw std::invalid_argument("Unsupported TurboQuant activation dtype");
+    }
+  };
+  if (use_sink) {
+    options.sinks.resize(num_heads_Q);
+    read(context.getWeight(sink_idx), 0, num_heads_Q, options.sinks.data());
+  }
+  if (compute_ops_ && compute_ops_->supports_turboquant_kvcache()) {
+    NNTR_THROW_IF(query.batch() != 1 || use_sink ||
+                    attn_logit_softcapping > 0 ||
+                    query.getDataType() != TensorDim::DataType::FP32 ||
+                    key.getDataType() != TensorDim::DataType::FP32 ||
+                    value.getDataType() != TensorDim::DataType::FP32 ||
+                    output.getDataType() != TensorDim::DataType::FP32,
+                  std::invalid_argument)
+      << "Resident DSP TurboQuant requires batch-one FP32 QKV without "
+         "sinks/softcap";
+    const unsigned window =
+      local_window_size < turbo_max_tokens_ ? local_window_size : 0;
+    if (!use_rope) {
+      // The fused NPU projection already rotated Q/K and retained its ION
+      // output. Pass the identities directly; ComputeOps resolves the alias.
+      NNTR_THROW_IF(!compute_ops_->sdpa_turboquant_kvcache(
+                      context.getName(), cache_index, rows, num_heads_Q,
+                      num_heads_KV, head_dim, window, query.getData<float>(),
+                      key.getData<float>(), value.getData<float>(),
+                      output.getData<float>()),
+                    std::runtime_error)
+        << "DSP TurboQuant attention declined an authoritative cache";
+    } else {
+      // KV-sharing projections may still request host RoPE. Stage only this
+      // chunk; packed history remains on the DSP and is shared with decode.
+      TensorDim qdim(
+        {1, 1, static_cast<unsigned>(rows), static_cast<unsigned>(q_width)},
+        {TensorDim::Format::NCHW, TensorDim::DataType::FP32});
+      TensorDim kdim = qdim;
+      kdim.width(kv_width);
+      Tensor q(qdim, true), k(kdim, true);
+      std::vector<float> v(rows * kv_width);
+      read(query, 0, rows * q_width, q.getData<float>());
+      read(key, 0, v.size(), k.getData<float>());
+      read(value, 0, v.size(), v.data());
+      apply_rotary_emb_tensor_v2(q, q, head_dim, cache_index, false);
+      apply_rotary_emb_tensor_v2(k, k, head_dim, cache_index, false);
+      NNTR_THROW_IF(!compute_ops_->sdpa_turboquant_kvcache(
+                      context.getName(), cache_index, rows, num_heads_Q,
+                      num_heads_KV, head_dim, window, q.getData<float>(),
+                      k.getData<float>(), v.data(), output.getData<float>()),
+                    std::runtime_error)
+        << "DSP TurboQuant attention declined an authoritative cache";
+    }
+    cache_index += rows;
+    return;
+  }
+  for (size_t batch = 0; batch < turbo_caches_.size(); ++batch) {
+    auto &cache = turbo_caches_[batch];
+    if (!cache) {
+      kv::LayerSpec layer;
+      layer.num_kv_heads = num_heads_KV;
+      layer.head_dim = head_dim;
+      layer.max_tokens = turbo_max_tokens_;
+      layer.capacity = turbo_capacity_;
+      layer.encoding = kv::Encoding::TurboQuant4BitNC;
+      layer.storage_type = kv::StorageType::UInt8;
+      kv::CacheSpec spec;
+      spec.layers.push_back(layer);
+      if (turbo_capacity_ == turbo_max_tokens_)
+        spec.page_tokens = 64;
+      cache = std::make_unique<kv::KvCacheManager>();
+      cache->initialize(spec);
+    }
+    if (!cache_index) {
+      cache->reset();
+    } else {
+      const size_t committed = cache->committedLength();
+      NNTR_THROW_IF(cache_index > committed, std::logic_error)
+        << "TurboQuant cannot seek beyond committed history";
+      const size_t retained = cache->oldestAvailable(0);
+      const size_t needed =
+        local_window_size && cache_index + 1 > local_window_size
+          ? cache_index + 1 - local_window_size
+          : 0;
+      NNTR_THROW_IF(needed < retained, std::logic_error)
+        << "TurboQuant rewind requires history already evicted by the sliding "
+           "window";
+      if (cache_index != committed)
+        cache->setPosition(cache_index);
+    }
+    TensorDim qdim(
+      {1, 1, static_cast<unsigned>(rows), static_cast<unsigned>(q_width)},
+      {TensorDim::Format::NCHW, TensorDim::DataType::FP32});
+    TensorDim kdim = qdim;
+    kdim.width(kv_width);
+    Tensor q(qdim, true), k(kdim, true);
+    std::vector<float> values(rows * kv_width), queries(rows * q_width);
+    read(query, batch * query.getDim().getFeatureLen(), queries.size(),
+         q.getData<float>());
+    read(key, batch * key.getDim().getFeatureLen(), values.size(),
+         k.getData<float>());
+    read(value, batch * value.getDim().getFeatureLen(), values.size(),
+         values.data());
+    if (use_rope) {
+      apply_rotary_emb_tensor_v2(q, q, head_dim, cache_index, false);
+      apply_rotary_emb_tensor_v2(k, k, head_dim, cache_index, false);
+    }
+    std::copy_n(q.getData<float>(), queries.size(), queries.data());
+    auto step = cache->beginStep(rows);
+    cache->appendTurboQuant(step, 0, k.getData<float>(), values.data(),
+                            values.size());
+    cache->markReady(step, 0);
+    const auto result = cache->attention(step, 0, queries, options);
+    const size_t offset = batch * output.getDim().getFeatureLen();
+    if (output.getDataType() == TensorDim::DataType::FP32) {
+      std::copy(result.begin(), result.end(), output.getData<float>() + offset);
+    } else if (output.getDataType() == TensorDim::DataType::FP16 ||
+               output.getDataType() == TensorDim::DataType::UINT16) {
+      uint16_t *dst = output.getData<uint16_t>() + offset;
+      for (size_t i = 0; i < result.size(); ++i)
+        dst[i] = compute_fp32_to_fp16(result[i]);
+    } else {
+      throw std::invalid_argument("Unsupported TurboQuant output dtype");
+    }
+    cache->commit(std::move(step));
+  }
+  cache_index += rows;
+}
+
 /**
  * @note In external KV cache mode (use_external_cache == true), this
  *       implements the inference forward pass using cache tensors supplied
@@ -329,6 +506,10 @@ void Fp16Attention::forwarding(nntrainer::RunLayerContext &context,
   // well as via incremental_forwarding(); either way the per-batch helpers
   // ask this for an accelerated attention.
   compute_ops_ = context.getComputeOps();
+  if (kv_cache_quant_kind == 2) {
+    forwardingTurboQuant(context);
+    return;
+  }
 
   nntrainer::Tensor &query = context.getInput(INOUT_INDEX::QUERY);
   nntrainer::Tensor &key = context.getInput(INOUT_INDEX::KEY);
@@ -465,14 +646,18 @@ void Fp16Attention::incremental_forwarding(nntrainer::RunLayerContext &context,
 
   // One decode row through the HTP when ATTN_M1 is resident, on
   // either cache path: _from is the absolute position on both.
-  if (_to - _from == 1 && htpDecodeAttention(context, _from)) {
+  const bool native_turboquant = kv_cache_quant_kind == 2 && compute_ops_ &&
+                                 compute_ops_->supports_turboquant_kvcache();
+  if ((kv_cache_quant_kind != 2 || native_turboquant) && _to - _from == 1 &&
+      htpDecodeAttention(context, _from)) {
     cache_index = _to;
     state_->markResident();
     return;
   }
   // Direct layer calls cannot consume stale host KV. Supported appended
   // chunks enter through HtpContext, which preserves the resident DSP state.
-  NNTR_THROW_IF(state_->ownsCache() && _to - _from > 1 && _from > 0,
+  NNTR_THROW_IF(!native_turboquant && state_->ownsCache() && _to - _from > 1 &&
+                  _from > 0,
                 std::runtime_error)
     << "mha_core: a multi-row forwarding at " << _from
     << " after the HTP decode hook took over the KV cache "
@@ -1799,6 +1984,8 @@ size_t Fp16Attention::calc_windowed_attn_index(size_t i) {
 };
 
 void Fp16Attention::registerQuantizedCache(RunLayerContext &context) {
+  if (kv_cache_quant_kind == 2)
+    return;
   compute_ops_ = context.getComputeOps();
   const auto &key =
     use_external_cache

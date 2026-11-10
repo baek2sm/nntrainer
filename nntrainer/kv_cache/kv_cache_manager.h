@@ -116,6 +116,14 @@ public:
   KvCacheManager(const KvCacheManager &) = delete;
   KvCacheManager &operator=(const KvCacheManager &) = delete;
 
+  /** Encode FP32 [token, kv_head, dim] directly into packed cache storage.
+   * Does not publish the producer; call markReady after the append. */
+  void appendTurboQuant(const StepLease &step, size_t layer, const float *keys,
+                        const float *values, size_t elements, size_t batch = 0);
+  /** Earliest row still present after ring overwrites, including after rewind.
+   */
+  size_t oldestAvailable(size_t layer) const;
+
   /** page_tokens enables segmented CPU storage allocated as steps advance.
    * A prefix cache requires paged batch-1 geometry and uses its own pool;
    * page_pool, when also given, must be that pool. Replaces every session.

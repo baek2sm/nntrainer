@@ -25,7 +25,18 @@ for name in attn_snapshot_check attn_paged_check; do
     -I nntrainer/tensor -I nntrainer/tensor/htp_backend/hvx \
     "test/htp/host/$name.c" \
     nntrainer/tensor/htp_backend/hvx/hvx_attn_m1_f32.c \
+    nntrainer/tensor/htp_backend/hvx/hvx_turboquant.c \
+    nntrainer/kv_cache/turboquant_codec.c \
     nntrainer/tensor/htp_backend/hvx/hvx_worker_pool.c -lm \
     -o "$check_dir/$name"
   "$check_dir/$name"
 done
+${CC:-cc} -std=gnu11 -O2 -ffp-contract=off -pthread -include malloc.h \
+  $sanitizers -I test/htp/host/stub \
+  -I nntrainer/tensor/htp_backend/hvx \
+  test/htp/host/turboquant_hybrid_check.c \
+  nntrainer/tensor/htp_backend/hvx/hvx_turboquant.c \
+  nntrainer/kv_cache/turboquant_codec.c \
+  nntrainer/tensor/htp_backend/hvx/hvx_worker_pool.c -lm \
+  -o "$check_dir/turboquant_hybrid_check"
+"$check_dir/turboquant_hybrid_check"

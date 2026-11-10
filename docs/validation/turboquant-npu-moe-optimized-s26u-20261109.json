@@ -1,0 +1,235 @@
+{
+  "date": "2026-11-09",
+  "branch": "kv/pr4428-dsp-flash-20261104",
+  "base_head": "5e97254e764aa30db4223c33d0dc3b0fded091b8",
+  "device": {
+    "model": "SM-S948U (S26 Ultra)",
+    "soc": "SM8850",
+    "dsp": "v81",
+    "android": 16,
+    "vtcm_bytes": 8388608
+  },
+  "acceptance": {
+    "requires_speed_and_memory_net_gain": true,
+    "met": false,
+    "default_enabled": false,
+    "reason": "Prefill still slower than existing Q8 at 337 and 961 tokens; whole-model decode has no consistent speedup. Keep opt-in. Kernel attention speedups do not establish model-level speedup."
+  },
+  "changes": [
+    "Precomputed dimension-specific Lloyd-Max tables replace repeated numerical initialization; independent legacy solver parity checks retained.",
+    "HVX Hadamard, bounded-error guarded SIMD K/V quantization, complete four-row nibble packing and grouped page allocation.",
+    "Fresh prefill uses existing calibrated Q8 HMX attention as temporary computation while persistent KV is packed 4-bit; appended prefill and decode read the packed cache.",
+    "Bounded reusable per-session working buffers (96 MiB combined cap), freed on decode/reset/close. Deferred packing owns its input and all data consumers join before reading.",
+    "Keep encoded uint16 attention output through folded output projection; exact compact RPC output length; unsupported DSP status recognized in host and Hexagon error domains.",
+    "Join contiguous Q/K/V RPC inputs only after validating one live ION allocation; shared K/V supported.",
+    "Inline FP16 HMX micro operations on aligned supported DSPs, existing portable path retained."
+  ],
+  "checks": {
+    "android_core": 69,
+    "android_facade": 37,
+    "android_dispatch": 6,
+    "dsp_compare_passes": 291,
+    "dsp_result": "PASS",
+    "host_device_kv_regressions": "PASS",
+    "full_android_htp_engine_and_app": "BUILD AND RUN PASS",
+    "strict_v81_dsp_build": "PASS",
+    "clang_format_14": "PASS",
+    "git_diff_check": "PASS",
+    "fresh_prefill_matches_existing_q8": {
+      "max_abs": 0,
+      "tolerance": 1e-06
+    },
+    "coverage": [
+      "D64/128/256/512",
+      "GQA1/2/3/8",
+      "sliding and global",
+      "repeated workspace reuse",
+      "shared K/V and joined RPC",
+      "compact output rejection canary",
+      "prefill continuation",
+      "native resident decode graph",
+      "scratch released at decode",
+      "raw FP16 HMX finite regression"
+    ],
+    "generation_smoke": "Both configurations completed 16 generated tokens for 337 and 961 token prompts, readable output, no crash. No perplexity or task quality claim."
+  },
+  "model": {
+    "name": "Gemma4 26B A4B",
+    "layers": 30,
+    "execution": "all HTP fused NPU/MoE",
+    "max_seq_len": 2048,
+    "generated_tokens": 16,
+    "oproj_u16": true,
+    "threads": 8,
+    "method": "Sequential same-device comparisons without clock/thermal locking; two measured builds with equivalent kernel behavior. Report every recorded final run rather than a guaranteed gain."
+  },
+  "model_runs": [
+    {
+      "prefill_tok": 961.0,
+      "prefill_ms": 1659.0,
+      "drain_ms": 0.0,
+      "ttft_ms": 1713.42,
+      "first_token_ms": 414.291,
+      "steady_ms": 67.1906,
+      "steady_tok": 15.0,
+      "gen_tok": 16.0,
+      "e2e_ms": 3161.0,
+      "log": "optimized-1k-q8.log",
+      "mode": "q8",
+      "reported_peak_memory_kib": 3904048
+    },
+    {
+      "prefill_tok": 961.0,
+      "prefill_ms": 1897.0,
+      "drain_ms": 0.0,
+      "ttft_ms": 1901.28,
+      "first_token_ms": 279.182,
+      "steady_ms": 73.7106,
+      "steady_tok": 15.0,
+      "gen_tok": 16.0,
+      "e2e_ms": 3266.0,
+      "log": "optimized-1k-tq.log",
+      "mode": "tq",
+      "reported_peak_memory_kib": 3505708
+    },
+    {
+      "prefill_tok": 337.0,
+      "prefill_ms": 1554.0,
+      "drain_ms": 0.0,
+      "ttft_ms": 1588.17,
+      "first_token_ms": 290.872,
+      "steady_ms": 57.5888,
+      "steady_tok": 15.0,
+      "gen_tok": 16.0,
+      "e2e_ms": 2904.0,
+      "log": "optimized-long-q8.log",
+      "mode": "q8",
+      "reported_peak_memory_kib": 3581244
+    },
+    {
+      "prefill_tok": 337.0,
+      "prefill_ms": 1585.0,
+      "drain_ms": 0.0,
+      "ttft_ms": 1589.35,
+      "first_token_ms": 193.025,
+      "steady_ms": 62.5009,
+      "steady_tok": 15.0,
+      "gen_tok": 16.0,
+      "e2e_ms": 2798.0,
+      "log": "optimized-long-tq.log",
+      "mode": "tq",
+      "reported_peak_memory_kib": 3409236
+    },
+    {
+      "prefill_tok": 961.0,
+      "prefill_ms": 1679.0,
+      "drain_ms": 0.0,
+      "ttft_ms": 1747.11,
+      "first_token_ms": 413.255,
+      "steady_ms": 66.658,
+      "steady_tok": 15.0,
+      "gen_tok": 16.0,
+      "e2e_ms": 3236.0,
+      "log": "strict-1k-q8.log",
+      "mode": "q8",
+      "reported_peak_memory_kib": 3881564
+    },
+    {
+      "prefill_tok": 961.0,
+      "prefill_ms": 2005.0,
+      "drain_ms": 0.0,
+      "ttft_ms": 2010.14,
+      "first_token_ms": 216.503,
+      "steady_ms": 76.6079,
+      "steady_tok": 15.0,
+      "gen_tok": 16.0,
+      "e2e_ms": 3345.0,
+      "log": "strict-1k-tq.log",
+      "mode": "tq",
+      "reported_peak_memory_kib": 3505600
+    },
+    {
+      "prefill_tok": 337.0,
+      "prefill_ms": 1504.0,
+      "drain_ms": 0.0,
+      "ttft_ms": 1545.59,
+      "first_token_ms": 299.964,
+      "steady_ms": 64.6002,
+      "steady_tok": 15.0,
+      "gen_tok": 16.0,
+      "e2e_ms": 2899.0,
+      "log": "strict-long-q8.log",
+      "mode": "q8",
+      "reported_peak_memory_kib": 3580120
+    },
+    {
+      "prefill_tok": 337.0,
+      "prefill_ms": 1550.0,
+      "drain_ms": 0.0,
+      "ttft_ms": 1554.78,
+      "first_token_ms": 188.293,
+      "steady_ms": 56.3881,
+      "steady_tok": 15.0,
+      "gen_tok": 16.0,
+      "e2e_ms": 2745.0,
+      "log": "strict-long-tq.log",
+      "mode": "tq",
+      "reported_peak_memory_kib": 3409324
+    }
+  ],
+  "decode_attention_microbenchmark": [
+    {
+      "context": 1025,
+      "fp16_bytes": 1049600,
+      "packed_bytes": 313344,
+      "fp16_decode_ms": 0.214542,
+      "turboquant_decode_ms": 1.95079,
+      "relative_l2": 0.146634,
+      "max_abs": 0.0278145,
+      "dsp_turboquant_wall_ms": 0.154906,
+      "dsp_q8_wall_ms": 0.15337,
+      "dsp_fp16_wall_ms": 0.270839,
+      "dsp_vs_cpu_tq_max_abs": 5.8651e-05
+    },
+    {
+      "context": 8193,
+      "fp16_bytes": 8389632,
+      "packed_bytes": 2377728,
+      "fp16_decode_ms": 0.448391,
+      "turboquant_decode_ms": 3.73297,
+      "relative_l2": 0.144105,
+      "max_abs": 0.0086293,
+      "dsp_turboquant_wall_ms": 0.513062,
+      "dsp_q8_wall_ms": 0.761099,
+      "dsp_fp16_wall_ms": 0.916031,
+      "dsp_vs_cpu_tq_max_abs": 1.43647e-05
+    },
+    {
+      "context": 32769,
+      "fp16_bytes": 33555456,
+      "packed_bytes": 9455616,
+      "fp16_decode_ms": 1.96861,
+      "turboquant_decode_ms": 14.4336,
+      "relative_l2": 0.137777,
+      "max_abs": 0.00486563,
+      "dsp_turboquant_wall_ms": 1.39619,
+      "dsp_q8_wall_ms": 1.95203,
+      "dsp_fp16_wall_ms": 3.01266,
+      "dsp_vs_cpu_tq_max_abs": 8.21427e-06
+    }
+  ],
+  "memory": {
+    "microbenchmark_note": "Payload values include packed page metadata and guards, exclude allocator/pointer table/workspace. FP16 payload excludes scratch. Q8 is a separate calibrated implementation.",
+    "fp16_to_tq_32769_payload_reduction_percent": 71.82092831639659,
+    "prefill_scratch_cap_bytes": 100663296,
+    "model_memory_note": "Model peak/RSS includes weights, MoE and workspaces; not a KV-only measurement. Freed KV memory does not automatically increase the fixed expert-cache target."
+  },
+  "remaining_work": "Fuse 4-bit persistent encoding with existing Q8 prefill calibration/packing or upstream projection/RoPE output to remove duplicate KV scans and intermediate copies; current implementation does not meet zero-prefill-regression requirement.",
+  "limitations": [
+    "Not vLLM kernel bit-equivalence or a reproduction of its production validation.",
+    "No full-model 8K/32K prefill benchmark; long-context numbers are attention microbenchmarks.",
+    "Temporary Q8 prefill computation changes numerics relative to strict packed-only prefill.",
+    "Quality smoke is only 16 generated tokens per prompt."
+  ],
+  "artifacts": "build-kv-android/validation/turboquant-npu-moe-optimized-s26u-20261109"
+}

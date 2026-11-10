@@ -67,6 +67,12 @@ private:
 
 KVCacheManager::~KVCacheManager() { releaseShared(); }
 
+void KVCacheManager::setAttentionOwnedStorage(bool enabled) {
+  if (isAllocated())
+    throw std::logic_error("Set attention-owned KV before allocation");
+  attention_owned_ = enabled;
+}
+
 KVCacheManager &KVCacheManager::operator=(KVCacheManager &&other) noexcept {
   if (this != &other) {
     // The tensors go first so nothing still points into the blocks the
@@ -74,6 +80,7 @@ KVCacheManager &KVCacheManager::operator=(KVCacheManager &&other) noexcept {
     layer_caches_.clear();
     core_shared_ = std::move(other.core_shared_);
     core_shared_requested_ = other.core_shared_requested_;
+    attention_owned_ = other.attention_owned_;
     releaseShared();
     layer_caches_ = std::move(other.layer_caches_);
     active_layers_ = std::move(other.active_layers_);
@@ -233,6 +240,15 @@ void KVCacheManager::allocate(unsigned int num_layers, unsigned int batch_size,
   // a source that is not strictly earlier, or whose geometry differs, would
   // produce a cache that reads the wrong plane without ever crashing.
   validateKVSources(num_layers);
+  if (attention_owned_) {
+    for (unsigned i = 0; i < num_layers; ++i) {
+      ml::train::TensorDim dim({batch_size, 1, 1, kv_widths[i]},
+                               {format, dtype});
+      layer_caches_[i].key_cache = nntrainer::Tensor(dim, true);
+      layer_caches_[i].value_cache = nntrainer::Tensor(dim, true);
+    }
+    return;
+  }
   if (core_shared_requested_) {
     using namespace nntrainer::kv;
     using DataType = ml::train::TensorDim::DataType;
@@ -700,6 +716,9 @@ void KVCacheManager::foldDroppedRows(unsigned int l, unsigned int n_rows) {
 }
 
 void KVCacheManager::validateRange(unsigned int pos, bool compacting) const {
+  if (attention_owned_)
+    throw std::logic_error(
+      "Packed attention history has no host FP16 snapshot");
   if (pos > max_seq_len_)
     throw std::out_of_range("KVCacheManager: position exceeds max_seq_len");
 
@@ -800,6 +819,8 @@ KVCacheManager::capturePrefix(unsigned position, const PrefixSnapshot *previous,
 }
 
 size_t KVCacheManager::prefixPayloadBytes(unsigned position) const {
+  if (attention_owned_)
+    throw std::logic_error("Packed attention history has no host FP16 view");
   if (!isAllocated() || position > cache_pos_)
     throw std::invalid_argument("Unavailable prefix payload");
   size_t bytes = 0;
@@ -813,6 +834,8 @@ size_t KVCacheManager::prefixPayloadBytes(unsigned position) const {
 }
 
 void KVCacheManager::restorePrefix(const PrefixSnapshot &state) {
+  if (attention_owned_)
+    throw std::logic_error("Packed attention history has no host FP16 view");
   if (!isAllocated() || batch_size_ != 1 || !state.position ||
       state.position > max_seq_len_ ||
       state.layers.size() != layer_caches_.size() ||
@@ -870,6 +893,8 @@ void KVCacheManager::freezePrefixViews(unsigned layer) {
 }
 
 void KVCacheManager::prepareDecodeView(unsigned int pos) {
+  if (attention_owned_)
+    throw std::logic_error("Packed attention history has no resident DSP view");
   if (!isAllocated() || batch_size_ != 1)
     throw std::logic_error("Decode views require allocated batch-one KV");
   validateRange(pos, true);
@@ -893,6 +918,8 @@ void KVCacheManager::prepareDecodeView(unsigned int pos) {
 }
 
 bool KVCacheManager::compact(unsigned int pos) {
+  if (attention_owned_)
+    return false; // The packed manager owns its sliding ring.
   if (!isAllocated())
     return false;
   for (unsigned l = 0; l < layer_caches_.size(); ++l)
@@ -948,6 +975,8 @@ nntrainer::Tensor &KVCacheManager::getValueCache(unsigned int layer_idx) {
 nntrainer::Tensor KVCacheManager::getKeyCacheWriteView(unsigned int layer_idx,
                                                        unsigned int batch,
                                                        unsigned int step_size) {
+  if (attention_owned_)
+    throw std::logic_error("Packed attention history has no host FP16 view");
   if (layer_idx >= layer_caches_.size()) {
     throw std::out_of_range(
       "KVCacheManager::getKeyCacheWriteView: invalid layer_idx");
@@ -970,6 +999,8 @@ nntrainer::Tensor KVCacheManager::getKeyCacheWriteView(unsigned int layer_idx,
 
 nntrainer::Tensor KVCacheManager::getValueCacheWriteView(
   unsigned int layer_idx, unsigned int batch, unsigned int step_size) {
+  if (attention_owned_)
+    throw std::logic_error("Packed attention history has no host FP16 view");
   if (layer_idx >= layer_caches_.size()) {
     throw std::out_of_range(
       "KVCacheManager::getValueCacheWriteView: invalid layer_idx");
@@ -993,6 +1024,8 @@ nntrainer::Tensor KVCacheManager::getValueCacheWriteView(
 nntrainer::Tensor KVCacheManager::getKeyCacheReadView(unsigned int layer_idx,
                                                       unsigned int batch,
                                                       unsigned int read_len) {
+  if (attention_owned_)
+    throw std::logic_error("Packed attention history has no host FP16 view");
   if (layer_idx >= layer_caches_.size()) {
     throw std::out_of_range(
       "KVCacheManager::getKeyCacheReadView: invalid layer_idx");
@@ -1016,6 +1049,8 @@ nntrainer::Tensor KVCacheManager::getKeyCacheReadView(unsigned int layer_idx,
 nntrainer::Tensor KVCacheManager::getValueCacheReadView(unsigned int layer_idx,
                                                         unsigned int batch,
                                                         unsigned int read_len) {
+  if (attention_owned_)
+    throw std::logic_error("Packed attention history has no host FP16 view");
   if (layer_idx >= layer_caches_.size()) {
     throw std::out_of_range(
       "KVCacheManager::getValueCacheReadView: invalid layer_idx");
@@ -1127,6 +1162,8 @@ unsigned int KVCacheManager::geometryDigest() const {
 }
 
 size_t KVCacheManager::fileBytesFor(unsigned int seq_len) const {
+  if (attention_owned_)
+    throw std::logic_error("Packed attention history has no host FP16 view");
   size_t bytes = sizeof(KvCacheFileHeader);
   for (unsigned int i = 0; i < layer_caches_.size(); ++i) {
     ml::train::TensorDim d = layer_caches_[i].key_cache.getDim();
@@ -1263,6 +1300,9 @@ void KVCacheManager::save(const std::string &path, unsigned int seq_len,
 
 unsigned int KVCacheManager::load(const std::string &path, unsigned int seq_len,
                                   const std::string &model_tag) {
+  if (attention_owned_)
+    throw std::logic_error(
+      "Packed attention history cannot load FP16 snapshots");
   if (layer_caches_.empty()) {
     throw std::runtime_error("KVCacheManager::load: not allocated");
   }

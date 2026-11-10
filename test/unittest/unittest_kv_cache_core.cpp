@@ -7,6 +7,8 @@
 #include <fp16.h>
 #include <gtest/gtest.h>
 #include <kv_cache/kv_cache_manager.h>
+#include <kv_cache/turboquant.h>
+#include <kv_cache/turboquant_codec.h>
 #include <tensor.h>
 
 #include <algorithm>
@@ -1827,6 +1829,249 @@ TEST(KvCacheCore, flashRoundTripPreservesMixedEncodingsAndAliasLayers) {
   ASSERT_EQ(manager.reusePrefix(ids.data(), ids.size()), 4u);
   EXPECT_EQ(before, planes());
   EXPECT_GT(prefix->stats().flash_hits, 0u);
+}
+
+namespace {
+CacheSpec turboSpec(size_t capacity = 32, size_t max_tokens = 32) {
+  LayerSpec layer;
+  layer.num_kv_heads = 2;
+  layer.head_dim = 128;
+  layer.capacity = capacity;
+  layer.max_tokens = max_tokens;
+  layer.encoding = Encoding::TurboQuant4BitNC;
+  layer.storage_type = StorageType::UInt8;
+  return {{layer}};
+}
+
+std::vector<float> turboNoise(size_t n, unsigned seed) {
+  std::mt19937 rng(seed);
+  std::normal_distribution<float> normal;
+  std::vector<float> data(n);
+  for (auto &x : data)
+    x = normal(rng);
+  return data;
+}
+} // namespace
+
+TEST(KvCacheCore, turboQuantHadamardAndNormCorrection) {
+  for (size_t dim : {64u, 128u, 256u, 512u, 1024u}) {
+    TurboQuant4BitNC codec(dim);
+    auto input = turboNoise(dim, 71);
+    auto rotated = input;
+    codec.rotate(rotated.data());
+    // Independent O(D^2) Sylvester matrix multiplication.
+    for (size_t i = 0; i < dim; ++i) {
+      double expected = 0;
+      for (size_t j = 0; j < dim; ++j) {
+        size_t bits = i & j;
+        bool negative = false;
+        while (bits) {
+          negative = !negative;
+          bits &= bits - 1;
+        }
+        expected += negative ? -input[j] : input[j];
+      }
+      EXPECT_NEAR(rotated[i], expected / std::sqrt(dim), 2e-6);
+    }
+    codec.rotate(rotated.data());
+    for (size_t i = 0; i < dim; ++i)
+      EXPECT_NEAR(rotated[i], input[i], 2e-6);
+    std::vector<uint8_t> packed(codec.headBytes());
+    codec.encodeKey(input.data(), packed.data());
+    codec.decodeKeyRotated(packed.data(), rotated.data());
+    double original_norm = 0, decoded_norm = 0;
+    for (size_t i = 0; i < dim; ++i) {
+      original_norm += input[i] * input[i];
+      decoded_norm += rotated[i] * rotated[i];
+    }
+    EXPECT_NEAR(decoded_norm / original_norm, 1, 1e-6);
+    codec.rotate(rotated.data());
+    double mse = 0;
+    for (size_t i = 0; i < dim; ++i)
+      mse += std::pow(rotated[i] - input[i], 2);
+    EXPECT_LT(mse / original_norm, 0.025);
+  }
+}
+
+TEST(KvCacheCore, turboQuantZeroConstantOutliersAndInvalidInputs) {
+  TurboQuant4BitNC codec(128);
+  std::vector<float> input(128, 0), output(128);
+  std::vector<uint8_t> packed(codec.headBytes());
+  codec.encodeKey(input.data(), packed.data());
+  codec.decodeKeyRotated(packed.data(), output.data());
+  for (float x : output)
+    EXPECT_EQ(x, 0);
+  for (float value : {0.0f, -3.5f, 1e-20f, 100000.0f}) {
+    std::fill(input.begin(), input.end(), value);
+    codec.encodeValue(input.data(), packed.data());
+    codec.decodeValue(packed.data(), output.data());
+    for (float x : output)
+      EXPECT_EQ(x, value);
+    codec.encodeKey(input.data(), packed.data());
+    codec.decodeKeyRotated(packed.data(), output.data());
+    for (float x : output)
+      EXPECT_TRUE(std::isfinite(x));
+  }
+  input[0] = std::numeric_limits<float>::infinity();
+  EXPECT_THROW(codec.encodeKey(input.data(), packed.data()),
+               std::invalid_argument);
+  EXPECT_THROW(codec.encodeValue(input.data(), packed.data()),
+               std::invalid_argument);
+  EXPECT_THROW(TurboQuant4BitNC(96), std::invalid_argument);
+  auto s = turboSpec();
+  EXPECT_EQ(s.layers[0].rowBytes(), 144u);
+  EXPECT_EQ(s.validate(), 9216u);
+  s.layers[0].head_dim = 96;
+  EXPECT_THROW(s.validate(), std::invalid_argument);
+}
+
+TEST(KvCacheCore, turboQuantSharedCodecAndCachedCorrectionPreserveLegacyPages) {
+  for (unsigned dim : {64u, 128u, 256u, 512u, 1024u}) {
+    nntr_tq_codec c;
+    ASSERT_EQ(nntr_tq_init(&c, dim), 0);
+    TurboQuant4BitNC codec(dim);
+    for (unsigned i = 0; i < 16; ++i)
+      EXPECT_FLOAT_EQ(c.centroids[i], codec.centroids()[i]);
+    for (unsigned i = 0; i < 15; ++i)
+      EXPECT_NEAR(c.boundaries[i],
+                  0.5f * (codec.centroids()[i] + codec.centroids()[i + 1]),
+                  1e-7f);
+    auto input = turboNoise(dim, 91);
+    std::vector<uint8_t> packed(codec.headBytes());
+    codec.encodeKey(input.data(), packed.data());
+    std::vector<float> current(dim), legacy(dim);
+    codec.decodeKeyRotated(packed.data(), current.data());
+    float corrected = 0;
+    std::memcpy(&corrected, packed.data() + dim / 2 + 4, 4);
+    EXPECT_GT(corrected, 0);
+    std::memset(packed.data() + dim / 2 + 4, 0, 4);
+    codec.decodeKeyRotated(packed.data(), legacy.data());
+    EXPECT_EQ(current, legacy);
+    corrected = -1;
+    std::memcpy(packed.data() + dim / 2 + 4, &corrected, 4);
+    EXPECT_THROW(codec.decodeKeyRotated(packed.data(), legacy.data()),
+                 std::invalid_argument);
+  }
+}
+
+TEST(KvCacheCore,
+     turboQuantPagedAttentionMatchesDecodedFp32WithGqaSinkAndWindow) {
+  auto s = turboSpec();
+  s.page_tokens = 4;
+  KvCacheManager packed, reference;
+  packed.initialize(s);
+  auto plain = s;
+  plain.layers[0].encoding = Encoding::Float32;
+  plain.layers[0].storage_type = StorageType::Float32;
+  reference.initialize(plain);
+  TurboQuant4BitNC codec(128);
+  AttentionOptions options;
+  options.query_heads = 4;
+  options.window = 7;
+  options.logit_softcap = 2;
+  options.sinks = {-1, 0, 1, 2};
+  for (size_t count : {9u, 3u, 1u}) {
+    auto k = turboNoise(count * 256, 10 + count);
+    auto v = turboNoise(count * 256, 20 + count);
+    auto q = turboNoise(count * 512, 30 + count);
+    auto a = packed.beginStep(count);
+    auto b = reference.beginStep(count);
+    packed.appendTurboQuant(a, 0, k.data(), v.data(), k.size());
+    for (size_t h = 0; h < count * 2; ++h) {
+      std::vector<uint8_t> bytes(codec.headBytes());
+      codec.encodeKey(k.data() + h * 128, bytes.data());
+      codec.decodeKeyRotated(bytes.data(), k.data() + h * 128);
+      codec.rotate(k.data() + h * 128);
+      codec.encodeValue(v.data() + h * 128, bytes.data());
+      codec.decodeValue(bytes.data(), v.data() + h * 128);
+    }
+    reference.append(b, 0, k.data(), v.data(), k.size() * sizeof(float));
+    packed.markReady(a, 0);
+    reference.markReady(b, 0);
+    const auto actual = packed.attention(a, 0, q, options);
+    const auto expected = reference.attention(b, 0, q, options);
+    for (size_t i = 0; i < actual.size(); ++i)
+      EXPECT_NEAR(actual[i], expected[i], 2e-6);
+    packed.commit(std::move(a));
+    reference.commit(std::move(b));
+  }
+  EXPECT_LT(packed.stats().backing_bytes, reference.stats().backing_bytes / 3);
+}
+
+TEST(KvCacheCore,
+     turboQuantSlidingRingMatchesFullHistoryAndRejectsLostHistory) {
+  auto ring_spec = turboSpec(8, 32);
+  auto full_spec = turboSpec(32, 32);
+  KvCacheManager ring, full;
+  ring.initialize(ring_spec);
+  full.initialize(full_spec);
+  AttentionOptions options;
+  options.query_heads = 4;
+  options.window = 5;
+  for (unsigned pos = 0; pos < 24; pos += 3) {
+    auto k = turboNoise(3 * 256, pos + 17);
+    auto v = turboNoise(3 * 256, pos + 29);
+    auto q = turboNoise(3 * 512, pos + 43);
+    auto a = ring.beginStep(3), b = full.beginStep(3);
+    ring.appendTurboQuant(a, 0, k.data(), v.data(), k.size());
+    full.appendTurboQuant(b, 0, k.data(), v.data(), k.size());
+    ring.markReady(a, 0);
+    full.markReady(b, 0);
+    const auto x = ring.attention(a, 0, q, options);
+    const auto y = full.attention(b, 0, q, options);
+    ASSERT_EQ(x.size(), y.size());
+    for (size_t i = 0; i < x.size(); ++i)
+      EXPECT_NEAR(x[i], y[i], 2e-6);
+    if (pos > 8) {
+      auto lost = options;
+      lost.window = 0;
+      EXPECT_THROW(ring.attention(a, 0, q, lost), std::out_of_range);
+    }
+    ring.commit(std::move(a));
+    full.commit(std::move(b));
+  }
+  EXPECT_EQ(ring.oldestAvailable(0), 16u);
+  ring.setPosition(21);
+  ring.setPosition(18);
+  EXPECT_EQ(ring.oldestAvailable(0), 16u);
+  EXPECT_THROW(ring.setPosition(15), std::out_of_range);
+  auto rewound = ring.beginStep(1);
+  auto k = turboNoise(256, 67), v = turboNoise(256, 71);
+  ring.appendTurboQuant(rewound, 0, k.data(), v.data(), k.size());
+  ring.markReady(rewound, 0);
+  auto q = turboNoise(512, 73);
+  // Query 18 needs rows 14..18; a rewind cannot resurrect overwritten 14..15.
+  EXPECT_THROW(ring.attention(rewound, 0, q, options), std::out_of_range);
+}
+
+TEST(KvCacheCore, turboQuantRewindOverwriteAndSnapshotPreservePackedHistory) {
+  auto s = turboSpec();
+  s.page_tokens = 4;
+  KvCacheManager manager, restored;
+  manager.initialize(s);
+  restored.initialize(s);
+  auto k = turboNoise(8 * 256, 9), v = turboNoise(8 * 256, 13);
+  auto step = manager.beginStep(8);
+  manager.appendTurboQuant(step, 0, k.data(), v.data(), k.size());
+  finish(manager, std::move(step));
+  manager.setPosition(5);
+  std::ostringstream out(std::ios::binary);
+  manager.savePlane(out, 0, true, 5);
+  manager.savePlane(out, 0, false, 5);
+  std::istringstream in(out.str(), std::ios::binary);
+  restored.restorePlanes(in, 5);
+  AttentionOptions options;
+  options.query_heads = 4;
+  auto q = turboNoise(512, 17);
+  auto a = manager.beginStep(1), b = restored.beginStep(1);
+  manager.appendTurboQuant(a, 0, k.data(), v.data(), 256);
+  restored.appendTurboQuant(b, 0, k.data(), v.data(), 256);
+  manager.markReady(a, 0);
+  restored.markReady(b, 0);
+  EXPECT_EQ(manager.attention(a, 0, q, options),
+            restored.attention(b, 0, q, options));
+  finish(manager, std::move(a));
+  finish(restored, std::move(b));
 }
 
 GTEST_API_ int main(int argc, char **argv) {

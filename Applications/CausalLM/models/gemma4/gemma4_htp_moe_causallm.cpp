@@ -35,11 +35,37 @@ namespace causallm {
 
 void Gemma4HtpMoECausalLM::setupParameters(json &cfg, json &generation_cfg,
                                            json &nntr_cfg) {
-  const auto runtime_config = normalizeHtpRuntimeConfig(nntr_cfg);
+  auto runtime_config = normalizeHtpRuntimeConfig(nntr_cfg);
   if (nntr_cfg.value("gemma4_weight_format", std::string()) != "htp_fused_v1")
     throw std::invalid_argument(
       "Gemma4 htp_fused requires gemma4_weight_format=htp_fused_v1");
   Gemma4HtpCausalLM::setupParameters(cfg, generation_cfg, nntr_cfg);
+  const bool turboquant = ATTENTION_KV_DTYPE == "turboquant_4bit_nc";
+  const bool native_turboquant = turboquant && ATTENTION_ENGINE == "htp";
+  if (turboquant) {
+    if (runtime_config.htp.kv_session || runtime_config.htp.kv_paged ||
+        runtime_config.htp.kv_prefix_cache || runtime_config.htp.kv_seed_q ||
+        runtime_config.htp.kv_request_reserve)
+      throw std::invalid_argument(
+        "TurboQuant cannot yet use INT8 DSP KV sessions/prefixes/reservation");
+    // Fresh NPU prefill can retain the baseline's u16 folded projection;
+    // appended packed-prefill steps still supply their FP32 ION context.
+    if (!native_turboquant)
+      runtime_config.htp.oproj_u16 = false;
+    ENABLE_SKIP_PREFILL_OPT = false;
+    runtime_config.htp.kv_turboquant = native_turboquant;
+    if (native_turboquant &&
+        (MOE_ENGINE != "htp" || ATTN_PROJ_ENGINE != "htp" ||
+         FFN_ENGINE != "htp" || LMHEAD_ENGINE != "htp" ||
+         !MOE_HTP_LAYERS.empty() || !ATTN_PROJ_HTP_LAYERS.empty() ||
+         !FFN_HTP_LAYERS.empty()))
+      throw std::invalid_argument("NPU TurboQuant requires the fully resident "
+                                  "HTP MoE/projection/FFN/head graph");
+  }
+  if (runtime_config.htp.kv_turboquant && !native_turboquant)
+    throw std::invalid_argument(
+      "htp.kv_turboquant requires attention_kv_dtype=turboquant_4bit_nc "
+      "and attention_engine=htp");
   if (!ENABLE_MOE_BLOCK || BATCH_SIZE != 1 || DIM == 0 || NUM_EXPERTS == 0 ||
       NUM_EXPERTS_PER_TOK == 0 || NUM_EXPERTS_PER_TOK > NUM_EXPERTS ||
       INIT_SEQ_LEN == 0 || INIT_SEQ_LEN > MAX_SEQ_LEN ||
@@ -97,7 +123,7 @@ void Gemma4HtpMoECausalLM::setupParameters(json &cfg, json &generation_cfg,
 #endif
 #ifdef ENABLE_HEXKL
   // Build the full decode graph after loading its weights.
-  htp_e2e = MOE_ENGINE == "htp";
+  htp_e2e = MOE_ENGINE == "htp" && (!turboquant || native_turboquant);
   htp_session_enabled_ = runtime_config.htp.kv_session;
   device_prefix_mode_ = runtime_config.htp.kv_prefix_cache;
   if (device_prefix_mode_ &&

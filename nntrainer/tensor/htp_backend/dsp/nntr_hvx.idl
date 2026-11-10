@@ -1520,4 +1520,28 @@ interface nntr_hvx : remote_handle64 {
    AEEResult attn_m1_snapshot_layer(in uint32 action, in uint32 cache,
       in uint32 layer, in sequence<uint8> input,
       rout sequence<uint8> output, rout uint32 bytes);
+   // Hybrid Q8 prefill prefixes and TQ4 resident decode share the same
+   // cache. layer uses HTP_ATTN_KV_CACHE_B and the per-shape ordinal.
+   // q/k are post-RoPE FP32; only current rows cross the RPC boundary.
+   // PREFILL_Q8 retains the chunk's calibrated Q8 masters as prefix rows;
+   // only unflagged decode appends become TQ4. No prefix recompression.
+   // OUT_U16 retains fresh Q8 context for folded o-projection (otherwise FP32).
+   // stats: 0=DSP us, 1=Q8 plus packed bytes. 3 words requests packed tile checks.
+   // >=6 words permits stage timers; 2..8=transform, append/wait, attention,
+   // tile/unpack, summed key/value/store worker us. Q8 prefill uses
+   // 2=calibration, 3=ownership transfer, 4=calibrate/pack/attention,
+   // 5=optional output unpack, 6=working-cache allocation/rearm.
+   // 9=path (0=decode/packed, 1=Q8 prefill), 10=working-byte upper bound,
+   // 11=encoded output; if 1, 12.. hold per-head {scale,zp} FP32 bit patterns
+   // and output has n_q*heads*dim/2 float slots carrying uint16 elements.
+   // Encoded requests that cannot take that path return EUNSUPPORTED;
+   // callers retry without OUT_U16 and with full FP32 output storage.
+   // Encoded calls collect timers only when PROFILE is also set.
+   // JOINED_QKV: q carries Q,K,V planes, k/v are empty. With SHARED_V,
+   // q carries only Q,K and V aliases K. This maps/maintains one ION buffer
+   // once, rather than passing overlapping slices as three RPC buffers.
+   AEEResult attn_tq_step(in uint32 layer, in uint32 from, in uint32 count,
+      in uint32 window, in float scale, in sequence<float> q,
+      in sequence<float> k, in sequence<float> v, rout sequence<float> output,
+      rout sequence<uint32> stats);
 };

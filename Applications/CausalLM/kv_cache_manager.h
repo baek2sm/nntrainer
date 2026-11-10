@@ -101,6 +101,11 @@ public:
   void setCoreSharedStorage(bool enabled);
   bool usesCoreSharedStorage() const { return core_shared_ != nullptr; }
 
+  /** Attention owns packed history. Allocate one-row graph identities only;
+   * host FP16 views/snapshots are unavailable. Call before allocate(). */
+  void setAttentionOwnedStorage(bool enabled);
+  bool usesAttentionOwnedStorage() const { return attention_owned_; }
+
   /**
    * @brief Whether setSharedAllocator installed an allocator (a backend
    *        may still hand back nullptr and leave the slabs on the heap).
@@ -580,6 +585,7 @@ private:
   };
 
   bool core_shared_requested_ = false;
+  bool attention_owned_ = false;
   std::unique_ptr<nntrainer::kv::KvCacheManager> core_shared_;
   std::vector<LayerCache> layer_caches_; /**< per-layer KV caches */
   std::vector<bool> active_layers_;      /**< empty keeps every layer active */

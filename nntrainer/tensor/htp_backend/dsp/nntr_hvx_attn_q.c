@@ -19,6 +19,7 @@
 #include <hexagon_protos.h>
 #include <hexagon_types.h>
 #include <hvx_hexagon_protos.h>
+#include <math.h>
 #include <remote.h>
 
 #include "hexkl_acc_tile.h"
@@ -29,6 +30,7 @@
 #include "hexkl_kv_q.h"
 #include "hexkl_micro.h"
 #include "hvx_attn_decode_q.h"
+#include "hvx_attn_softmax_f16.h"
 #include "hvx_convert.h"
 #include "hvx_softmax_q.h"
 #include "hvx_worker_pool.h"
@@ -561,6 +563,8 @@ typedef struct {
   uint16_t *vmax;   /**< [lane][n_kv * hd] |V| max as fp16 bits */
   uint16_t *kmax;   /**< [lane][n_kv] */
   float *qlo, *qhi; /**< [lane][n_hq] */
+  const float *k_f32, *v_f32;
+  uint32_t *bad;
 } q2c_ctx;
 
 /** |x| of fp16 bits is the bits with the sign cleared, and for finite
@@ -570,6 +574,7 @@ typedef struct {
 static void q2c_worker(uint32_t n_threads, uint32_t i, void *v) {
   const q2c_ctx *c = (const q2c_ctx *)v;
   const HVX_Vector mask = Q6_Vh_vsplat_R(0x7fff);
+  HVX_Vector qmax_bits = Q6_V_vzero();
   uint16_t *vmax = c->vmax + (size_t)i * c->n_kv * c->hd;
   uint16_t *kmax = c->kmax + (size_t)i * c->n_kv;
   float *qlo = c->qlo + (size_t)i * c->n_hq,
@@ -584,13 +589,29 @@ static void q2c_worker(uint32_t n_threads, uint32_t i, void *v) {
       HVX_Vector acc = Q6_V_vzero();
       for (uint32_t r = lo; r < hi; ++r) {
         const HVX_UVector *kr =
-          (const HVX_UVector *)(c->k + (size_t)r * c->stride + n * c->hd);
+          c->k ? (const HVX_UVector *)(c->k + (size_t)r * c->stride + n * c->hd)
+               : NULL;
         const HVX_UVector *vr =
-          (const HVX_UVector *)(c->v + (size_t)r * c->stride + n * c->hd);
+          c->v ? (const HVX_UVector *)(c->v + (size_t)r * c->stride + n * c->hd)
+               : NULL;
         HVX_UVector *vm = (HVX_UVector *)(vmax + n * c->hd);
         for (uint32_t j = 0; j < nvec; ++j) {
-          acc = Q6_Vuh_vmax_VuhVuh(acc, Q6_V_vand_VV(kr[j], mask));
-          vm[j] = Q6_Vuh_vmax_VuhVuh(vm[j], Q6_V_vand_VV(vr[j], mask));
+          HVX_Vector kh, vh;
+          if (c->k_f32) {
+            const float *kf =
+              c->k_f32 + (size_t)r * c->stride + n * c->hd + j * 64u;
+            const float *vf =
+              c->v_f32 + (size_t)r * c->stride + n * c->hd + j * 64u;
+            kh = hvx_attn_f32x64_to_hf(*(const HVX_UVector *)kf,
+                                       *(const HVX_UVector *)(kf + 32));
+            vh = hvx_attn_f32x64_to_hf(*(const HVX_UVector *)vf,
+                                       *(const HVX_UVector *)(vf + 32));
+          } else {
+            kh = kr[j];
+            vh = vr[j];
+          }
+          acc = Q6_Vuh_vmax_VuhVuh(acc, Q6_V_vand_VV(kh, mask));
+          vm[j] = Q6_Vuh_vmax_VuhVuh(vm[j], Q6_V_vand_VV(vh, mask));
         }
       }
       uint16_t lanes[64] __attribute__((aligned(128)));
@@ -611,6 +632,9 @@ static void q2c_worker(uint32_t n_threads, uint32_t i, void *v) {
         const HVX_UVector *qr =
           (const HVX_UVector *)(c->q + (size_t)r * c->q_stride + h * c->hd);
         for (uint32_t j = 0; j < nvec; ++j) {
+          if (c->bad)
+            qmax_bits = Q6_Vw_vmax_VwVw(
+              qmax_bits, Q6_V_vand_VV(qr[j], Q6_V_vsplat_R(0x7f800000)));
           vlo = Q6_Vsf_vmin_VsfVsf(vlo, qr[j]);
           vhi = Q6_Vsf_vmax_VsfVsf(vhi, qr[j]);
         }
@@ -628,6 +652,11 @@ static void q2c_worker(uint32_t n_threads, uint32_t i, void *v) {
       qhi[h] = fhi;
     }
   }
+  if (c->bad) {
+    for (uint32_t shift = 4; shift <= 64; shift *= 2)
+      qmax_bits = Q6_Vw_vmax_VwVw(qmax_bits, Q6_V_vror_VR(qmax_bits, shift));
+    c->bad[i] = (uint32_t)Q6_R_vextract_VR(qmax_bits, 0) >= 0x7f800000u;
+  }
 }
 
 /** std::round: halves away from zero; the DSP image has no roundf. Below
@@ -644,14 +673,14 @@ static inline float q2c_roundf(float x) {
   return x < 0.0f ? -r : r;
 }
 
-int nntr_hvx_attn_q2_step_fqc(remote_handle64 handle, uint32 kv_handle,
-                              uint32 row0, const uint16 *k_rows, int k_rowsLen,
-                              const uint16 *v_rows, int v_rowsLen, uint32 n_q,
-                              uint32 cache_from, uint32 cache_to,
-                              uint32 n_head_q, uint32 window,
-                              const float *q_f32, int q_f32Len, float *calib,
-                              int calibLen, uint16 *out_u16, int out_u16Len,
-                              uint32 *stats_us, int stats_usLen) {
+static int q2_fqc_impl(remote_handle64 handle, uint32 kv_handle, uint32 row0,
+                       const uint16 *k_rows, int k_rowsLen,
+                       const uint16 *v_rows, int v_rowsLen, uint32 n_q,
+                       uint32 cache_from, uint32 cache_to, uint32 n_head_q,
+                       uint32 window, const float *q_f32, int q_f32Len,
+                       float *calib, int calibLen, uint16 *out_u16,
+                       int out_u16Len, uint32 *stats_us, int stats_usLen,
+                       const float *k_f32, const float *v_f32) {
   nntr_hvx_session *s = (nntr_hvx_session *)handle;
   if (!s) {
     return AEE_EBADPARM;
@@ -673,9 +702,8 @@ int nntr_hvx_attn_q2_step_fqc(remote_handle64 handle, uint32 kv_handle,
     return AEE_EBADPARM;
   }
   const uint64_t tc0 = HAP_perf_get_time_us();
-  uint16_t *vmax =
-    (uint16_t *)malloc((size_t)lanes * stride * sizeof(uint16_t));
-  uint16_t *kmax = (uint16_t *)malloc((size_t)lanes * n_kv * sizeof(uint16_t));
+  uint16_t *vmax = (uint16_t *)calloc((size_t)lanes * stride, sizeof(uint16_t));
+  uint16_t *kmax = (uint16_t *)calloc((size_t)lanes * n_kv, sizeof(uint16_t));
   float *qlo = (float *)malloc((size_t)lanes * n_head_q * sizeof(float) * 2u);
   float *s_k = calib, *s_v = calib + n_kv;
   float *q_enc = s_v + stride, *out_enc = q_enc + 2u * n_head_q;
@@ -686,15 +714,47 @@ int nntr_hvx_attn_q2_step_fqc(remote_handle64 handle, uint32 kv_handle,
     free(qlo);
     return AEE_ENOMEMORY;
   }
-  q2c_ctx c = {k_rows,   v_rows,
-               n_rows,   stride,
-               n_kv,     hd,
-               q_f32,    n_q,
-               n_head_q, n_head_q * hd,
-               vmax,     kmax,
-               qlo,      qlo + (size_t)lanes * n_head_q};
+  // A short chunk may activate fewer workers than the pool owns.
+  // Neutral values are required for lanes that do not run q2c_worker.
+  for (size_t i = 0; i < (size_t)lanes * n_head_q; ++i) {
+    qlo[i] = INFINITY;
+    qlo[(size_t)lanes * n_head_q + i] = -INFINITY;
+  }
+  uint32_t bad[Q2C_MAX_LANES] = {0};
+  q2c_ctx c = {k_rows,
+               v_rows,
+               n_rows,
+               stride,
+               n_kv,
+               hd,
+               q_f32,
+               n_q,
+               n_head_q,
+               n_head_q * hd,
+               vmax,
+               kmax,
+               qlo,
+               qlo + (size_t)lanes * n_head_q,
+               k_f32,
+               v_f32,
+               k_f32 ? bad : NULL};
   hvx_worker_pool_run(s->quant_pool, q2c_worker, &c,
                       n_rows > n_q ? n_rows : n_q);
+  if (k_f32) {
+    int invalid = 0;
+    for (uint32_t l = 0; l < lanes; ++l)
+      invalid |= bad[l];
+    for (size_t i = 0; i < (size_t)lanes * stride; ++i)
+      invalid |= vmax[i] >= 0x7c00u;
+    for (size_t i = 0; i < (size_t)lanes * n_kv; ++i)
+      invalid |= kmax[i] >= 0x7c00u;
+    if (invalid) {
+      free(vmax);
+      free(kmax);
+      free(qlo);
+      return AEE_EINVALIDFORMAT;
+    }
+  }
   /** the lanes merged, the maxima to f32 (exact), the scales as
      mha_core::calibrate_q2_scales derives them, in its order of operations */
   for (uint32_t n = 0; n < n_kv; ++n) {
@@ -744,15 +804,64 @@ int nntr_hvx_attn_q2_step_fqc(remote_handle64 handle, uint32 kv_handle,
     return rc;
   }
   const uint32_t calib_us = (uint32_t)(HAP_perf_get_time_us() - tc0);
+  hexkl_kv_q_append_stats append = {0};
+  uint64_t append_us = 0;
+  if (k_f32) {
+    const uint64_t tick = HAP_perf_get_time_us();
+    rc = hexkl_kv_q_append_f32(&s->kv_q, kv_handle, row0, n_rows, k_f32, v_f32,
+                               s->vtcm_base, s->quant_pool, &append);
+    if (rc)
+      return rc;
+    append_us = HAP_perf_get_time_us() - tick;
+    k_rowsLen = v_rowsLen = 0;
+  }
   rc = attn_q2_step_impl(handle, kv_handle, row0, k_rows, k_rowsLen, v_rows,
                          v_rowsLen, n_q, cache_from, cache_to, n_head_q, window,
                          NULL, q_f32, q_inv, q_f32Len, q_enc,
                          (int)(2u * n_head_q), out_enc, (int)(2u * n_head_q),
                          out_u16, out_u16Len, stats_us, stats_usLen);
+  if (rc == AEE_SUCCESS && k_f32) {
+    stats_us[0] += append_us;
+    stats_us[3] += append_us;
+    stats_us[4] = append.quant_us;
+    stats_us[5] = append.stage_us;
+    stats_us[6] = append.bake_us;
+    stats_us[7] = n_rows;
+  }
   if (rc == AEE_SUCCESS && stats_usLen > 2) {
     stats_us[2] = calib_us; /* the slot the DDR Q pass used to report */
   }
   return rc;
+}
+
+int nntr_hvx_attn_q2_step_fqc(remote_handle64 handle, uint32 kv_handle,
+                              uint32 row0, const uint16 *k_rows, int k_rowsLen,
+                              const uint16 *v_rows, int v_rowsLen, uint32 n_q,
+                              uint32 cache_from, uint32 cache_to,
+                              uint32 n_head_q, uint32 window,
+                              const float *q_f32, int q_f32Len, float *calib,
+                              int calibLen, uint16 *out_u16, int out_u16Len,
+                              uint32 *stats_us, int stats_usLen) {
+  return q2_fqc_impl(handle, kv_handle, row0, k_rows, k_rowsLen, v_rows,
+                     v_rowsLen, n_q, cache_from, cache_to, n_head_q, window,
+                     q_f32, q_f32Len, calib, calibLen, out_u16, out_u16Len,
+                     stats_us, stats_usLen, NULL, NULL);
+}
+int nntr_hvx_attn_q2_step_fqc_f32(remote_handle64 handle, uint32 kv_handle,
+                                  uint32 rows, uint32 heads, uint32 window,
+                                  const float *q, const float *k,
+                                  const float *v, float *calib, uint16 *out,
+                                  uint32 *stats) {
+  nntr_hvx_session *s = (nntr_hvx_session *)handle;
+  const hexkl_kv_q *kv = s ? hexkl_kv_q_get(&s->kv_q, kv_handle) : NULL;
+  if (!kv || !q || !k || !v || !calib || !out || !stats)
+    return AEE_EINVALIDFORMAT;
+  const uint32_t nk = rows * kv->n_head_kv * kv->head_dim,
+                 nq = rows * heads * kv->head_dim;
+  return q2_fqc_impl(handle, kv_handle, 0, NULL, nk, NULL, nk, rows, 0, rows,
+                     heads, window, q, nq, calib,
+                     kv->n_head_kv + kv->n_head_kv * kv->head_dim + 4u * heads,
+                     out, nq, stats, 12, k, v);
 }
 
 int nntr_hvx_probe_wh_i8_pos(remote_handle64 handle, uint16 *pos, int posLen) {

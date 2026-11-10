@@ -1,0 +1,166 @@
+{
+  "date": "2026-11-09",
+  "branch": "kv/pr4428-dsp-flash-20261104",
+  "base_commit": "5e97254e764aa30db4223c33d0dc3b0fded091b8",
+  "status": "experimental portable CPU KV compression; Gemma4 HTP graph wiring compiled; full-model execution not evaluated",
+  "preset": "turboquant_4bit_nc",
+  "algorithm": {
+    "key": "L2 normalization, orthonormal Sylvester Hadamard, Gaussian Lloyd-Max 16 centroids, packed nibbles, per-vector norm correction on read",
+    "value": "per-token per-head uniform 16 levels with min and scale; unrotated",
+    "calibration_required": false,
+    "metadata": "two FP32 slots per plane per head; K norm + reserved zero; V scale + min",
+    "bytes_per_token_head_k_plus_v": "head_dim + 16",
+    "head_dimensions": [
+      64,
+      128,
+      256,
+      512,
+      1024
+    ]
+  },
+  "upstream_references": [
+    "https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/turboquant/config.py",
+    "https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/turboquant/centroids.py",
+    "https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/backends/turboquant_attn.py",
+    "https://github.com/vllm-project/vllm/blob/main/vllm/v1/attention/ops/triton_turboquant_store.py"
+  ],
+  "differences_from_vllm": [
+    "Independent C++ implementation, not a GPU kernel port or binary-compatible cache",
+    "FP32 metadata instead of FP16 metadata for overflow robustness",
+    "All Gemma4 attention layers are compressed; automatic first/last-layer protection has not been implemented",
+    "Portable CPU attention for prefill and decode, including the current chunk; no uncompressed first-prefill fast path"
+  ],
+  "integration": {
+    "config_override": "tools/kv_cache/turboquant_4bit_nc.override.json",
+    "attention_engine": "cpu",
+    "projection_and_expert_engines": "can remain htp; complete NPU execution not tested in this change",
+    "host_fp16_history": "not allocated; one-row graph identity tensors only",
+    "global_cache": "64-token pages allocated as history grows",
+    "sliding_cache": "bounded packed ring with validated history retention after rewind",
+    "resident_dsp_kv_and_host_fp16_snapshots": "explicitly rejected",
+    "resident_dsp_decode": "disabled for TurboQuant; uses layer-by-layer model execution"
+  },
+  "device": {
+    "serial": "R3CW202SCPB",
+    "model": "SM-S918N",
+    "soc": "SM8550",
+    "hexagon": "v73",
+    "android": 14
+  },
+  "tests": {
+    "android_core": {
+      "passed": 68,
+      "failed": 0,
+      "new_turboquant_cases": 5
+    },
+    "android_adapter": {
+      "passed": 37,
+      "failed": 0,
+      "new_attention_owned_storage_cases": 1,
+      "note": "two existing hardcoded /tmp save paths redirected only in a temporary Android test source"
+    },
+    "android_dispatch_selected": {
+      "passed": 5,
+      "failed": 0,
+      "new_turboquant_cases": 1
+    },
+    "android_core_fast_math": {
+      "passed": 5,
+      "failed": 0,
+      "filter": "KvCacheCore.turboQuant*"
+    },
+    "existing_dispatch_full_suite": {
+      "passed": 5,
+      "failed": 7,
+      "baseline_without_turboquant": {
+        "passed": 4,
+        "failed": 7
+      },
+      "error": "Error: Unsupported data type",
+      "conclusion": "same seven existing tests fail using the original HEAD fp16_attention.cpp; retained baseline logs"
+    },
+    "android_model_syntax": {
+      "cpu_build": "pass",
+      "ENABLE_HEXKL_build": "pass",
+      "note": "Gemma4 model and MoE setup code compiled with Android NDK; not a full application link/run"
+    },
+    "host_codec_warnings": "g++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only passed",
+    "format": "clang-format-14 applied; git diff --check passed",
+    "build_environment_limits": [
+      "Existing build-kv-cpu Meson regeneration was locked by another process",
+      "Fresh /tmp Meson setup hit the existing cross-filesystem cp -l test-resource rule; Android direct builds were used instead"
+    ]
+  },
+  "microbenchmark": {
+    "shape": {
+      "head_dim": 128,
+      "kv_heads": 2,
+      "query_heads": 4
+    },
+    "input": "synthetic normal Q/K/V with K/V first rounded to FP16; seed 71",
+    "calls_per_measurement": 10,
+    "scope": "CPU attention only; excludes append, projection, experts, sampling and thermal-controlled throughput testing",
+    "results": [
+      {
+        "context": 1025,
+        "fp16_bytes": 1049600,
+        "packed_bytes": 313344,
+        "fp16_decode_ms": 0.0688386,
+        "turboquant_decode_ms": 0.342333,
+        "relative_l2": 0.146634,
+        "max_abs": 0.0278145,
+        "compression_ratio": 3.349673202614379,
+        "attention_slowdown": 4.972980275601189
+      },
+      {
+        "context": 8193,
+        "fp16_bytes": 8389632,
+        "packed_bytes": 2377728,
+        "fp16_decode_ms": 0.560438,
+        "turboquant_decode_ms": 4.52268,
+        "relative_l2": 0.144105,
+        "max_abs": 0.0086293,
+        "compression_ratio": 3.5284237726098193,
+        "attention_slowdown": 8.069902469140208
+      },
+      {
+        "context": 32769,
+        "fp16_bytes": 33555456,
+        "packed_bytes": 9455616,
+        "fp16_decode_ms": 2.89609,
+        "turboquant_decode_ms": 10.7087,
+        "relative_l2": 0.137777,
+        "max_abs": 0.00486563,
+        "compression_ratio": 3.5487329434697856,
+        "attention_slowdown": 3.6976406119975556
+      }
+    ]
+  },
+  "not_validated": [
+    "checkpoint perplexity or task accuracy",
+    "full Gemma4 inference with TurboQuant",
+    "full NPU plus MoE pipeline using TurboQuant",
+    "DSP fused TurboQuant kernels",
+    "latest device performance"
+  ],
+  "artifacts": "build-kv-android/validation/turboquant-4bit-nc-20261109",
+  "source_sha256": {
+    "Applications/CausalLM/kv_cache_manager.cpp": "1d855c6fe53e0ef7f8811a7f24a1de7efce0a3392311d75ad6d69267246d1fe4",
+    "Applications/CausalLM/kv_cache_manager.h": "de0a6dab3d717017a785a69ded1cef4bc4a30b10779f9cc4a9f32f641890f736",
+    "Applications/CausalLM/models/gemma4/gemma4_htp_causallm.cpp": "58b07e4b1a330841e6cd34e6b14d8e5344bc06c0e551db9c62a0dce4fa65793e",
+    "Applications/CausalLM/models/gemma4/gemma4_htp_moe_causallm.cpp": "a834d1d6696c687aa0b8763f7ae759f7c71f28557fa3d7d9e2bab06088995466",
+    "nntrainer/kv_cache/kv_cache_manager.cpp": "e362bae1545c3e93fbd304e22c26513f609ea3259790c7497defe662c95a4fc1",
+    "nntrainer/kv_cache/kv_cache_manager.h": "a60bfa142cf59dc1a59c419e87d53e73a982f9230508b202bb3339ce321dc125",
+    "nntrainer/kv_cache/kv_cache_spec.h": "2e43baa4cc77ca1c40e3560dc8e41b8ebfead93236f35a382e3cb13a425ccc8b",
+    "nntrainer/kv_cache/meson.build": "fb577109dea88fed138853a8143137fff5663bd4639bb6b7856ce1bb85696134",
+    "nntrainer/kv_cache/paged_attention.cpp": "719f965a80f3dcc2b96183f329c9b8f18b62c30f8748c47031949a141bb6cade",
+    "nntrainer/layers/llm/fp16_attention.cpp": "f1d5ce6201ed9137b8f0d6511d692e98be92f2f677b068dc92b86fa46f8f4649",
+    "nntrainer/layers/llm/fp16_attention.h": "1027f3af2139474a0b878bb50bff698d7ae96a79acbc3266818bad569f0ac810",
+    "test/unittest/layers/unittest_kv_cache_manager.cpp": "f1ce7658f1ed8f5ed823392bd9ba5581bb45b7306f972093f7a41f052c916bee",
+    "test/unittest/models/unittest_causallm_mha_core_dispatch.cpp": "a67f2c4cce2a20225749ddd5f103c61962d44a8ed557a5e79d1a85aa0175665e",
+    "test/unittest/unittest_kv_cache_core.cpp": "5389483bd737f03dd0153c5fee6a675c6a0251d3a960114c92a314244a65313e",
+    "nntrainer/kv_cache/turboquant.h": "5475a94c3548e3075e91c437f94385ec9adbe8997f98b81a17537d85c7a034fa",
+    "nntrainer/kv_cache/turboquant.cpp": "e32286ce853ed9a37ee70f72a0195067e4da1cc72f9a83c6a4da0f45bfd44f13",
+    "tools/kv_cache/turboquant_4bit_nc.override.json": "205e7f790566c7403fc391ce9603428886e719c5420bdb7741ba94be2b87132a"
+  }
+}

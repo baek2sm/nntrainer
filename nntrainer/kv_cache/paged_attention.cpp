@@ -6,6 +6,7 @@
  */
 #include <fp16.h>
 #include <kv_cache/kv_cache_manager.h>
+#include <kv_cache/turboquant.h>
 #include <thread_manager.h>
 
 #include <algorithm>
@@ -175,7 +176,8 @@ std::vector<float> KvCacheManager::attention(const StepLease &step,
                                              size_t batch) {
   checkStep(step);
   const auto &s = layerSpec(layer);
-  if (s.capacity != s.max_tokens)
+  const bool is_tq = s.encoding == Encoding::TurboQuant4BitNC;
+  if (s.capacity != s.max_tokens && !is_tq)
     throw std::invalid_argument(
       "Segmented attention requires non-ring storage");
   if (!options.query_heads || options.query_heads % s.num_kv_heads ||
@@ -189,6 +191,15 @@ std::vector<float> KvCacheManager::attention(const StepLease &step,
     if (!std::isfinite(sink))
       throw std::invalid_argument("Attention sink must be finite");
   const size_t head_dim = s.head_dim;
+  const size_t history_base =
+    std::max(oldestAvailable(layer),
+             step.to() > s.capacity ? step.to() - s.capacity : 0);
+  const size_t first_end = options.causal ? step.from() + 1 : step.to();
+  const size_t first_start = options.window && first_end > options.window
+                               ? first_end - options.window
+                               : 0;
+  if (first_start < history_base)
+    throw std::out_of_range("KV ring no longer holds the requested history");
   const size_t width = checkedMultiply(options.query_heads, head_dim);
   const size_t q_tokens = step.to() - step.from();
   const size_t elements = checkedMultiply(q_tokens, width);
@@ -205,7 +216,7 @@ std::vector<float> KvCacheManager::attention(const StepLease &step,
   const size_t row_bytes = s.rowBytes();
   std::vector<Segment> segments;
   segments.reserve(keys.size());
-  size_t covered = 0;
+  size_t covered = history_base;
   for (size_t p = 0; p < keys.size(); ++p) {
     if (keys[p].sizeBytes() != values[p].sizeBytes())
       throw std::logic_error("KV key/value segmentation differs");
@@ -226,8 +237,11 @@ std::vector<float> KvCacheManager::attention(const StepLease &step,
   const float softcap = options.logit_softcap;
   const bool has_sinks = !options.sinks.empty();
   const size_t group = options.query_heads / s.num_kv_heads;
-  const size_t kv_head_bytes = head_dim * s.elementBytes();
+  const size_t kv_head_bytes = s.headBytes();
   const bool is_f32 = (s.encoding == Encoding::Float32);
+  std::unique_ptr<TurboQuant4BitNC> codec;
+  if (is_tq)
+    codec = std::make_unique<TurboQuant4BitNC>(head_dim);
 
   // Query heads sharing one KV head run in the same task so every K/V row is
   // loaded once per group. The group is split only as far as needed to give
@@ -260,6 +274,17 @@ std::vector<float> KvCacheManager::attention(const StepLease &step,
       const float *q_base = queries.data() + q * width + h0 * head_dim;
       const size_t kv_offset = kv_head * kv_head_bytes;
 
+      // Attention scores stay in the rotated basis. Only the query is
+      // transformed; no full-history inverse rotation or FP16 mirror exists.
+      std::vector<float> rotated, decoded;
+      if (is_tq) {
+        rotated.assign(q_base, q_base + heads * head_dim);
+        for (size_t j = 0; j < heads; ++j)
+          codec->rotate(rotated.data() + j * head_dim);
+        q_base = rotated.data();
+        decoded.resize(head_dim);
+      }
+
       thread_local std::vector<float> scratch;
       scratch.resize(heads * (head_dim + kChunk + 2));
       float *acc = scratch.data();              // [heads, head_dim]
@@ -289,10 +314,14 @@ std::vector<float> KvCacheManager::attention(const StepLease &step,
 
         for (size_t r = 0; r < n; ++r) {
           const char *k_row = k_rows + r * row_bytes;
+          if (is_tq)
+            codec->decodeKeyRotated(reinterpret_cast<const uint8_t *>(k_row),
+                                    decoded.data());
           for (size_t j = 0; j < heads; ++j) {
             const float *q_head = q_base + j * head_dim;
             float score =
-              is_f32
+              is_tq ? dot_f32(q_head, decoded.data(), head_dim)
+              : is_f32
                 ? dot_f32(q_head, reinterpret_cast<const float *>(k_row),
                           head_dim)
                 : dot_f16(q_head, reinterpret_cast<const uint16_t *>(k_row),
@@ -328,9 +357,14 @@ std::vector<float> KvCacheManager::attention(const StepLease &step,
 
         for (size_t r = 0; r < n; ++r) {
           const char *v_row = v_rows + r * row_bytes;
+          if (is_tq)
+            codec->decodeValue(reinterpret_cast<const uint8_t *>(v_row),
+                               decoded.data());
           for (size_t j = 0; j < heads; ++j) {
             const float w = scores[j * kChunk + r];
-            if (is_f32)
+            if (is_tq)
+              axpy_f32(acc + j * head_dim, w, decoded.data(), head_dim);
+            else if (is_f32)
               axpy_f32(acc + j * head_dim, w,
                        reinterpret_cast<const float *>(v_row), head_dim);
             else

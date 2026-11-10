@@ -1,0 +1,119 @@
+{
+  "date": "2026-11-09",
+  "branch": "kv/pr4428-dsp-flash-20261104",
+  "base_head": "5e97254e764aa30db4223c33d0dc3b0fded091b8",
+  "device": {
+    "model": "Samsung S23 Ultra SM-S918N",
+    "soc": "SM8550",
+    "dsp_arch": "v73",
+    "android": 14
+  },
+  "implementation": {
+    "storage": "4-bit Hadamard Lloyd-Max K, 4-bit uniform V; 32-token DSP pages",
+    "decode": "HVX grouped GQA, split-KV, QK 12-bit centroid LUT with scaled Q16, PV 15-bit weights, FP32 softmax/output",
+    "prefill": "same packed state; HVX on S23; FP16 HMX uses bounded tile callback where supported",
+    "host_transfers": "current Q/K/V rows and output use ION; no full-history FP16 seed",
+    "moe_integration": "resident ATTN_M1 graph retained; packed state shared across prefill and native decode",
+    "compatibility": "single conversation; rejects INT8 session, prefix snapshot, paged and seed options"
+  },
+  "checks": {
+    "core_tests": 69,
+    "facade_tests": 37,
+    "selected_dispatch_tests": 6,
+    "dsp_comparisons": 149,
+    "max_abs_vs_scalar_packed": 0.00024566054,
+    "tolerance": 0.0003,
+    "dimensions": [
+      64,
+      128,
+      256,
+      512
+    ],
+    "gqa": [
+      1,
+      2,
+      3,
+      8
+    ],
+    "windows": [
+      0,
+      17,
+      512
+    ],
+    "hmx_tile_round_trip": "PASS",
+    "resident_graph_qk_norm_rope_attention": "PASS",
+    "kv_regressions": "PASS: device sessions, radix, LRU, snapshots, paged/linear/COW/window",
+    "htp_android_syntax": [
+      "htp_compute_ops.cpp",
+      "gemma4_htp_causallm.cpp",
+      "gemma4_htp_moe_causallm.cpp"
+    ],
+    "clang_format": 14
+  },
+  "benchmark": {
+    "method": "10 repeated attention-only calls, one layer, D=128, KV heads=2, Q heads=4. Same seed71 Gaussian inputs rounded to FP16 for all methods. RPC wall time includes current-row append. CPU single-thread reference. No MoE weights. Single run, no controlled thermal/power conditions.",
+    "legacy_scale": "DSP Q8/FP16 require scale rounded to FP16; TurboQuant and CPU use exact FP32 1/sqrt(D).",
+    "memory": "page payload includes metadata and guard; excludes page-pointer tables, allocator overhead and worker scratch. packed_bytes is CPU manager backing, not DSP payload.",
+    "rows": [
+      {
+        "context": 1025,
+        "fp16_bytes": 1049600,
+        "packed_bytes": 313344,
+        "fp16_decode_ms": 0.066349,
+        "turboquant_decode_ms": 0.54087,
+        "relative_l2": 0.146634,
+        "max_abs": 0.0278145,
+        "dsp_turboquant_wall_ms": 0.285635,
+        "dsp_q8_wall_ms": 0.262182,
+        "dsp_fp16_wall_ms": 0.458667,
+        "dsp_vs_cpu_tq_max_abs": 5.85169e-05,
+        "dsp_packed_page_payload_bytes": 304128,
+        "payload_reduction_vs_fp16": 0.7102439024390244
+      },
+      {
+        "context": 8193,
+        "fp16_bytes": 8389632,
+        "packed_bytes": 2377728,
+        "fp16_decode_ms": 0.537047,
+        "turboquant_decode_ms": 4.26793,
+        "relative_l2": 0.144105,
+        "max_abs": 0.0086293,
+        "dsp_turboquant_wall_ms": 1.53844,
+        "dsp_q8_wall_ms": 1.22182,
+        "dsp_fp16_wall_ms": 1.28597,
+        "dsp_vs_cpu_tq_max_abs": 1.4592e-05,
+        "dsp_packed_page_payload_bytes": 2368512,
+        "payload_reduction_vs_fp16": 0.7176858293665325
+      },
+      {
+        "context": 32769,
+        "fp16_bytes": 33555456,
+        "packed_bytes": 9455616,
+        "fp16_decode_ms": 2.65955,
+        "turboquant_decode_ms": 17.1311,
+        "relative_l2": 0.137777,
+        "max_abs": 0.00486563,
+        "dsp_turboquant_wall_ms": 3.37215,
+        "dsp_q8_wall_ms": 4.35215,
+        "dsp_fp16_wall_ms": 4.73033,
+        "dsp_vs_cpu_tq_max_abs": 7.90227e-06,
+        "dsp_packed_page_payload_bytes": 9446400,
+        "payload_reduction_vs_fp16": 0.7184839329854436
+      }
+    ]
+  },
+  "limitations": [
+    "No full Gemma4 MoE checkpoint execution, task quality/perplexity or end-to-end token throughput measurement.",
+    "Synthetic FP16-vs-4bit relative L2 is about 14%; this is not model quality validation or vLLM bit-level equivalence.",
+    "Integer DSP compute introduces a small additional approximation; scalar packed output parity bounded at 3e-4 for tested inputs.",
+    "S23 lacks FP16 HMX: callback/tile conversion tested, actual FP16 HMX attention compute remains untested.",
+    "S23 binary built in isolated temporary copy with existing v73 compatibility shims (H44 fallback, QFloat conversions, synchronous DMA, 64KiB worker stacks); unchanged production v73 build still has compatibility work.",
+    "No full platform build matrix or full application HTP link run."
+  ],
+  "artifacts": "build-kv-android/validation/turboquant-npu-20261109",
+  "sha256": {
+    "libnntr_hvx_skel.so": "b639dc397194246c012b85b563d5f4711816ffa2552e7cd9061949d8300aef9a",
+    "turboquant_device_check": "818f3c2d18fa3bff1204e0d345db740e9578e99120e2c79c4d4cb99ab5522370",
+    "benchmark_unified": "b2385c7e3fae4044088fc61850e5cb56196bf964b4cec90c621b531e6fbfe708"
+  }
+}

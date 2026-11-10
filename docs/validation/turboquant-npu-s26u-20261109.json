@@ -1,0 +1,413 @@
+{
+  "date": "2026-11-09",
+  "branch": "kv/pr4428-dsp-flash-20261104",
+  "base_head": "5e97254e764aa30db4223c33d0dc3b0fded091b8",
+  "device": {
+    "model": "SM-S948U (S26 Ultra)",
+    "serial": "R3CY70LV96T",
+    "soc": "SM8850",
+    "android": 16,
+    "dsp_arch": "v81",
+    "hmx_locked": true,
+    "vtcm_bytes": 8388608,
+    "hvx_units": 8,
+    "hmx_fp16_rate": 8
+  },
+  "build": {
+    "native_v81": true,
+    "s23_compatibility_shims_used": false,
+    "dsp_build_script": "nntrainer/tensor/htp_backend/dsp/build.sh",
+    "sdk": "6.4.0.2",
+    "hexagon_tools": "19.0.04",
+    "hexkl_headers": "/tmp/nntr-pr4428-validation-results/hexkl-device/include",
+    "provider": "/tmp/nntr-original-q8-20261105/verified/libnntr_hexkl_provider.so",
+    "strict_undefined_import_check": "PASS (83 runtime imports)",
+    "full_android_htp_engine_and_app": "BUILD AND RUN PASS",
+    "model_source_base": "same 5e97254e baseline plus current changed files and new codec files",
+    "app_abi_note": "Updated exported ComputeOps/runtime headers and forced recompilation of dependent static archives; initial stale-header crashes are retained in diagnostic logs."
+  },
+  "fix": {
+    "file": "nntrainer/tensor/htp_backend/hvx/hvx_attn_softmax_f16.h",
+    "issue": "Actual FP16 HMX prefill produced NaNs on v81, also reproduced on uncompressed raw FP16 attention. QK scores were finite; diagnostic localized the failure to the online-softmax denominator update.",
+    "change": "When previous denominator is zero, assign the new block sum directly instead of evaluating the previous-mass rescale product. Exact mathematical recurrence for unseen rows.",
+    "scope": "Avoids the observed NaN; compiler/instruction-level root cause of the sentinel/rescale evaluation is not established.",
+    "regression": "Tracked device check now includes 3 raw FP16 HMX comparisons to a scalar FP64 attention reference, capability logging, nonfinite diagnostics and 128-row prefill checks."
+  },
+  "checks": {
+    "unit_tests": {
+      "core": 69,
+      "facade": 37,
+      "selected_dispatch": 6
+    },
+    "dsp": {
+      "hmx_prefill": {
+        "comparisons": 140,
+        "max_abs": 0.00056558847,
+        "tolerance": 0.002
+      },
+      "native_decode_graph": {
+        "comparisons": 18,
+        "max_abs": 5.4627657e-05,
+        "tolerance": 0.0003
+      },
+      "raw_fp16_hmx": {
+        "comparisons": 3,
+        "max_abs": 0.00031894445,
+        "tolerance": 0.002
+      }
+    },
+    "packed_tile_round_trip": "PASS",
+    "sliding_ring_memory_bounds": "PASS",
+    "resident_qk_norm_rope_attention_graph": "PASS",
+    "dimensions": [
+      64,
+      128,
+      256,
+      512
+    ],
+    "gqa": [
+      1,
+      2,
+      3,
+      8
+    ],
+    "prefill_chunk_rows": [
+      33,
+      128
+    ],
+    "windows": [
+      0,
+      17,
+      512
+    ],
+    "host_kv_regressions": "PASS",
+    "clang_format_14": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "attention_benchmark": {
+    "method": "3 runs, each 10 repeated calls. One layer, D128, KV2, Q4; same seed71 Gaussian inputs rounded to FP16; current-row append and FastRPC included in DSP wall time. CPU serial reference.",
+    "legacy_scale_note": "Existing DSP Q8/FP16 require the 1/sqrt(D) scale rounded to FP16; TurboQuant/CPU use FP32.",
+    "thermal_and_governor": "Uncontrolled; no device clock, power, thermal or security settings changed.",
+    "median_results": [
+      {
+        "context": 1025,
+        "dsp_turboquant_wall_ms": {
+          "median": 0.22138,
+          "min": 0.218266,
+          "max": 0.231766
+        },
+        "dsp_q8_wall_ms": {
+          "median": 0.154896,
+          "min": 0.154552,
+          "max": 0.201979
+        },
+        "dsp_fp16_wall_ms": {
+          "median": 0.223068,
+          "min": 0.214401,
+          "max": 0.270161
+        },
+        "fp16_decode_ms": {
+          "median": 0.0679011,
+          "min": 0.0469583,
+          "max": 0.211818
+        },
+        "turboquant_decode_ms": {
+          "median": 1.12392,
+          "min": 0.411526,
+          "max": 1.84977
+        },
+        "dsp_packed_page_payload_bytes": 304128,
+        "fp16_payload_bytes": 1049600
+      },
+      {
+        "context": 8193,
+        "dsp_turboquant_wall_ms": {
+          "median": 0.557833,
+          "min": 0.549042,
+          "max": 0.597151
+        },
+        "dsp_q8_wall_ms": {
+          "median": 0.758391,
+          "min": 0.756563,
+          "max": 0.765213
+        },
+        "dsp_fp16_wall_ms": {
+          "median": 0.919453,
+          "min": 0.914115,
+          "max": 0.919505
+        },
+        "fp16_decode_ms": {
+          "median": 1.03559,
+          "min": 0.965255,
+          "max": 1.38038
+        },
+        "turboquant_decode_ms": {
+          "median": 4.5039,
+          "min": 4.3652,
+          "max": 5.96009
+        },
+        "dsp_packed_page_payload_bytes": 2368512,
+        "fp16_payload_bytes": 8389632
+      },
+      {
+        "context": 32769,
+        "dsp_turboquant_wall_ms": {
+          "median": 1.30147,
+          "min": 1.28918,
+          "max": 1.41902
+        },
+        "dsp_q8_wall_ms": {
+          "median": 2.30957,
+          "min": 2.29092,
+          "max": 2.35771
+        },
+        "dsp_fp16_wall_ms": {
+          "median": 3.04408,
+          "min": 3.04342,
+          "max": 3.08176
+        },
+        "fp16_decode_ms": {
+          "median": 2.03827,
+          "min": 1.90386,
+          "max": 2.16187
+        },
+        "turboquant_decode_ms": {
+          "median": 13.1831,
+          "min": 13.1554,
+          "max": 13.4609
+        },
+        "dsp_packed_page_payload_bytes": 9446400,
+        "fp16_payload_bytes": 33555456
+      }
+    ],
+    "raw_runs": [
+      [
+        {
+          "context": 1025,
+          "fp16_bytes": 1049600,
+          "packed_bytes": 313344,
+          "fp16_decode_ms": 0.0679011,
+          "turboquant_decode_ms": 1.12392,
+          "relative_l2": 0.146634,
+          "max_abs": 0.0278145,
+          "dsp_turboquant_wall_ms": 0.218266,
+          "dsp_q8_wall_ms": 0.154896,
+          "dsp_fp16_wall_ms": 0.214401,
+          "dsp_vs_cpu_tq_max_abs": 5.87553e-05
+        },
+        {
+          "context": 8193,
+          "fp16_bytes": 8389632,
+          "packed_bytes": 2377728,
+          "fp16_decode_ms": 1.03559,
+          "turboquant_decode_ms": 4.5039,
+          "relative_l2": 0.144105,
+          "max_abs": 0.0086293,
+          "dsp_turboquant_wall_ms": 0.557833,
+          "dsp_q8_wall_ms": 0.758391,
+          "dsp_fp16_wall_ms": 0.919453,
+          "dsp_vs_cpu_tq_max_abs": 1.43573e-05
+        },
+        {
+          "context": 32769,
+          "fp16_bytes": 33555456,
+          "packed_bytes": 9455616,
+          "fp16_decode_ms": 2.03827,
+          "turboquant_decode_ms": 13.1831,
+          "relative_l2": 0.137777,
+          "max_abs": 0.00486563,
+          "dsp_turboquant_wall_ms": 1.28918,
+          "dsp_q8_wall_ms": 2.29092,
+          "dsp_fp16_wall_ms": 3.04342,
+          "dsp_vs_cpu_tq_max_abs": 8.25245e-06
+        }
+      ],
+      [
+        {
+          "context": 1025,
+          "fp16_bytes": 1049600,
+          "packed_bytes": 313344,
+          "fp16_decode_ms": 0.211818,
+          "turboquant_decode_ms": 1.84977,
+          "relative_l2": 0.146634,
+          "max_abs": 0.0278145,
+          "dsp_turboquant_wall_ms": 0.231766,
+          "dsp_q8_wall_ms": 0.201979,
+          "dsp_fp16_wall_ms": 0.270161,
+          "dsp_vs_cpu_tq_max_abs": 5.87553e-05
+        },
+        {
+          "context": 8193,
+          "fp16_bytes": 8389632,
+          "packed_bytes": 2377728,
+          "fp16_decode_ms": 1.38038,
+          "turboquant_decode_ms": 5.96009,
+          "relative_l2": 0.144105,
+          "max_abs": 0.0086293,
+          "dsp_turboquant_wall_ms": 0.597151,
+          "dsp_q8_wall_ms": 0.756563,
+          "dsp_fp16_wall_ms": 0.914115,
+          "dsp_vs_cpu_tq_max_abs": 1.43573e-05
+        },
+        {
+          "context": 32769,
+          "fp16_bytes": 33555456,
+          "packed_bytes": 9455616,
+          "fp16_decode_ms": 2.16187,
+          "turboquant_decode_ms": 13.4609,
+          "relative_l2": 0.137777,
+          "max_abs": 0.00486563,
+          "dsp_turboquant_wall_ms": 1.30147,
+          "dsp_q8_wall_ms": 2.30957,
+          "dsp_fp16_wall_ms": 3.08176,
+          "dsp_vs_cpu_tq_max_abs": 8.25245e-06
+        }
+      ],
+      [
+        {
+          "context": 1025,
+          "fp16_bytes": 1049600,
+          "packed_bytes": 313344,
+          "fp16_decode_ms": 0.0469583,
+          "turboquant_decode_ms": 0.411526,
+          "relative_l2": 0.146634,
+          "max_abs": 0.0278145,
+          "dsp_turboquant_wall_ms": 0.22138,
+          "dsp_q8_wall_ms": 0.154552,
+          "dsp_fp16_wall_ms": 0.223068,
+          "dsp_vs_cpu_tq_max_abs": 5.87553e-05
+        },
+        {
+          "context": 8193,
+          "fp16_bytes": 8389632,
+          "packed_bytes": 2377728,
+          "fp16_decode_ms": 0.965255,
+          "turboquant_decode_ms": 4.3652,
+          "relative_l2": 0.144105,
+          "max_abs": 0.0086293,
+          "dsp_turboquant_wall_ms": 0.549042,
+          "dsp_q8_wall_ms": 0.765213,
+          "dsp_fp16_wall_ms": 0.919505,
+          "dsp_vs_cpu_tq_max_abs": 1.43573e-05
+        },
+        {
+          "context": 32769,
+          "fp16_bytes": 33555456,
+          "packed_bytes": 9455616,
+          "fp16_decode_ms": 1.90386,
+          "turboquant_decode_ms": 13.1554,
+          "relative_l2": 0.137777,
+          "max_abs": 0.00486563,
+          "dsp_turboquant_wall_ms": 1.41902,
+          "dsp_q8_wall_ms": 2.35771,
+          "dsp_fp16_wall_ms": 3.04408,
+          "dsp_vs_cpu_tq_max_abs": 8.25245e-06
+        }
+      ]
+    ],
+    "memory_note": "Packed page payload includes metadata/guards, excludes pointer table, allocator and scratch; FP16 payload excludes scratch. 32K payload 32 MiB to 9.01 MiB (~71.85% reduction)."
+  },
+  "model_validation": {
+    "model": "Gemma4 26B A4B, 30-layer HTP fused TL2 MoE",
+    "model_location": "/data/local/tmp/quickai-4428-rebased-20261104/models/gemma4-26b-a4b-htp-w4a32",
+    "configuration": "Fully HTP MoE, attention projections, attention, dense FFN and LM head; cache16 experts/layer; max_seq2048; 16 generated tokens. Short init_seq128; longer init_seq512. Configs stored with artifacts.",
+    "runs": [
+      {
+        "run": "model-tq",
+        "prefill_tokens": 54,
+        "prefill_ms": 2026,
+        "generated_tokens": 16,
+        "generation_ms": 1114,
+        "generation_tps": 14.3627,
+        "steady_ms_per_token": 56.372,
+        "reported_peak_kb": 3046720,
+        "fp16_kv_seed_count": 0,
+        "resident_graph_calls_per_token": 53.69
+      },
+      {
+        "run": "model-q8",
+        "prefill_tokens": 54,
+        "prefill_ms": 1522,
+        "generated_tokens": 16,
+        "generation_ms": 1167,
+        "generation_tps": 13.7104,
+        "steady_ms_per_token": 52.2971,
+        "reported_peak_kb": 3541344,
+        "fp16_kv_seed_count": 30,
+        "resident_graph_calls_per_token": 54.12
+      },
+      {
+        "run": "model-long-tq",
+        "prefill_tokens": 337,
+        "prefill_ms": 5395,
+        "generated_tokens": 16,
+        "generation_ms": 1169,
+        "generation_tps": 13.6869,
+        "steady_ms_per_token": 60.2083,
+        "reported_peak_kb": 3408752,
+        "fp16_kv_seed_count": 0,
+        "resident_graph_calls_per_token": 54.0
+      },
+      {
+        "run": "model-long-q8",
+        "prefill_tokens": 337,
+        "prefill_ms": 1516,
+        "generated_tokens": 16,
+        "generation_ms": 1232,
+        "generation_tps": 12.987,
+        "steady_ms_per_token": 58.5069,
+        "reported_peak_kb": 3577988,
+        "fp16_kv_seed_count": 30,
+        "resident_graph_calls_per_token": 53.81
+      },
+      {
+        "run": "model-long-tq-repeat",
+        "prefill_tokens": 337,
+        "prefill_ms": 5354,
+        "generated_tokens": 16,
+        "generation_ms": 1210,
+        "generation_tps": 13.2231,
+        "steady_ms_per_token": 60.0018,
+        "reported_peak_kb": 3408516,
+        "fp16_kv_seed_count": 0,
+        "resident_graph_calls_per_token": 54.0
+      },
+      {
+        "run": "model-long-q8-repeat",
+        "prefill_tokens": 337,
+        "prefill_ms": 1528,
+        "generated_tokens": 16,
+        "generation_ms": 1319,
+        "generation_tps": 12.1304,
+        "steady_ms_per_token": 60.0283,
+        "reported_peak_kb": 3578692,
+        "fp16_kv_seed_count": 30,
+        "resident_graph_calls_per_token": 53.81
+      }
+    ],
+    "conclusions": [
+      "Both 54-token and 337-token prefill followed by 16 native decode tokens completed successfully.",
+      "TurboQuant uses the resident graph at 1 call/token with zero FP16 KV seed RPCs; Q8 seeds 30 layer caches.",
+      "337-token repeat: prefill 5354ms TQ vs 1528ms Q8 (~3.50x slower). The prefill penalty reproduced after both modes had already run.",
+      "337-token repeat: steady decode 60.0018ms/token TQ vs 60.0283ms/token Q8, essentially equal. Overall generation TPS differs partly because first-token latency differs.",
+      "Kernel-level long-context attention improvements do not establish overall MoE speedup; expert I/O and other layers remain significant."
+    ]
+  },
+  "limitations": [
+    "No perplexity, task accuracy or statistically controlled quality evaluation. Generated sequences differ; functional execution is not quality parity.",
+    "Full model context tested at 54 and 337 prompt tokens, not 32K. The 32K result is a synthetic single-layer kernel benchmark.",
+    "No controlled sustained throughput/power/thermal campaign. Model pairs are sequential smoke/performance checks with uncontrolled file cache and expert cache effects.",
+    "Prefill is currently materially slower than existing Q8 on the tested actual model; further profiling/optimization is needed before claiming general NPU MoE performance improvement.",
+    "Single resident conversation; INT8 session/prefix snapshot functionality remains unsupported for packed cache."
+  ],
+  "artifact_directory": "build-kv-android/validation/turboquant-npu-s26u-20261109",
+  "sha256": {
+    "v81_skel": "aea650956df05dd0632e3ae8f7a5a889dcccdda5185e03f628b35ac95486afa1",
+    "provider": "a167afcf746d9c7f1aa2f74f7bb4f454d78b79d8000e664dcc5c2067a2dba01e",
+    "device_check": "b72e0e327549ee07caa63bb7ea79b16ea78fa0480973734c5e8e5930d08c1dfc",
+    "benchmark": "b2385c7e3fae4044088fc61850e5cb56196bf964b4cec90c621b531e6fbfe708",
+    "model_engine": "3844b43baf1b79b5b0274faf9dcae1f3fc6285f6ecf2eda6359eb33bfeadfe4e",
+    "model_app": "7f68589954d5431cd6d1cfe11848d48642b3319a266cbc54d7baab79d27bf2a4",
+    "model_cli": "46b20e24166e765166b260a92e5bd1d4d5d1ae27157ea1b105c0a5a79dbe117a"
+  }
+}

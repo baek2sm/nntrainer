@@ -51,6 +51,28 @@ protected:
   causallm::KVCacheManager manager;
 };
 
+TEST(KVCacheManagerPacked, graphIdentitiesDoNotAllocateFp16History) {
+  causallm::KVCacheManager manager;
+  manager.setAttentionOwnedStorage(true);
+  manager.allocate(3, 1, 32768, std::vector<unsigned>{256, 512, 256},
+                   ml::train::TensorDim::DataType::UINT16,
+                   ml::train::TensorDim::Format::NCHW);
+  for (unsigned layer = 0; layer < 3; ++layer) {
+    EXPECT_EQ(manager.getKeyCache(layer).height(), 1u);
+    EXPECT_EQ(manager.getValueCache(layer).height(), 1u);
+  }
+  EXPECT_TRUE(manager.usesAttentionOwnedStorage());
+  EXPECT_FALSE(manager.compact(16000));
+  EXPECT_NO_THROW(manager.setPosition(16000));
+  EXPECT_THROW(manager.getKeyCacheReadView(0, 0, 10), std::logic_error);
+  EXPECT_THROW(manager.getValueCacheWriteView(0, 0, 1), std::logic_error);
+  EXPECT_THROW(manager.validateSaveRange(10), std::logic_error);
+  EXPECT_THROW(manager.load("unused", 10), std::logic_error);
+  EXPECT_THROW(manager.prepareDecodeView(16000), std::logic_error);
+  EXPECT_NO_THROW(manager.reset());
+  EXPECT_EQ(manager.getPosition(), 0u);
+}
+
 TEST_F(KVCacheManagerTest, allocate_basic) {
   EXPECT_TRUE(manager.isAllocated());
   EXPECT_EQ(manager.getNumLayers(), NUM_LAYERS);

@@ -116,6 +116,14 @@ void Gemma4HtpTransformer::setupParameters(json &cfg, json &generation_cfg,
   Transformer::setupParameters(cfg, generation_cfg, nntr_cfg);
   ATTENTION_ENGINE = nntr_cfg.value("attention_engine", std::string());
   ATTENTION_KV_DTYPE = nntr_cfg.value("attention_kv_dtype", std::string());
+  if (ATTENTION_KV_DTYPE == "turboquant_4bit_nc") {
+    if (!ATTENTION_ENGINE.empty() && ATTENTION_ENGINE != "cpu" &&
+        ATTENTION_ENGINE != "htp")
+      throw std::invalid_argument(
+        "TurboQuant requires attention_engine=cpu or htp");
+    if (ATTENTION_ENGINE.empty())
+      ATTENTION_ENGINE = "cpu";
+  }
   FC_WH_FILE_NAME = nntr_cfg.value("fc_wh_file_name", std::string());
   FC_WH_FORMAT = nntr_cfg.value("fc_wh_format", std::string());
 
@@ -206,6 +214,8 @@ void Gemma4HtpTransformer::setupParameters(json &cfg, json &generation_cfg,
                         cfg["use_double_wide_mlp"].get<bool>();
   ENABLE_SKIP_PREFILL_OPT =
     nntr_cfg.contains("skip_prefill") && nntr_cfg["skip_prefill"].get<bool>();
+  if (ATTENTION_KV_DTYPE == "turboquant_4bit_nc")
+    ENABLE_SKIP_PREFILL_OPT = false; // Populate every packed layer's history.
 
   if (cfg.contains("rope_parameters") && cfg["rope_parameters"].is_object()) {
     const auto &rope_params = cfg["rope_parameters"];
@@ -255,8 +265,9 @@ void Gemma4HtpTransformer::setupParameters(json &cfg, json &generation_cfg,
 std::pair<Tensor, Tensor>
 Gemma4HtpTransformer::createGemma4KVCachePlaceholders(const int layer_id,
                                                       unsigned int kv_width) {
-  return htpCacheInputs(layer_id, BATCH_SIZE, getKVCacheRows(layer_id),
-                        kv_width);
+  const bool packed = ATTENTION_KV_DTYPE == "turboquant_4bit_nc";
+  return htpCacheInputs(layer_id, BATCH_SIZE,
+                        packed ? 1u : getKVCacheRows(layer_id), kv_width);
 }
 
 std::pair<Tensor, Tensor> Gemma4HtpTransformer::constructModel() {
@@ -822,7 +833,7 @@ Tensor Gemma4HtpTransformer::createAttention(const int layer_id, int seq_len,
   // The folded o-proj on the accelerator takes the attention's context from
   // the accelerator's own buffer (mha_core's attn_out_u16); any other
   // consumer needs the f32 tensor written.
-  if (fold_o_proj_ &&
+  if (ATTENTION_KV_DTYPE != "turboquant_4bit_nc" && fold_o_proj_ &&
       engineFor(ATTN_PROJ_ENGINE, ATTN_PROJ_HTP_LAYERS, layer_id) == "htp")
     a_params.push_back(withKey("attn_out_u16", "true"));
   appendSkipPrefillIfNeeded(a_params, is_kv_shared_layer);
@@ -1019,6 +1030,8 @@ std::pair<Tensor, Tensor> Gemma4HtpCausalLM::constructModel() {
 
 void Gemma4HtpCausalLM::allocateAndBindKVCache() {
   if (!kv_cache.isAllocated()) {
+    kv_cache.setAttentionOwnedStorage(ATTENTION_KV_DTYPE ==
+                                      "turboquant_4bit_nc");
 #ifdef ENABLE_FP16
     const auto cache_dtype = ml::train::TensorDim::DataType::FP16;
 #else

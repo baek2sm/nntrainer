@@ -6,6 +6,7 @@
  * @bug Sessions are thread confined; asynchronous device access is unsupported.
  */
 #include <kv_cache/kv_cache_manager.h>
+#include <kv_cache/turboquant.h>
 
 #include <algorithm>
 #include <cstring>
@@ -34,6 +35,7 @@ struct SessionState {
   std::vector<bool> ready;
   std::shared_ptr<ViewEpoch> epoch = std::make_shared<ViewEpoch>();
   size_t position = 0;
+  size_t high_water = 0; /**< Rewind cannot recover overwritten ring rows. */
   uint64_t next_step = 0;
   bool valid = true;
   bool overwrites = false;
@@ -470,7 +472,9 @@ std::vector<KvView> KvCacheManager::views(const StepLease &step, size_t layer,
       throw std::logic_error("KV producer is not ready");
   }
   const size_t from =
-    write ? step.from_ : (step.to_ > s.capacity ? step.to_ - s.capacity : 0);
+    write ? step.from_
+          : std::max(oldestAvailable(layer),
+                     step.to_ > s.capacity ? step.to_ - s.capacity : 0);
   const size_t count = step.to_ - from;
   if (state_->spec.page_tokens) {
     const size_t page_tokens = state_->spec.page_tokens;
@@ -554,6 +558,27 @@ void KvCacheManager::append(const StepLease &step, size_t layer,
   }
 }
 
+void KvCacheManager::appendTurboQuant(const StepLease &step, size_t layer,
+                                      const float *keys, const float *values,
+                                      size_t elements, size_t batch) {
+  checkStep(step);
+  const auto &s = layerSpec(layer);
+  const size_t heads = checkedMultiply(step.to() - step.from(), s.num_kv_heads);
+  if (s.encoding != Encoding::TurboQuant4BitNC || !keys || !values ||
+      elements != checkedMultiply(heads, s.head_dim))
+    throw std::invalid_argument("Invalid TurboQuant append shape");
+  TurboQuant4BitNC codec(s.head_dim);
+  // Encode before mutating cache bytes: validation failures leave history
+  // intact.
+  const size_t bytes = checkedMultiply(heads, s.headBytes());
+  std::vector<uint8_t> k(bytes), v(bytes);
+  for (size_t h = 0; h < heads; ++h) {
+    codec.encodeKey(keys + h * s.head_dim, k.data() + h * s.headBytes());
+    codec.encodeValue(values + h * s.head_dim, v.data() + h * s.headBytes());
+  }
+  append(step, layer, k.data(), v.data(), bytes, batch);
+}
+
 void KvCacheManager::markReady(const StepLease &step, size_t layer) {
   checkStep(step);
   if (state_->spec.layers.at(layer).source >= 0 ||
@@ -580,6 +605,7 @@ void KvCacheManager::commit(StepLease &&step) {
     }
   }
   state_->position = step.to_;
+  state_->high_water = std::max(state_->high_water, state_->position);
   state_->epoch->active_step = 0;
   step.state_.reset();
   state_->pending_tokens.clear();
@@ -639,6 +665,7 @@ void KvCacheManager::reset() {
     throw std::logic_error("Cannot reset an uninitialized or active KV cache");
   state_->valid = true;
   state_->position = 0;
+  state_->high_water = 0;
   state_->forgetPrefix();
   if (state_->spec.page_tokens) {
     for (auto &pages : state_->key_pages)
@@ -659,8 +686,12 @@ void KvCacheManager::setPosition(size_t position) {
     throw std::out_of_range("KV position exceeds capacity");
   if (state_->spec.page_tokens && position > state_->position)
     throw std::logic_error("Cannot seek beyond committed paged KV");
+  for (size_t i = 0; i < state_->spec.layers.size(); ++i)
+    if (position < oldestAvailable(i))
+      throw std::out_of_range("KV rewind precedes retained ring history");
   state_->releaseTail(position);
   state_->position = position;
+  state_->high_water = std::max(state_->high_water, position);
   if (state_->tokens.size() > position)
     state_->tokens.resize(position);
   ++state_->epoch->generation;
@@ -754,6 +785,10 @@ std::shared_ptr<KvPrefixCache> KvCacheManager::prefixCache() const {
 
 size_t KvCacheManager::committedLength() const {
   return state_ ? state_->position : 0;
+}
+size_t KvCacheManager::oldestAvailable(size_t layer) const {
+  const auto &s = layerSpec(layer);
+  return state_->high_water > s.capacity ? state_->high_water - s.capacity : 0;
 }
 bool KvCacheManager::valid() const { return state_ && state_->valid; }
 bool KvCacheManager::hasActiveStep() const {

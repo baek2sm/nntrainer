@@ -1285,6 +1285,29 @@ public:
    *         or the registration failed
    */
   virtual bool supports_kv_cache_q() const { return false; }
+  /** Packed KV owned by the resident decode graph. The name identifies the
+   * graph's attention layer; inputs contain only the current post-RoPE rows.
+   * A backend advertising this operation must fail loudly if it cannot run. */
+  virtual bool supports_turboquant_kvcache() const { return false; }
+  virtual bool sdpa_turboquant_kvcache(const std::string &name, unsigned from,
+                                       unsigned count, unsigned heads_q,
+                                       unsigned heads_kv, unsigned dim,
+                                       unsigned window, const float *q,
+                                       const float *k, const float *v,
+                                       float *out) {
+    (void)name;
+    (void)from;
+    (void)count;
+    (void)heads_q;
+    (void)heads_kv;
+    (void)dim;
+    (void)window;
+    (void)q;
+    (void)k;
+    (void)v;
+    (void)out;
+    return false;
+  }
   virtual int kv_cache_q_register(unsigned int kind, unsigned int max_rows,
                                   unsigned int n_head_kv,
                                   unsigned int head_dim) {

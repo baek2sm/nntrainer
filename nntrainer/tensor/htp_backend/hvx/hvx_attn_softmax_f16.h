@@ -423,8 +423,11 @@ hvx_attn_online_softmax_pair(HVX_Vector *s0, uint32_t col_stride,
     hvx_attn_lane0_f32(hvx_attn_sum32_sf(Q6_Vsf_equals_Vqf32(sum0)));
   const float add1 =
     hvx_attn_lane0_f32(hvx_attn_sum32_sf(Q6_Vsf_equals_Vqf32(sum1)));
-  l[0] = l[0] * hvx_attn_hf_to_f32(a_hf[0]) + add0;
-  l[1] = l[1] * hvx_attn_hf_to_f32(a_hf[1]) + add1;
+  // A zero denominator has no previous mass to rescale. Skip that
+  // product explicitly: on v81 the initial sentinel/rescale path can
+  // otherwise contaminate a finite first block with NaN.
+  l[0] = l[0] == 0 ? add0 : l[0] * hvx_attn_hf_to_f32(a_hf[0]) + add0;
+  l[1] = l[1] == 0 ? add1 : l[1] * hvx_attn_hf_to_f32(a_hf[1]) + add1;
 }
 
 #endif /* __NNTRAINER_HVX_ATTN_SOFTMAX_F16_H__ */

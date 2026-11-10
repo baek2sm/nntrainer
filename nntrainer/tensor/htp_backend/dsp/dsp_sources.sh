@@ -36,6 +36,8 @@ SRCS=(
   "$BACKEND/hvx/hvx_conv_gate_f32.c"
   "$BACKEND/hvx/hvx_m1_ops_f32.c"
   "$BACKEND/hvx/hvx_attn_m1_f32.c"
+  "$BACKEND/hvx/hvx_turboquant.c"
+  "$BACKEND/../../kv_cache/turboquant_codec.c"
   "$BACKEND/hvx/hvx_scale_add_f32.c"
   "$BACKEND/hvx/hvx_rmsnorm_rows_f32.c"
   "$BACKEND/hvx/hvx_router_rows_f32.c"

@@ -71,6 +71,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "hvx_turboquant.h"
 #include "hvx_worker_pool.h"
 
 /**
@@ -86,6 +87,8 @@ typedef struct {
 
 typedef struct {
   uint32_t paged;
+  hvx_tq_cache
+    *turboquant; /**< Hybrid Q8 prefix and TQ decode, shared with graph. */
   hvx_kv_page **pages; /**< [layer][head][seq/64], allocated on append */
   uint32_t n_layers;
   uint32_t n_kv;
@@ -99,14 +102,15 @@ typedef struct {
    *  smaller blocks freed (the prefill's quantized caches, at Gemma's
    *  shape a 16 MiB block a layer) -- a single 400 MiB block cannot */
   uint16_t **kt;
-  uint16_t **v;        /**< fp16 [n_kv][seq][head_dim] per layer, as kt */
-  uint16_t *s;         /**< fp16 [n_kv * gqa][seq]: scores, then probs */
-  uint16_t *et;        /**< fp16 [seq][64]: the exps, q heads in lanes */
-  uint16_t *qs;        /**< fp16 [n_kv * gqa][head_dim / 64][64]: q, zipped for
-                            vlut16 per 64-wide chunk */
-  uint16_t *kr;        /**< fp16 [n_kv][head_dim]: the new k rows */
-  uint16_t *exp_tab;   /**< fp16 [ATTN_M1_DET_EXP_N]: exp16 by index */
-  size_t cache_halves; /**< fp16 values in kt, and in v */
+  uint16_t **v; /**< fp16 [n_kv][seq][head_dim] per layer, as kt */
+  uint16_t *s;  /**< fp16 [n_kv * gqa][seq]: scores, then probs */
+  uint16_t *et; /**< fp16 [seq][64]: the exps, q heads in lanes */
+  uint16_t *qs; /**< fp16 [n_kv * gqa][head_dim / 64][64]: q, zipped for
+                     vlut16 per 64-wide chunk */
+  uint16_t *kr; /**< fp16 [n_kv][head_dim]: the new k rows */
+  uint32_t borrowed_exp; /**< prefix readers share a cache-owned exp table */
+  uint16_t *exp_tab;     /**< fp16 [ATTN_M1_DET_EXP_N]: exp16 by index */
+  size_t cache_halves;   /**< fp16 values in kt, and in v */
   hvx_worker_pool *pool; /**< borrowed; NULL runs every unit on the caller */
   /** [#282 D] HVX_ATTN_M1_Q8 at create: kt / v hold int8 in the same
    *  layouts (a Kt row of a tile is 64 bytes, two rows a vector; a V row
@@ -155,6 +159,8 @@ typedef struct {
 #define HVX_ATTN_M1_QK_I8 0x10000000u
 /** Native DSP page table; INT8 only. No history gather in attention. */
 #define HVX_ATTN_M1_PAGED 0x08000000u
+/** Packed four-bit pages with FP32 attention; mutually exclusive with Q8. */
+#define HVX_ATTN_M1_TURBOQUANT 0x04000000u
 /** @brief [#282 D] Headroom of the int8 scales over the seed's amax. */
 #define HVX_ATTN_M1_Q8_MARGIN 1.0f
 
@@ -298,4 +304,24 @@ int hvx_attn_m1_forward_prof(hvx_attn_m1_ctx *ctx, uint32_t layer, uint32_t pos,
                              const float *k, const float *v, float *out,
                              float *stats, uint32_t *prof);
 
+/** Allocate one immutable exp table, shared by a cache's prefix readers. */
+uint16_t *hvx_attn_m1_create_exp_table(void);
+/** Import an existing fixed Q8 prefix without changing its quantized values. */
+hvx_attn_m1_ctx *hvx_attn_m1_q8_prefix_create(
+  uint32_t heads, uint32_t gqa, uint32_t dim, uint32_t rows, uint32_t stride,
+  const uint8_t *keys, const uint8_t *values, const float *sk, const float *sv,
+  const uint16_t *exp_table, hvx_worker_pool *pool, int *error);
+/** Read a prefix without appending; stats are {max natural logit, exp sum}. */
+int hvx_attn_m1_forward_cached(hvx_attn_m1_ctx *ctx, uint32_t pos,
+                               uint32_t window, float scale, const float *q,
+                               float *out, float *stats);
+/** Run a suffix consumer on each completed Q8 head in the same worker.
+ * stats contains {max natural logit, exp sum} for each of its two queries.
+ * Unsupported shapes/architectures return EUNSUPPORTED before writing. */
+typedef void (*hvx_attn_q8_head_hook)(void *ctx, uint32_t head,
+                                      const float *output, const float *stats);
+int hvx_attn_m1_forward_cached_hook(hvx_attn_m1_ctx *ctx, uint32_t pos,
+                                    uint32_t window, float scale,
+                                    const float *q, float *out,
+                                    hvx_attn_q8_head_hook hook, void *hook_ctx);
 #endif /* __NNTRAINER_HVX_ATTN_M1_F32_H__ */

@@ -1,0 +1,17 @@
+{
+  "attention_engine": "htp",
+  "attention_kv_dtype": "turboquant_4bit_nc",
+  "skip_prefill": false,
+  "htp": {
+    "kv_turboquant": true,
+    "kv_session": false,
+    "kv_paged": false,
+    "kv_prefix_cache": false,
+    "kv_seed_q": false,
+    "oproj_u16": true
+  },
+  "moe_engine": "htp",
+  "attn_proj_engine": "htp",
+  "dense_ffn_engine": "htp",
+  "lmhead_engine": "htp"
+}

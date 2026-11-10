@@ -212,6 +212,15 @@ enum {
  *  another shape: Gemma 4's full layers), the rest the layer's ordinal
  *  among the ATTN_M1 ops of that shape (hexkl_graph_init's ordinal). */
 #define HTP_ATTN_KV_CACHE_B 0x80000000u
+/** attn_tq_step only: retain prefill rows as Q8; decode appends use TQ4. */
+#define HTP_ATTN_TQ_PREFILL_Q8 0x40000000u
+/** attn_tq_step only: preserve fresh Q8 context as u16 for folded o-proj. */
+#define HTP_ATTN_TQ_OUT_U16 0x20000000u
+/** Request optional stage timers alongside an encoded context. */
+#define HTP_ATTN_TQ_PROFILE 0x10000000u
+/** attn_tq_step: Q/K/V planes share one mapped input allocation. */
+#define HTP_ATTN_TQ_JOINED_QKV 0x08000000u
+#define HTP_ATTN_TQ_SHARED_V 0x04000000u
 
 enum { HTP_GRAPH_LAYER_CONV = 0, HTP_GRAPH_LAYER_ATTN = 1 };
 /** @brief A layer's FFN kind. DENSE_MOE: Gemma 4's dense

@@ -81,6 +81,7 @@ typedef struct {
   const hexkl_attn_f16_io *io;
   hvx_worker_pool *pool;
   hexkl_attn_f16_layout L;
+  int inline_hmx;
   int resident;            /**< io->kt_tiles != NULL */
   float scale;             /**< log2e / sqrt(hd), folded into Q */
   uint16_t *m_hf;          /**< [g_br] running max, fp16 bits, in VTCM */
@@ -145,6 +146,43 @@ static inline void unit_range(uint32_t n, uint32_t n_threads, uint32_t i,
                               uint32_t *lo, uint32_t *hi) {
   *lo = (uint32_t)((uint64_t)n * i / n_threads);
   *hi = (uint32_t)((uint64_t)n * (i + 1) / n_threads);
+}
+
+/* The planner aligns all FP16 matrix regions to 2 KiB. As in the
+ * integer attention kernel, check the common base once and issue the
+ * already-validated HMX tile instructions directly on supported DSPs.
+ * The host stand-in and unaligned bases retain the checked micro API. */
+static inline void attn_hmx_clear(attn_ctx *c) {
+#if defined(__hexagon__) && __HEXAGON_ARCH__ >= 79
+  if (c->inline_hmx) {
+    __asm__ volatile("mxclracc.hf" ::: "memory");
+    return;
+  }
+#endif
+  (void)c;
+  hexkl_micro_hmx_acc_clear_f16();
+}
+static inline int attn_hmx_mm(attn_ctx *c, void *a, void *w) {
+#if defined(__hexagon__) && __HEXAGON_ARCH__ >= 79
+  if (c->inline_hmx) {
+    __asm__ volatile(
+      "{ activation.hf = mxmem(%0,%2)\n weight.hf = mxmem(%1,%3) }" ::"r"(a),
+      "r"(w), "r"(0x7fff), "r"(0x780)
+      : "memory");
+    return AEE_SUCCESS;
+  }
+#endif
+  return hexkl_micro_hmx_mm_f16(c->vb, off_of(c, a), off_of(c, w));
+}
+static inline int attn_hmx_read(attn_ctx *c, void *out) {
+#if defined(__hexagon__) && __HEXAGON_ARCH__ >= 79
+  if (c->inline_hmx) {
+    __asm__ volatile("mxmem(%0,%1):after.hf = acc" ::"r"(out), "r"(0)
+                     : "memory");
+    return AEE_SUCCESS;
+  }
+#endif
+  return hexkl_micro_hmx_acc_read_f16(c->vb, c->L.cfg_f16, off_of(c, out));
 }
 
 /* --- phases ---------------------------------------------------------- */
@@ -218,6 +256,12 @@ static void dma_issue(attn_ctx *c, uint32_t n, uint32_t kb, uint32_t buf) {
   if (c->resident) {
     const uint32_t ncol = resident_cols(c, kb);
     if (ncol == 0) {
+      return;
+    }
+    if (c->io->load_tiles) {
+      c->io->load_tiles(c->io->load_context, n, k0, ncol,
+                        (uint8_t *)kt_tile(c, buf, 0, 0),
+                        (uint8_t *)v_tile(c, buf, 0, 0));
       return;
     }
     const uint32_t dt = c->L.n_dot_tiles;
@@ -333,16 +377,14 @@ static void tile_block_inline(attn_ctx *c, uint32_t buf) {
 static int phase_qk(attn_ctx *c, uint32_t buf, uint32_t sbuf) {
   for (uint32_t i = 0; i < c->L.n_row_tiles; ++i) {
     for (uint32_t col = 0; col < c->L.n_col_tiles; ++col) {
-      hexkl_micro_hmx_acc_clear_f16();
+      attn_hmx_clear(c);
       for (uint32_t d = 0; d < c->L.n_dot_tiles; ++d) {
-        int rc = hexkl_micro_hmx_mm_f16(c->vb, off_of(c, q_tile(c, i, d)),
-                                        off_of(c, kt_tile(c, buf, d, col)));
+        int rc = attn_hmx_mm(c, q_tile(c, i, d), kt_tile(c, buf, d, col));
         if (rc != AEE_SUCCESS) {
           return rc;
         }
       }
-      int rc = hexkl_micro_hmx_acc_read_f16(c->vb, c->L.cfg_f16,
-                                            off_of(c, s_tile(c, sbuf, i, col)));
+      int rc = attn_hmx_read(c, s_tile(c, sbuf, i, col));
       if (rc != AEE_SUCCESS) {
         return rc;
       }
@@ -429,24 +471,21 @@ static int phase_pv(attn_ctx *c, uint32_t buf, uint32_t sbuf, uint32_t o_prev,
                     uint32_t o_cur, int first) {
   for (uint32_t i = 0; i < c->L.n_row_tiles; ++i) {
     for (uint32_t d = 0; d < c->L.n_dot_tiles; ++d) {
-      hexkl_micro_hmx_acc_clear_f16();
+      attn_hmx_clear(c);
       int rc;
       if (!first) {
-        rc = hexkl_micro_hmx_mm_f16(c->vb, off_of(c, d_tile(c, i)),
-                                    off_of(c, o_tile(c, o_prev, i, d)));
+        rc = attn_hmx_mm(c, d_tile(c, i), o_tile(c, o_prev, i, d));
         if (rc != AEE_SUCCESS) {
           return rc;
         }
       }
       for (uint32_t col = 0; col < c->L.n_col_tiles; ++col) {
-        rc = hexkl_micro_hmx_mm_f16(c->vb, off_of(c, s_tile(c, sbuf, i, col)),
-                                    off_of(c, v_tile(c, buf, col, d)));
+        rc = attn_hmx_mm(c, s_tile(c, sbuf, i, col), v_tile(c, buf, col, d));
         if (rc != AEE_SUCCESS) {
           return rc;
         }
       }
-      rc = hexkl_micro_hmx_acc_read_f16(c->vb, c->L.cfg_f16,
-                                        off_of(c, o_tile(c, o_cur, i, d)));
+      rc = attn_hmx_read(c, o_tile(c, o_cur, i, d));
       if (rc != AEE_SUCCESS) {
         return rc;
       }
@@ -588,8 +627,9 @@ int hexkl_attn_f16_prefill(uint8_t *vtcm_base, uint32_t arena_top,
   if (!vtcm_base || !s || !t || !io || !io->q || !io->out) {
     return AEE_EBADPARM;
   }
-  const int resident = io->kt_tiles != NULL;
-  if (resident ? (!io->v_tiles || io->kv_tile_cols * 32u < s->cache_to)
+  const int resident = io->kt_tiles != NULL || io->load_tiles != NULL;
+  if (resident ? ((!io->load_tiles && !io->v_tiles) ||
+                  io->kv_tile_cols * 32u < s->cache_to)
                : (!io->k || !io->v)) {
     return AEE_EBADPARM;
   }
@@ -609,6 +649,7 @@ int hexkl_attn_f16_prefill(uint8_t *vtcm_base, uint32_t arena_top,
   c.io = io;
   c.pool = pool;
   c.resident = resident;
+  c.inline_hmx = ((uintptr_t)vtcm_base & 2047u) == 0u;
   int rc = map_plan_rc(
     hexkl_attn_f16_plan(s, t, arena_top, hexkl_micro_hmx_config_size(), &c.L));
   if (rc != AEE_SUCCESS) {

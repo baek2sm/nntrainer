@@ -21,6 +21,8 @@
 
 #include <AEEStdErr.h>
 #include <HAP_farf.h>
+#include <HAP_perf.h>
+#include <math.h>
 #include <remote.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +33,250 @@
 #include "attn_m1_det.h"
 #include "htp_graph_desc.h"
 #include "hvx_attn_m1_f32.h"
+#include "hvx_attn_softmax_f16.h"
+#include "hvx_convert.h"
+#include "hvx_tile_f16.h"
+
+/* Q8 prefill masters become the persistent prefix without a second
+ * quantization pass. Only decode appends use the packed four-bit format.
+ * Reusable conversion/output scratch is bounded and freed at decode. */
+typedef struct {
+  const uint16_t *out16;
+  float *out;
+  const float *enc;
+  uint32_t nq, heads, dim;
+} tq_fresh_job;
+static void tq_fresh_worker(uint32_t threads, uint32_t lane, void *data) {
+  tq_fresh_job *j = data;
+  for (uint32_t unit = lane; unit < j->nq / 64u; unit += threads) {
+    const uint32_t off = unit * 64u, h = (off / j->dim) % j->heads;
+    int32_t zp = (int32_t)j->enc[2 * h + 1];
+    uint32_t bits;
+    memcpy(&bits, j->enc + 2 * h, 4);
+    const HVX_VectorPair w =
+      Q6_Wuw_vunpack_Vuh(*(const HVX_Vector *)(j->out16 + off));
+    const HVX_Vector a =
+      Q6_Vsf_equals_Vw(Q6_Vw_vsub_VwVw(Q6_V_lo_W(w), Q6_V_vsplat_R(zp)));
+    const HVX_Vector b =
+      Q6_Vsf_equals_Vw(Q6_Vw_vsub_VwVw(Q6_V_hi_W(w), Q6_V_vsplat_R(zp)));
+    *(HVX_UVector *)(j->out + off) =
+      Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(a, Q6_V_vsplat_R(bits)));
+    *(HVX_UVector *)(j->out + off + 32) =
+      Q6_Vsf_equals_Vqf32(Q6_Vqf32_vmpy_VsfVsf(b, Q6_V_vsplat_R(bits)));
+  }
+}
+#define TQ_PREFILL_BUDGET (96u * 1024u * 1024u)
+static void tq_workspace_free(nntr_hvx_session *s,
+                              nntr_tq_prefill_workspace *w) {
+  if (w->owner)
+    (void)hvx_tq_append_wait(w->owner);
+  if (w->has_handle)
+    nntr_hvx_kv_release_q((remote_handle64)s, w->handle);
+  free(w->out16);
+  free(w->enc);
+  memset(w, 0, sizeof(*w));
+}
+static void tq_workspace_release(void *ctx) {
+  nntr_hvx_session *s = ctx;
+  tq_workspace_free(s, &s->tq_prefill[0]);
+  tq_workspace_free(s, &s->tq_prefill[1]);
+}
+static int tq_fresh_prefill(nntr_hvx_session *s, hvx_attn_m1_ctx *c,
+                            uint32_t layer, uint32_t from, uint32_t count,
+                            uint32_t window, const float *q, const float *k,
+                            const float *v, float *out, uint32_t *profile,
+                            uint32_t *workspace, float *out_enc, int *encoded) {
+  const uint64_t nk = (uint64_t)count * c->n_kv * c->head_dim, nq = nk * c->gqa;
+  const uint64_t padded = ((uint64_t)count + 31u) / 32u * 32u;
+  const uint64_t budget =
+    4u * (padded + 32u) * c->n_kv * c->head_dim + 2u * nq +
+    12u * padded * c->n_kv +
+    ((uint64_t)c->n_kv + c->n_kv * c->head_dim + 4u * c->n_kv * c->gqa) * 4u +
+    4u * 1024u * 1024u;
+  if (!s->hmx_locked || count > 65503u || budget > TQ_PREFILL_BUDGET)
+    return AEE_EUNSUPPORTED;
+  // All prefix ownership changes happen after resident work has joined.
+  int prior = hvx_tq_append_wait(c->turboquant);
+  if (prior)
+    return prior;
+  const uint32_t slot = c == s->attn_m1_b ? 1u : 0u;
+  nntr_tq_prefill_workspace *w = &s->tq_prefill[slot],
+                            *other = &s->tq_prefill[slot ^ 1u];
+  int rc = AEE_ENOMEMORY;
+  const uint32_t enc_count =
+    c->n_kv + c->n_kv * c->head_dim + 4u * c->n_kv * c->gqa;
+  if (w->active && (w->rows < count || w->n_kv != c->n_kv || w->gqa != c->gqa ||
+                    w->dim != c->head_dim))
+    tq_workspace_free(s, w);
+  if (!w->active) {
+    if (budget + other->budget > TQ_PREFILL_BUDGET)
+      tq_workspace_free(s, other);
+    w->out16 = memalign(128, (size_t)nq * 2);
+    w->enc = malloc(enc_count * 4u);
+    if (!w->out16 || !w->enc) {
+      tq_workspace_free(s, w);
+      return AEE_EUNSUPPORTED;
+    }
+    w->active = 1;
+    w->owner = c->turboquant;
+    w->rows = count;
+    w->n_kv = c->n_kv;
+    w->gqa = c->gqa;
+    w->dim = c->head_dim;
+    w->budget = (uint32_t)budget;
+  }
+  // One extra tile guarantees safe bounded vector reads of Q8 masters.
+  const uint64_t register_tick = profile ? HAP_perf_get_time_us() : 0;
+  rc = w->has_handle ? hexkl_kv_q_rearm_prefill(&s->kv_q, w->handle, count)
+                     : hexkl_kv_q_register_prefill(&s->kv_q, count, c->n_kv,
+                                                   c->head_dim, &w->handle);
+  if (profile)
+    profile[4] = HAP_perf_get_time_us() - register_tick;
+  if (rc)
+    return rc;
+  w->has_handle = 1;
+  hvx_tq_prefill_cleanup(c->turboquant, tq_workspace_release, s);
+  uint16_t *out16 = out_enc ? (uint16_t *)out : w->out16;
+  float *enc = w->enc;
+  const uint32_t handle = w->handle;
+  uint32_t stats[12] = {0};
+  tq_fresh_job job = {0};
+  job.nq = (uint32_t)nq;
+  job.heads = c->n_kv * c->gqa;
+  job.dim = c->head_dim;
+  uint64_t tick = profile ? HAP_perf_get_time_us() : 0;
+  rc =
+    nntr_hvx_attn_q2_step_fqc_f32((remote_handle64)s, handle, count, job.heads,
+                                  window, q, k, v, enc, out16, stats);
+  if (profile) {
+    profile[0] = stats[2];
+    profile[2] = HAP_perf_get_time_us() - tick;
+  }
+  if (rc)
+    goto done;
+  if (out_enc) {
+    memcpy(out_enc, enc + c->n_kv + c->n_kv * c->head_dim + 2u * job.heads,
+           2u * job.heads * 4u);
+    *encoded = 1;
+  } else {
+    job.out = out;
+    job.out16 = out16;
+    job.enc = enc + c->n_kv + c->n_kv * c->head_dim + 2u * job.heads;
+    tick = profile ? HAP_perf_get_time_us() : 0;
+    hvx_worker_pool_run(s->quant_pool, tq_fresh_worker, &job,
+                        (uint32_t)nq / 64u);
+    if (profile)
+      profile[3] = HAP_perf_get_time_us() - tick;
+  }
+  tick = profile ? HAP_perf_get_time_us() : 0;
+  hexkl_kv_q *kv = &s->kv_q.slots[handle];
+  rc = hvx_tq_adopt_q8_prefix(c->turboquant, layer, from, count, kv->max_rows,
+                              window, kv->kt4, kv->v4, kv->fs_k, kv->fs_v);
+  if (rc)
+    goto done;
+  kv->kt4 = kv->v4 = NULL;
+  kv->fs_k = kv->fs_v = NULL;
+  // Keep the WH computation tiles for the next layer of this shape.
+  // The adopted masters/scales are independent persistent allocations.
+  // Continuation chunks retain their own Q8 calibration. Recompute their
+  // output over the complete mixed prefix, with one causal softmax.
+  if (from)
+    rc = hvx_tq_step(c->turboquant, layer, from, count, window,
+                     1.0f / sqrtf((float)c->head_dim), q, NULL, NULL, out);
+  if (profile)
+    profile[1] = HAP_perf_get_time_us() - tick;
+  if (workspace)
+    *workspace = s->tq_prefill[0].budget + s->tq_prefill[1].budget;
+done:
+  if (rc)
+    tq_workspace_free(s, w);
+  return rc == AEE_ENOMEMORY ? AEE_EUNSUPPORTED : rc;
+}
+
+int nntr_hvx_attn_tq_step(remote_handle64 handle, uint32 layer, uint32 from,
+                          uint32 count, uint32 window, float scale,
+                          const float *q, int qLen, const float *k, int kLen,
+                          const float *v, int vLen, float *out, int outLen,
+                          uint32 *stats, int statsLen) {
+  nntr_hvx_session *s = (nntr_hvx_session *)handle;
+  if (!s)
+    return AEE_EBADPARM;
+  hvx_attn_m1_ctx *c = layer & HTP_ATTN_KV_CACHE_B ? s->attn_m1_b : s->attn_m1;
+  const int joined = (layer & HTP_ATTN_TQ_JOINED_QKV) != 0,
+            shared_v = (layer & HTP_ATTN_TQ_SHARED_V) != 0;
+  const int fresh_q8 = (layer & HTP_ATTN_TQ_PREFILL_Q8) != 0;
+  const int profile_requested = (layer & HTP_ATTN_TQ_PROFILE) != 0;
+  const int want_u16 = (layer & HTP_ATTN_TQ_OUT_U16) != 0;
+  layer &=
+    ~(HTP_ATTN_KV_CACHE_B | HTP_ATTN_TQ_PREFILL_Q8 | HTP_ATTN_TQ_OUT_U16 |
+      HTP_ATTN_TQ_PROFILE | HTP_ATTN_TQ_JOINED_QKV | HTP_ATTN_TQ_SHARED_V);
+  if (!c || !c->turboquant)
+    return AEE_EBADSTATE;
+  const uint64_t nk = (uint64_t)count * c->n_kv * c->head_dim, nq = nk * c->gqa;
+  if (shared_v && !joined)
+    return AEE_EINVALIDFORMAT;
+  if (joined) {
+    if (!q || qLen < 0 || (uint64_t)qLen != nq + (shared_v ? nk : 2u * nk) ||
+        kLen || vLen)
+      return AEE_EINVALIDFORMAT;
+    k = q + nq;
+    v = shared_v ? k : k + nk;
+    qLen = (int)nq;
+    kLen = vLen = (int)nk;
+  }
+  if (layer >= c->n_layers || from > c->max_seq || count > c->max_seq - from ||
+      !count || !q || !k || !v || !out || qLen < 0 || kLen < 0 || vLen < 0 ||
+      outLen < 0 || (uint64_t)qLen != nq ||
+      (uint64_t)outLen != (want_u16 ? nq / 2u : nq) || (uint64_t)kLen != nk ||
+      (uint64_t)vLen != nk || !stats || statsLen < 2)
+    return AEE_EINVALIDFORMAT;
+  const uint64_t start = HAP_perf_get_time_us();
+  int rc = AEE_EUNSUPPORTED;
+  uint32_t profile[7] = {0}, workspace = 0;
+  const int profiling = statsLen >= 6 && (!want_u16 || profile_requested);
+  uint32_t path = 0;
+  int encoded = 0;
+  if (want_u16 && from)
+    return AEE_EUNSUPPORTED;
+  if (want_u16 && statsLen < (int)(12u + 2u * c->n_kv * c->gqa))
+    return AEE_EINVALIDFORMAT;
+  if (fresh_q8 && fabsf(scale - 1.0f / sqrtf((float)c->head_dim)) < 1e-7f) {
+    rc = tq_fresh_prefill(s, c, layer, from, count, window, q, k, v, out,
+                          profiling ? profile : NULL, &workspace,
+                          want_u16 ? (float *)(stats + 12) : NULL, &encoded);
+    if (rc == AEE_SUCCESS)
+      path = 1;
+  }
+  if (fresh_q8 && rc != AEE_SUCCESS)
+    return rc;
+  // An encoded result has half the FP32 byte length. Never let a failed
+  // fast-path attempt write FP32 into that buffer; the host retries with
+  // the ordinary output contract on the same authoritative packed cache.
+  if (want_u16 && rc != AEE_SUCCESS)
+    return rc;
+  if (rc == AEE_EUNSUPPORTED &&
+      fabsf(scale - 1.0f / sqrtf((float)c->head_dim)) < 1e-7f)
+    rc = hvx_tq_prefill_hmx(c->turboquant, s->vtcm_base, s->config_off,
+                            s->hmx_fp16_rate, layer, from, count, window, q, k,
+                            v, out, profiling ? profile : NULL);
+  if (rc == AEE_EUNSUPPORTED)
+    rc = hvx_tq_step(c->turboquant, layer, from, count, window, scale, q, k, v,
+                     out);
+  stats[0] = (uint32_t)(HAP_perf_get_time_us() - start);
+  stats[1] = (uint32_t)hvx_tq_payload_bytes(c->turboquant);
+  if (statsLen >= 6)
+    for (int i = 0; i < 7 && i + 2 < statsLen; ++i)
+      stats[i + 2] = profile[i];
+  if (statsLen >= 10)
+    stats[9] = path;
+  if (statsLen >= 11)
+    stats[10] = s->tq_prefill[0].budget + s->tq_prefill[1].budget;
+  if (statsLen >= 12)
+    stats[11] = (uint32_t)encoded;
+  if (statsLen == 3)
+    stats[2] = (uint32_t)hvx_tq_check_tiles(c->turboquant, layer, from, count);
+  return rc;
+}
 
 int nntr_hvx_attn_m1_register(remote_handle64 handle, uint32 n_layers,
                               uint32 n_kv, uint32 gqa, uint32 head_dim,

@@ -44,6 +44,9 @@
 #include <vector>
 
 namespace nntrainer {
+namespace kv {
+class KvCacheManager;
+}
 class HtpAttentionState;
 struct HtpPrefixCalibration;
 
@@ -69,7 +72,8 @@ using nntrainer::props::AttnLogitSoftcapping;
  * mirror of this layer's KV cache on the accelerator and run attention over it
  * (ComputeOps::sdpa_q_kvcache) instead of over the fp16 cache. q8_row selects
  * per-row scales for prefill rather than the fixed-scale row-blocked kernel.
- * The fp16 cache stays the source of truth.
+ * The fp16 cache stays the source of truth for q8/q4. The experimental
+ * "turboquant_4bit_nc" mode owns packed CPU history without an FP16 mirror.
  */
 class KvCacheQuant final : public nntrainer::Property<std::string> {
 public:
@@ -269,6 +273,10 @@ private:
   bool skip_prefill = false;
 
   std::unique_ptr<HtpAttentionState> state_;
+  std::vector<std::unique_ptr<kv::KvCacheManager>> turbo_caches_;
+  size_t turbo_max_tokens_ = 0;
+  size_t turbo_capacity_ = 0;
+  void forwardingTurboQuant(nntrainer::RunLayerContext &context);
   unsigned decode_cache_offset_ = 0;
 
   enum INOUT_INDEX {

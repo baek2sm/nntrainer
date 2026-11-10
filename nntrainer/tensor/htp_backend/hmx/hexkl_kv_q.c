@@ -18,6 +18,7 @@
 
 #ifdef __hexagon__
 #include "hexkl_micro.h"
+#include "hvx_attn_softmax_f16.h"
 #include "hvx_kv_quant.h"
 #include "hvx_tile_f16.h"
 #include "hvx_worker_pool.h"
@@ -174,9 +175,28 @@ static void free_slot(hexkl_kv_q *kv) {
   memset(kv, 0, sizeof(*kv));
 }
 
-int hexkl_kv_q_register(hexkl_kv_q_table *tbl, hexkl_kv_q_kind kind,
-                        uint32_t max_rows, uint32_t n_head_kv,
-                        uint32_t head_dim, uint32_t *out_handle) {
+static void initialize_fresh_tail(hexkl_kv_q *kv, uint32_t fresh_rows) {
+  // A fresh fixed-Q8 append overwrites every live master and every
+  // complete WH tile before attention reads them. Initialize only tails.
+  const size_t tail = (size_t)(kv->max_rows - fresh_rows) * kv->head_dim;
+  const uint32_t first_tail_tile = fresh_rows / 32u;
+  const size_t wh_head =
+    (size_t)kv->n_col_tiles * kv->n_dot_tiles * kv->tile_bytes;
+  const size_t wh_from =
+    (size_t)first_tail_tile * kv->n_dot_tiles * kv->tile_bytes;
+  for (uint32_t h = 0; h < kv->n_head_kv; ++h) {
+    const size_t at = ((size_t)h * kv->max_rows + fresh_rows) * kv->head_dim;
+    memset(kv->kt4 + at, HEXKL_KV_Q_BIAS, tail);
+    memset(kv->v4 + at, HEXKL_KV_Q_BIAS, tail);
+    memset(kv->kt + (size_t)h * wh_head + wh_from, 0, wh_head - wh_from);
+    memset(kv->v + (size_t)h * wh_head + wh_from, 0, wh_head - wh_from);
+  }
+}
+
+static int register_impl(hexkl_kv_q_table *tbl, hexkl_kv_q_kind kind,
+                         uint32_t max_rows, uint32_t n_head_kv,
+                         uint32_t head_dim, uint32_t *out_handle,
+                         uint32_t fresh_rows) {
   if (!tbl || !out_handle || max_rows == 0 || n_head_kv == 0 || head_dim == 0 ||
       (head_dim % 32u) != 0 || head_dim > HEXKL_KV_Q_MAX_HEAD_DIM ||
       (kind != HEXKL_KV_Q8 && kind != HEXKL_KV_Q4)) {
@@ -215,8 +235,10 @@ int hexkl_kv_q_register(hexkl_kv_q_table *tbl, hexkl_kv_q_kind kind,
   kv->s_k = (float *)calloc(rows, sizeof(float));
   kv->colsum_k = (int32_t *)calloc(rows, sizeof(int32_t));
   kv->s_v = (float *)calloc(rows + HEXKL_KV_Q_SV_PAD, sizeof(float));
-  kv->kt = (uint8_t *)calloc(n_tiles, kv->tile_bytes);
-  kv->v = (uint8_t *)calloc(n_tiles, kv->tile_bytes);
+  kv->kt = fresh_rows ? (uint8_t *)malloc(n_tiles * kv->tile_bytes)
+                      : (uint8_t *)calloc(n_tiles, kv->tile_bytes);
+  kv->v = fresh_rows ? (uint8_t *)malloc(n_tiles * kv->tile_bytes)
+                     : (uint8_t *)calloc(n_tiles, kv->tile_bytes);
   kv->stage_kt = (int8_t *)calloc((size_t)head_dim * 32u, 1u);
   kv->stage_v = (int8_t *)calloc((size_t)head_dim * 32u, 1u);
   kv->fs_k = (float *)calloc(n_head_kv, sizeof(float));
@@ -228,8 +250,12 @@ int hexkl_kv_q_register(hexkl_kv_q_table *tbl, hexkl_kv_q_kind kind,
     free_slot(kv);
     return AEE_ENOMEMORY;
   }
-  memset(kv->kt4, HEXKL_KV_Q_BIAS, values);
-  memset(kv->v4, HEXKL_KV_Q_BIAS, values);
+  if (fresh_rows) {
+    initialize_fresh_tail(kv, fresh_rows);
+  } else {
+    memset(kv->kt4, HEXKL_KV_Q_BIAS, values);
+    memset(kv->v4, HEXKL_KV_Q_BIAS, values);
+  }
   for (size_t i = 0; i < rows; ++i) {
     kv->s_k[i] = 1.0f;
   }
@@ -238,6 +264,44 @@ int hexkl_kv_q_register(hexkl_kv_q_table *tbl, hexkl_kv_q_kind kind,
   }
   kv->in_use = 1;
   *out_handle = slot;
+  return AEE_SUCCESS;
+}
+
+int hexkl_kv_q_register(hexkl_kv_q_table *tbl, hexkl_kv_q_kind kind,
+                        uint32_t max_rows, uint32_t heads, uint32_t dim,
+                        uint32_t *handle) {
+  return register_impl(tbl, kind, max_rows, heads, dim, handle, 0);
+}
+int hexkl_kv_q_register_prefill(hexkl_kv_q_table *tbl, uint32_t rows,
+                                uint32_t heads, uint32_t dim,
+                                uint32_t *handle) {
+  if (!rows || rows > UINT32_MAX - 63u)
+    return AEE_EBADPARM;
+  return register_impl(tbl, HEXKL_KV_Q8, rows + 32u, heads, dim, handle, rows);
+}
+
+int hexkl_kv_q_rearm_prefill(hexkl_kv_q_table *tbl, uint32_t handle,
+                             uint32_t rows) {
+  hexkl_kv_q *kv = (hexkl_kv_q *)hexkl_kv_q_get(tbl, handle);
+  if (!kv || kv->kind != HEXKL_KV_Q8 || !rows ||
+      (uint64_t)rows + 32u > kv->max_rows || kv->kt4 || kv->v4 || kv->fs_k ||
+      kv->fs_v)
+    return AEE_EBADPARM;
+  const size_t values = (size_t)kv->n_head_kv * kv->max_rows * kv->head_dim;
+  kv->kt4 = malloc(values);
+  kv->v4 = malloc(values);
+  kv->fs_k = malloc(kv->n_head_kv * sizeof(float));
+  kv->fs_v = malloc((size_t)kv->n_head_kv * kv->head_dim * sizeof(float));
+  if (!kv->kt4 || !kv->v4 || !kv->fs_k || !kv->fs_v) {
+    free(kv->kt4);
+    free(kv->v4);
+    free(kv->fs_k);
+    free(kv->fs_v);
+    kv->kt4 = kv->v4 = NULL;
+    kv->fs_k = kv->fs_v = NULL;
+    return AEE_ENOMEMORY;
+  }
+  initialize_fresh_tail(kv, rows);
   return AEE_SUCCESS;
 }
 
@@ -474,6 +538,7 @@ typedef struct {
   hexkl_kv_q *kv;
   uint32_t row0, n_rows;
   const uint16_t *k_rows, *v_rows;
+  const float *k_f32, *v_f32;
 } quant_rows_ctx;
 
 /** Rows [lo, hi) of the append: the fixed-scale int8 quantization of each
@@ -489,18 +554,33 @@ static void quant_rows_worker(uint32_t n_threads, uint32_t i, void *v) {
   int8_t q[HEXKL_KV_Q_MAX_HEAD_DIM] __attribute__((aligned(128)));
   for (uint32_t r = lo; r < hi; ++r) {
     const uint32_t row = c->row0 + r;
-    const uint16_t *krow = c->k_rows + (size_t)r * stride;
-    const uint16_t *vrow = c->v_rows + (size_t)r * stride;
+    const uint16_t *krow = c->k_rows ? c->k_rows + (size_t)r * stride : NULL;
+    const uint16_t *vrow = c->v_rows ? c->v_rows + (size_t)r * stride : NULL;
+    uint16_t k16[HEXKL_KV_Q_MAX_HEAD_DIM] __attribute__((aligned(128)));
+    uint16_t v16[HEXKL_KV_Q_MAX_HEAD_DIM] __attribute__((aligned(128)));
     for (uint32_t n = 0; n < kv->n_head_kv; ++n) {
+      const uint16_t *kh = krow ? krow + (size_t)n * hd : k16;
+      const uint16_t *vh = vrow ? vrow + (size_t)n * hd : v16;
+      if (c->k_f32) {
+        const float *kf = c->k_f32 + (size_t)r * stride + n * hd;
+        const float *vf = c->v_f32 + (size_t)r * stride + n * hd;
+        for (uint32_t d = 0; d < hd; d += 64) {
+          *(HVX_Vector *)(k16 + d) =
+            hvx_attn_f32x64_to_hf(*(const HVX_UVector *)(kf + d),
+                                  *(const HVX_UVector *)(kf + d + 32));
+          *(HVX_Vector *)(v16 + d) =
+            hvx_attn_f32x64_to_hf(*(const HVX_UVector *)(vf + d),
+                                  *(const HVX_UVector *)(vf + d + 32));
+        }
+      }
       int32_t cs;
-      hvx_kv_quant_k_row_fixed(krow + (size_t)n * hd, hd, kv->qmax,
-                               1.0f / kv->fs_k[n], q, &cs);
+      hvx_kv_quant_k_row_fixed(kh, hd, kv->qmax, 1.0f / kv->fs_k[n], q, &cs);
       kv->s_k[hexkl_kv_q_sk_index(kv, n, row)] = kv->fs_k[n];
       kv->colsum_k[hexkl_kv_q_sk_index(kv, n, row)] = cs;
       xor80_copy(kv->kt4 + hexkl_kv_q_kt4_index(kv, n, row, 0),
                  (const uint8_t *)q, hd);
-      hvx_kv_quant_v_row_fixed(vrow + (size_t)n * hd, hd, kv->qmax,
-                               kv->fs_v_inv + (size_t)n * hd, q);
+      hvx_kv_quant_v_row_fixed(vh, hd, kv->qmax, kv->fs_v_inv + (size_t)n * hd,
+                               q);
       kv->s_v[hexkl_kv_q_sv_index(kv, n, row)] = 1.0f;
       xor80_copy(kv->v4 + hexkl_kv_q_v4_index(kv, n, row, 0),
                  (const uint8_t *)q, hd);
@@ -535,12 +615,13 @@ static void bake_tiles_worker(uint32_t n_threads, uint32_t i, void *v) {
 static int append_fixed_i8(hexkl_kv_q *kv, uint32_t row0, uint32_t n_rows,
                            const uint16_t *k_rows, const uint16_t *v_rows,
                            uint8_t *vtcm_base, void *pool,
-                           hexkl_kv_q_append_stats *st) {
+                           hexkl_kv_q_append_stats *st, const float *k_f32,
+                           const float *v_f32) {
   const uint64_t tq0 = kvq_now_us();
   const uint32_t hd = kv->head_dim;
   // The quantization alone was 6.2 ms of a 1024-row sliding layer on the
   // HMX thread (doc 59 section 2.2); rows split over the workers.
-  quant_rows_ctx qc = {kv, row0, n_rows, k_rows, v_rows};
+  quant_rows_ctx qc = {kv, row0, n_rows, k_rows, v_rows, k_f32, v_f32};
   hvx_worker_pool_run((hvx_worker_pool *)pool, quant_rows_worker, &qc, n_rows);
   const uint64_t tq1 = kvq_now_us();
   if (st) {
@@ -905,7 +986,7 @@ int hexkl_kv_q_append_pool(hexkl_kv_q_table *tbl, uint32_t handle,
 #ifdef __hexagon__
   if (kv->plain_masters) {
     return append_fixed_i8(kv, row0, n_rows, k_rows, v_rows, vtcm_base, pool,
-                           st);
+                           st, NULL, NULL);
   }
 #else
   (void)pool;
@@ -988,3 +1069,18 @@ int hexkl_kv_q_dump(const hexkl_kv_q *kv, uint32_t row0, uint32_t n_rows,
   }
   return AEE_SUCCESS;
 }
+
+#ifdef __hexagon__
+int hexkl_kv_q_append_f32(hexkl_kv_q_table *tbl, uint32_t handle, uint32_t row0,
+                          uint32_t rows, const float *k, const float *v,
+                          uint8_t *vtcm, void *pool,
+                          hexkl_kv_q_append_stats *st) {
+  hexkl_kv_q *kv = (hexkl_kv_q *)hexkl_kv_q_get(tbl, handle);
+  if (!kv || !kv->fixed || !kv->plain_masters || kv->head_dim % 64u || !k ||
+      !v || !rows || row0 > kv->max_rows || rows > kv->max_rows - row0)
+    return AEE_EBADPARM;
+  if (st)
+    memset(st, 0, sizeof(*st));
+  return append_fixed_i8(kv, row0, rows, NULL, NULL, vtcm, pool, st, k, v);
+}
+#endif

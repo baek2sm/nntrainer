@@ -267,6 +267,16 @@ int hexkl_kv_q_register(hexkl_kv_q_table *tbl, hexkl_kv_q_kind kind,
                         uint32_t max_rows, uint32_t n_head_kv,
                         uint32_t head_dim, uint32_t *out_handle);
 
+/** Fresh Q8 prefill registration: all live rows must be appended once
+ * with fixed scales before reading. Only unused tails are initialized. */
+int hexkl_kv_q_register_prefill(hexkl_kv_q_table *tbl, uint32_t rows,
+                                uint32_t heads, uint32_t dim, uint32_t *handle);
+
+/** Reuse a fresh prefill cache's WH working tiles after its four master/
+ * scale allocations have been transferred to the persistent KV cache. */
+int hexkl_kv_q_rearm_prefill(hexkl_kv_q_table *tbl, uint32_t handle,
+                             uint32_t rows);
+
 int hexkl_kv_q_release(hexkl_kv_q_table *tbl, uint32_t handle);
 
 /** @brief The slot, or NULL if the handle is not in use. */
@@ -308,6 +318,13 @@ int hexkl_kv_q_append_pool(hexkl_kv_q_table *tbl, uint32_t handle,
                            const uint16_t *k_rows, const uint16_t *v_rows,
                            uint8_t *vtcm_base, void *pool,
                            hexkl_kv_q_append_stats *st);
+
+/** DSP fixed-Q8 append from FP32 with row-local FP16 rounding; no full
+ * FP16 intermediate or additional persistent history is allocated. */
+int hexkl_kv_q_append_f32(hexkl_kv_q_table *tbl, uint32_t handle, uint32_t row0,
+                          uint32_t rows, const float *k, const float *v,
+                          uint8_t *vtcm, void *pool,
+                          hexkl_kv_q_append_stats *stats);
 
 /**
  * @brief Fills the row-major staging buffers with column tile @a c of head

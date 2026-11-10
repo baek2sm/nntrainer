@@ -2360,6 +2360,10 @@ public:
    *  from the token's position. Before the graph's init, which sends the
    *  records and registers the caches. */
   void set_decode_kv_window(unsigned rows, unsigned base) override {
+    // Packed pages already implement their own bounded ring at absolute
+    // positions. No host FP16 compaction or base-changing seed is needed.
+    if (htpRuntimeConfig().htp.kv_turboquant)
+      return;
     if (decode_.graph_words_.empty())
       return;
     if (decode_.attn_registered_)
@@ -2376,7 +2380,8 @@ public:
   size_t decode_kv_bytes() const override {
     if (!decode_.attn_registered_ || decode_.kv_parked_)
       return 0;
-    if (htpRuntimeConfig().htp.kv_paged) {
+    if (htpRuntimeConfig().htp.kv_paged ||
+        htpRuntimeConfig().htp.kv_turboquant) {
       uint32_t bytes = 0;
       const int rc = nntr_hvx_attn_m1_snapshot_control(
         HtpBackend::global().handle(), 8, nullptr, 0, &bytes, 1);
@@ -4067,7 +4072,8 @@ public:
                : decode_.graph_words_[6]));
       // The fixed int8-cache policy uses scales from the prefill seed:
       // 1 selects the first cache shape, 2 selects both shapes.
-      constexpr bool q8 = true;
+      const bool turboquant = htpRuntimeConfig().htp.kv_turboquant;
+      const bool q8 = !turboquant;
       // Integer attention can be restricted to global layers. Each DSP cache
       // has one arithmetic mode; its layers must agree on windowed attention.
       const auto &runtime = htpRuntimeConfig().htp;
@@ -4084,7 +4090,8 @@ public:
         session, n_attn, rec->n_kv, rec->gqa, rec->head_dim,
         max_seq | (q8 ? 0x80000000u : 0u) | (kvSeedQ() ? 0x40000000u : 0u) |
           (fast ? 0x20000000u : 0u) | (qk_i8 ? 0x10000000u : 0u) |
-          (runtime.kv_paged ? 0x08000000u : 0u));
+          (runtime.kv_paged ? 0x08000000u : 0u) |
+          (turboquant ? 0x04000000u : 0u));
       if (rc != AEE_SUCCESS) {
         throw std::runtime_error("nntr_hvx_attn_m1_register failed: " +
                                  graphErr(rc));
@@ -4106,11 +4113,16 @@ public:
                    "[HTP] attn_m1: registered layers=%u kv=%u gqa=%u "
                    "head_dim=%u max_seq=%u cache=%llu KiB%s\n",
                    n_attn, rec->n_kv, rec->gqa, rec->head_dim, max_seq,
-                   (unsigned long long)n_attn * rec->n_kv * rec->head_dim *
-                     ((max_seq + 63u) / 64u * 64u) * 2u *
-                     (q8 ? 1u : sizeof(uint16_t)) / 1024u,
-                   qk_i8 ? " int8 fast Q8"
-                         : (fast ? " int8 fast" : (q8 ? " int8" : "")));
+                   turboquant
+                     ? (unsigned long long)n_attn * rec->n_kv *
+                         ((max_seq + 31u) / 32u) *
+                         (rec->head_dim * 32u + 512u) / 1024u
+                     : (unsigned long long)n_attn * rec->n_kv * rec->head_dim *
+                         ((max_seq + 63u) / 64u * 64u) * 2u *
+                         (q8 ? 1u : sizeof(uint16_t)) / 1024u,
+                   turboquant ? " turboquant (on-demand pages; upper bound)"
+                   : qk_i8    ? " int8 fast Q8"
+                              : (fast ? " int8 fast" : (q8 ? " int8" : "")));
     }
     decode_.kv_bases_dirty_ = false;
   }
@@ -6244,12 +6256,22 @@ private:
                    weights_.fcwhHandles(), weights_.fcwh_arena_bytes_ >> 10,
                    weights_.fcwh_heap_bytes_ >> 10, g_q4_requant.load());
     }
-    std::lock_guard<std::mutex> lock(decode_.graph_mutex_);
-    if (!e2e_ || decode_.q4_pending_.empty() || decode_.q4m1_bound_ ||
-        decode_.graph_inited_)
-      return false;
-    e2ePlaceFc();
-    return true;
+    bool placed = false;
+    {
+      std::lock_guard<std::mutex> lock(decode_.graph_mutex_);
+      if (e2e_ && !decode_.q4_pending_.empty() && !decode_.q4m1_bound_ &&
+          !decode_.graph_inited_) {
+        e2ePlaceFc();
+        placed = true;
+      }
+    }
+    // Hybrid prefill uses the resident graph's cache from its first layer.
+    // Prepare that graph at load, alongside the existing Q8 cache setup.
+    if (e2e_ && htpRuntimeConfig().htp.kv_turboquant &&
+        !decode_.graph_words_.empty())
+      ensureGraphInit(
+        static_cast<remote_handle64>(HtpBackend::global().handle()));
+    return placed;
   }
 
   /** compute_ops.h: the E2E list's Q4_0 weights are still to
@@ -9742,6 +9764,148 @@ public:
 
   bool supports_kv_cache_q() const override {
     return HtpBackend::global().enabled();
+  }
+
+  bool supports_turboquant_kvcache() const override {
+    return htpRuntimeConfig().htp.kv_turboquant;
+  }
+  bool sdpa_turboquant_kvcache(const std::string &name, unsigned from,
+                               unsigned count, unsigned heads_q,
+                               unsigned heads_kv, unsigned dim, unsigned window,
+                               const float *q, const float *k, const float *v,
+                               float *out) override {
+    HtpBackend &hb = HtpBackend::global();
+    if (!supports_turboquant_kvcache() || !hb.enabled() || !count || !q || !k ||
+        !v || !out)
+      throw std::runtime_error(
+        "TurboQuant requires an active resident HTP graph");
+    std::lock_guard<std::mutex> lock(invoke_mutex_);
+    const remote_handle64 session = static_cast<remote_handle64>(hb.handle());
+    ensureGraphInit(session);
+    uint32_t op = HTP_GRAPH_NO_OP;
+    for (uint32_t candidate : decode_.kind_ops_[HTP_OP_ATTN_M1]) {
+      const auto *rec = decode_.graphOp(candidate);
+      if (name == "layer" + std::to_string(rec->layer) + "_attention") {
+        op = candidate;
+        break;
+      }
+    }
+    if (op == HTP_GRAPH_NO_OP)
+      throw std::runtime_error(
+        "TurboQuant layer is absent from the resident graph: " + name);
+    const auto *rec = decode_.graphOp(op);
+    if (rec->n_kv != heads_kv || rec->gqa * heads_kv != heads_q ||
+        rec->head_dim != dim || (window && window != rec->top_k) ||
+        rec->n_experts || from > decode_.graph_words_[6] ||
+        count > decode_.graph_words_[6] - from)
+      throw std::invalid_argument(
+        "TurboQuant step differs from the resident graph");
+    const uint32_t ord = decode_.attn_ordinal_[op];
+    const uint32_t layer =
+      decode_.attn_cache_ord_[ord] |
+      (decode_.attn_cache_[ord] ? HTP_ATTN_KV_CACHE_B : 0u);
+    const uint64_t nq = (uint64_t)count * heads_q * dim,
+                   nk = (uint64_t)count * heads_kv * dim;
+    if (nq > INT_MAX || nk > INT_MAX)
+      throw std::overflow_error("TurboQuant RPC length overflow");
+    // Prefill's fused QKV projection includes Gemma's sqrt(D) Q multiplier;
+    // the resident graph's QK_NORM does not. Preserve the existing prefill
+    // 1/sqrt(D) convention instead of reusing ATTN_M1's graph scale.
+    const float scale = 1.0f / std::sqrt(static_cast<float>(dim));
+    const size_t qbytes = static_cast<size_t>(nq) * sizeof(float);
+    const size_t kbytes = static_cast<size_t>(nk) * sizeof(float);
+    // QKV produced on the DSP stays in its ION allocation. Only current
+    // rows are operands; the packed history never traverses FastRPC.
+    auto source = [this](const float *host, size_t bytes) {
+      // QKV slice outputs have explicit aliases, not a concatenated host
+      // tensor in copied_out. Resolving only pool owners would read stale
+      // unsampled host rows when qkv.out_to_host is false.
+      if (const void *alias = staging_.ionAlias(host, bytes))
+        return static_cast<const float *>(alias);
+      const void *resolved = staging_.trueSource(host, bytes);
+      if (resolved == host)
+        staging_.throwIfLost(host, bytes, __LINE__);
+      return static_cast<const float *>(resolved);
+    };
+    const auto *qr = source(q, qbytes);
+    const auto *kr = source(k, kbytes);
+    const auto *vr = source(v, kbytes);
+    if (heads_q > 64)
+      throw std::invalid_argument("TurboQuant supports at most 64 query heads");
+    bool use_u16 =
+      !from && count >= 32 && count <= 2048 && htpRuntimeConfig().htp.oproj_u16;
+    float *output = reinterpret_cast<float *>(
+      staging_.stage(staging_.attn_out_pool_, use_u16 ? qbytes / 2 : qbytes)
+        .data());
+    uint32_t stats[140] = {0};
+    bool joined = false;
+    const bool shared_v = vr == kr;
+    const uint64_t joined_floats = nq + (shared_v ? nk : 2u * nk);
+    if (kr == qr + nq && (shared_v || vr == kr + nk) &&
+        joined_floats <= INT_MAX) {
+      const uintptr_t begin = reinterpret_cast<uintptr_t>(qr);
+      const size_t bytes = static_cast<size_t>(joined_floats) * sizeof(float);
+      for (auto *pool :
+           {&staging_.out_pool_, &staging_.act_pool_, &staging_.x2_pool_,
+            &staging_.attn_q_pool_, &staging_.attn_out_pool_})
+        for (const auto &entry : pool->by_class)
+          if (entry.second) {
+            const uintptr_t base =
+              reinterpret_cast<uintptr_t>(entry.second->data());
+            const size_t extent = entry.second->size();
+            if (begin >= base && bytes <= extent &&
+                begin - base <= extent - bytes)
+              joined = true;
+          }
+    }
+    const uint32_t flags =
+      layer | ((!from || count > 1) ? HTP_ATTN_TQ_PREFILL_Q8 : 0u) |
+      (attn_trace_enabled() ? HTP_ATTN_TQ_PROFILE : 0u) |
+      (joined ? HTP_ATTN_TQ_JOINED_QKV : 0u) |
+      (joined && shared_v ? HTP_ATTN_TQ_SHARED_V : 0u);
+    auto invoke = [&](bool encoded) {
+      return nntr_hvx_attn_tq_step(
+        session, flags | (encoded ? HTP_ATTN_TQ_OUT_U16 : 0u), from, count,
+        rec->top_k, scale, qr, static_cast<int>(joined ? joined_floats : nq),
+        joined ? nullptr : kr, joined ? 0 : static_cast<int>(nk),
+        joined ? nullptr : vr, joined ? 0 : static_cast<int>(nk), output,
+        static_cast<int>(encoded ? nq / 2 : nq), stats,
+        encoded ? static_cast<int>(12u + 2u * heads_q)
+                : (attn_trace_enabled() ? 11 : 2));
+    };
+    int rc = invoke(use_u16);
+    if (use_u16 &&
+        (rc == AEE_EUNSUPPORTED || static_cast<uint32_t>(rc) == 0x80000414u)) {
+      use_u16 = false;
+      output = reinterpret_cast<float *>(
+        staging_.stage(staging_.attn_out_pool_, qbytes).data());
+      std::fill(std::begin(stats), std::end(stats), 0u);
+      rc = invoke(false);
+    }
+    if (rc != AEE_SUCCESS)
+      throw std::runtime_error(
+        "DSP TurboQuant attention failed (no CPU fallback): " + graphErr(rc));
+    decode_.kv_len_[ord] = from + count;
+    if (use_u16 && stats[11]) {
+      staging_.attn_out16_.host = out;
+      staging_.attn_out16_.ion = reinterpret_cast<uint16_t *>(output);
+      staging_.attn_out16_.rows = count;
+      staging_.attn_out16_.width = heads_q * dim;
+      staging_.attn_out16_.head_dim = dim;
+      staging_.attn_out16_.enc.resize(2u * heads_q);
+      std::memcpy(staging_.attn_out16_.enc.data(), stats + 12,
+                  2u * heads_q * sizeof(float));
+    } else
+      staging_.copyOutOf(staging_.attn_out_pool_, out, qbytes, false);
+    if (attn_trace_enabled())
+      fprintf(stderr,
+              "[HTP-TQ] layer=%u rows=%u from=%u dsp_us=%u bytes=%u rotate=%u "
+              "append=%u attention=%u tile=%u key_sum=%u value_sum=%u "
+              "store_sum=%u path=%u workspace=%u\n",
+              rec->layer, count, from, stats[0], stats[1], stats[2], stats[3],
+              stats[4], stats[5], stats[6], stats[7], stats[8], stats[9],
+              stats[10]);
+    return true;
   }
 
   int kv_cache_q_register(unsigned int kind, unsigned int max_rows,

@@ -334,7 +334,9 @@ struct Rig {
     const nntrainer::TensorDim kv_dim(
       {1, 1, kMaxStep, p.n_head_kv * p.head_dim}, f32);
     const nntrainer::TensorDim cache_dim(
-      {1, 1, p.max_rows, p.n_head_kv * p.head_dim}, u16);
+      {1, 1, p.quant == "turboquant_4bit_nc" ? 1u : p.max_rows,
+       p.n_head_kv * p.head_dim},
+      u16);
     InitLayerContext ic({q_dim, kv_dim, kv_dim, cache_dim, cache_dim}, {true},
                         false, "mha", "", 0.0f, {"NCHW", "FP32", "FP32"}, 1.0f,
                         ml::train::ExecutionMode::INFERENCE);
@@ -439,6 +441,79 @@ void run_and_compare(Rig &cpu, Rig &acc, const char *what) {
 }
 
 } // namespace
+
+TEST(HtpMhaCoreDispatch, TurboQuantOwnsHistoryAndReplaysAfterRewind) {
+  Params p;
+  p.head_dim = 128;
+  p.quant = "turboquant_4bit_nc";
+  p.window = 5;
+  p.softcap = 2;
+  p.sink = true;
+  FakeOps ops;
+  ops.fp16_supported = true;
+  ops.q_supported = true;
+  Rig rig(p, &ops), replay(p, nullptr);
+  rig.set_sinks({-1, 0, 1, 2});
+  replay.set_sinks({-1, 0, 1, 2});
+  ASSERT_EQ(rig.cache(0).height(), 1u);
+  // More than the bounded ring's capacity, including wrapped chunks.
+  for (unsigned from = 0; from < 32; from += 8) {
+    const auto a = rig.step(from, from + 8, 11);
+    const auto b = replay.step(from, from + 8, 11);
+    expect_close(a, b, "packed ring");
+  }
+  expect_close(rig.step(30, 31, 19), replay.step(30, 31, 19), "rewind");
+  expect_close(rig.step(0, 8, 23), replay.step(0, 8, 23), "new prompt");
+  EXPECT_TRUE(ops.fp16_calls.empty());
+  EXPECT_TRUE(ops.q_calls.empty());
+}
+
+TEST(HtpMhaCoreDispatch,
+     TurboQuantDspReceivesCurrentQkvIdentitiesAndRefusalThrows) {
+  class PackedOps : public FakeOps {
+  public:
+    bool decline = false;
+    const float *query = nullptr, *key = nullptr, *value = nullptr;
+    unsigned calls = 0;
+    bool supports_turboquant_kvcache() const override { return true; }
+    bool sdpa_turboquant_kvcache(const std::string &name, unsigned from,
+                                 unsigned count, unsigned heads_q,
+                                 unsigned heads_kv, unsigned dim,
+                                 unsigned window, const float *q,
+                                 const float *k, const float *v,
+                                 float *out) override {
+      EXPECT_EQ(name, "mha");
+      EXPECT_EQ(window, 5u);
+      EXPECT_EQ(heads_kv, 2u);
+      EXPECT_LE(from, 8u);
+      query = q;
+      key = k;
+      value = v;
+      ++calls;
+      if (decline)
+        return false;
+      std::fill_n(out, count * heads_q * dim, 1.25f);
+      return true;
+    }
+  } ops;
+  Params p;
+  p.head_dim = 128;
+  p.quant = "turboquant_4bit_nc";
+  p.window = 5;
+  Rig rig(p, &ops);
+  const auto result = rig.step(0, 8, 71);
+  EXPECT_EQ(ops.calls, 1u);
+  EXPECT_EQ(ops.query, rig.ins[0].getVariableRef().getData<float>());
+  EXPECT_EQ(ops.key, rig.ins[1].getVariableRef().getData<float>());
+  EXPECT_EQ(ops.value, rig.ins[2].getVariableRef().getData<float>());
+  for (float x : result)
+    EXPECT_EQ(x, 1.25f);
+  EXPECT_EQ(rig.cache(0).height(), 1u);
+  EXPECT_TRUE(ops.fp16_calls.empty());
+  EXPECT_TRUE(ops.q_calls.empty());
+  ops.decline = true;
+  EXPECT_THROW(rig.step(8, 9, 73), std::runtime_error);
+}
 
 TEST(HtpMhaCoreDispatch, Fp16PathMatchesCpu) {
   Params p;

@@ -81,6 +81,16 @@ typedef struct {
   uint32_t bytes;
 } nntr_hvx_arena;
 
+/** Bounded conversion/output scratch for hybrid Q8 prefill. Q8 masters
+ * are separately owned by the cache after prefill; this scratch is freed
+ * at the first decode or cache reset/close. */
+typedef struct {
+  uint16_t *out16;
+  hvx_tq_cache *owner;
+  float *enc;
+  uint32_t handle, rows, n_kv, gqa, dim, budget, active, has_handle;
+} nntr_tq_prefill_workspace;
+
 typedef struct {
   uint8_t *vtcm_base;
   uint32_t vtcm_size;
@@ -99,7 +109,8 @@ typedef struct {
                                and every f16 entry point must return
                                AEE_EUNSUPPORTED */
   hexkl_kv_tiles_f16_table kv_tiles; /**< resident fp16 KV tile caches */
-  hexkl_kv_q_table kv_q;             /**< resident int8 / int4 KV caches */
+  nntr_tq_prefill_workspace tq_prefill[2];
+  hexkl_kv_q_table kv_q;       /**< resident int8 / int4 KV caches */
   hvx_worker_pool *quant_pool; /**< sized from the HVX unit count in open() */
   nntr_hvx_arena arenas[NNTR_HVX_MAX_ARENAS];
   hexkl_moe_scratch moe_scratch; /**< the MoE layer call's heap scratch,
@@ -219,4 +230,10 @@ int nntr_hvx_fc_q4m1_graph(void *ctx, uint32_t h, uint32_t feed,
  *  in nntr_hvx_mm_u8i4.c, the one file that includes HAP_mem.h. */
 void nntr_hvx_arenas_put_all(nntr_hvx_session *s);
 
+/** Internal Q8 prefill path from resident FP32 QKV; no FastRPC ABI change. */
+int nntr_hvx_attn_q2_step_fqc_f32(remote_handle64 handle, uint32_t kv_handle,
+                                  uint32_t rows, uint32_t heads,
+                                  uint32_t window, const float *q,
+                                  const float *k, const float *v, float *calib,
+                                  uint16_t *out, uint32_t *stats);
 #endif /* __NNTR_HVX_SESSION_H__ */

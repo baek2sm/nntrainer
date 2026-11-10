@@ -145,6 +145,7 @@ printf '%s\n' "${SRCS[@]}" > build/dsp-sources.txt
     -isystem "$HEXAGON_SDK_ROOT/ipc/fastrpc/incs" \
     "${SRCS[@]}" \
     "${HEXKL_LINK[@]}" \
+    -lm \
     -o build/libnntr_hvx_skel.so
 
 READELF="$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-readelf"
@@ -156,6 +157,8 @@ READELF="$DEFAULT_HEXAGON_TOOLS_ROOT/Tools/bin/hexagon-readelf"
 # ceil, ldexp, ldexpf, lround and _Log (#260: #4415's int8 attention,
 # hvx_softmax_q.c / hexkl_attn_q2.c) sit in the toolchain's libc.a beside
 # the sqrtf / rintf / lroundf already listed; libm.a is an empty archive.
+# TurboQuant's scalar codec setup uses exp/sqrt/floor, and split-KV merging
+# uses exp2f. These are libc exports, verified by the v73 device check.
 # rintf, sqrtf, memcmp and __truncsfhf2 (the sibling of __extendhfsf2) came in
 # with the fp16 / quantized attention kernels of nntrainer/nntrainer#4343.
 UND=$("$READELF" --dyn-syms build/libnntr_hvx_skel.so | awk '$7=="UND" && $8!="" {print $8}')
@@ -166,7 +169,7 @@ if [ -z "$UND" ]; then
     echo "Error: $READELF returned no undefined symbols; guard cannot run" >&2
     exit 1
 fi
-BAD=$(echo "$UND" | grep -Ev '^(HAP_|compute_resource_|qurt_|dspqueue_|__hexagon_|__extendhfsf2$|__cxa_finalize$|__register_frame_info_bases$|malloc$|free$|calloc$|memalign$|memcpy$|memset$|lroundf$|nearbyintf$|snprintf$|vsnprintf$|strlcpy$|rintf$|sqrtf$|memcmp$|__truncsfhf2$|ceil$|ldexp$|ldexpf$|lround$|_Log$)' || true)
+BAD=$(echo "$UND" | grep -Ev '^(HAP_|compute_resource_|qurt_|dspqueue_|__hexagon_|__extendhfsf2$|__cxa_finalize$|__register_frame_info_bases$|malloc$|free$|calloc$|memalign$|memcpy$|memset$|lroundf$|nearbyintf$|snprintf$|vsnprintf$|strlcpy$|rintf$|sqrtf$|memcmp$|__truncsfhf2$|ceil$|ldexp$|ldexpf$|lround$|_Log$|exp$|sqrt$|exp2f$|floor$)' || true)
 if [ -n "${HEXKL_MICRO_DSO:-}" ] && [ -n "$BAD" ]; then
     PROVIDED=$("$READELF" --dyn-syms "$HEXKL_LIB" |
         awk '$7!="UND" && $8 ~ /^hexkl_micro_/ {print $8}')
