@@ -4,7 +4,10 @@
  * Link with libcausallm and libnntrainer; no DSP/model weights required.
  */
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <fp16.h>
 #include <iostream>
 #include <kv_cache_manager.h>
 #include <map>
@@ -14,7 +17,110 @@ static void require(bool ok) {
   if (!ok)
     throw std::runtime_error("Prefill prefix check failed");
 }
+static void checkSparseGather() {
+  using Manager = causallm::KVCacheManager;
+  using nntrainer::kv::SparseRope;
+  for (const bool fp32 : {false, true}) {
+    Manager cache;
+    cache.allocate(2, 1, 512, std::vector<unsigned>{8, 4},
+                   fp32 ? ml::train::TensorDim::DataType::FP32
+                        : ml::train::TensorDim::DataType::UINT16,
+                   ml::train::TensorDim::Format::NCHW, {192, 512}, {64, 0});
+    const std::vector<SparseRope> rope{{{0.03f, 0.001f}, false},
+                                       {{0.07f, 0.0f}, false}};
+    auto store = [&](unsigned l, unsigned p, unsigned d, float k, float v) {
+      const size_t offset =
+        size_t(p - cache.getBase(l)) * cache.getKeyCache(l).width() + d;
+      if (fp32) {
+        cache.getKeyCache(l).getData<float>()[offset] = k;
+        cache.getValueCache(l).getData<float>()[offset] = v;
+      } else {
+        cache.getKeyCache(l).getData<uint16_t>()[offset] =
+          nntrainer::compute_fp32_to_fp16(k);
+        cache.getValueCache(l).getData<uint16_t>()[offset] =
+          nntrainer::compute_fp32_to_fp16(v);
+      }
+    };
+    auto fill = [&] {
+      for (unsigned l = 0; l < 2; ++l)
+        for (unsigned p = cache.getBase(l); p < 192; ++p)
+          for (unsigned h = 0; h < cache.getKeyCache(l).width() / 4; ++h) {
+            float key[]{float(p + 1) * 0.01f, 0.2f, float(h + 1), 0.4f};
+            rope[l].reposition(key, 0, p);
+            for (unsigned d = 0; d < 4; ++d)
+              store(l, p, h * 4 + d, key[d], float(p) * 0.01f + d);
+          }
+    };
+    fill();
+    cache.setPosition(128);
+    const auto a = cache.capturePrefix(128, nullptr, true);
+    require(cache.compact(192));
+    fill();
+    cache.setPosition(192);
+    const auto b = cache.capturePrefix(192, nullptr, true);
+    const std::vector<nntrainer::kv::SparsePrefixRun> runs{{0, 0, 65},
+                                                           {80, 65, 79}};
+    auto gathered = Manager::gatherSparsePrefix({a, b}, runs, {4, 4}, rope);
+    require(gathered->position == 144 && gathered->layers[0].base == 16);
+    cache.restorePrefix(*gathered);
+    auto load = [&](unsigned l, unsigned row, unsigned d, bool key) {
+      auto &tensor = key ? cache.getKeyCache(l) : cache.getValueCache(l);
+      const size_t offset = size_t(row) * tensor.width() + d;
+      return fp32 ? tensor.getData<float>()[offset]
+                  : nntrainer::compute_fp16_to_fp32(
+                      tensor.getData<uint16_t>()[offset]);
+    };
+    for (unsigned l = 0; l < 2; ++l)
+      for (unsigned dst = gathered->layers[l].base; dst < 144; ++dst) {
+        const unsigned src = dst < 65 ? dst : dst + 15;
+        for (unsigned h = 0; h < cache.getKeyCache(l).width() / 4; ++h) {
+          float expected[]{float(src + 1) * 0.01f, 0.2f, float(h + 1), 0.4f};
+          rope[l].reposition(expected, 0, dst);
+          for (unsigned d = 0; d < 4; ++d) {
+            require(std::fabs(load(l, dst - cache.getBase(l), h * 4 + d, true) -
+                              expected[d]) < (fp32 ? 2e-6f : 0.003f));
+            const auto &original = src < 128 ? a : b;
+            const auto &original_layer = original->layers[l];
+            const size_t original_row = src - original_layer.base;
+            const auto *original_v =
+              original_layer.pages[original_row / 64]->valueData() +
+              ((original_row % 64) * original_layer.width + h * 4 + d) *
+                original->element_bytes;
+            float expected_v;
+            if (fp32)
+              std::memcpy(&expected_v, original_v, 4);
+            else {
+              uint16_t bits;
+              std::memcpy(&bits, original_v, 2);
+              expected_v = nntrainer::compute_fp16_to_fp32(bits);
+            }
+            require(load(l, dst - cache.getBase(l), h * 4 + d, false) ==
+                    expected_v);
+          }
+        }
+      }
+    bool rejected = false;
+    try {
+      Manager::gatherSparsePrefix({b}, runs, {4, 4}, rope);
+    } catch (const std::invalid_argument &) {
+      rejected = true;
+    }
+    require(rejected);
+    rejected = false;
+    try {
+      Manager::gatherSparsePrefix({a, b}, {{80, 1, 3}}, {4, 4}, rope);
+    } catch (const std::invalid_argument &) {
+      rejected = true;
+    }
+    require(rejected);
+    // Source snapshots remain intact and can still restore exact prefixes.
+    cache.restorePrefix(*a);
+    require(cache.getPosition() == 128 && cache.getBase(0) == 0);
+  }
+}
+
 int main() {
+  checkSparseGather();
   using Manager = causallm::KVCacheManager;
   Manager cache;
   cache.allocate(2, 1, 512, std::vector<unsigned>{8, 4},

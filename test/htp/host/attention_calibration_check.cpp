@@ -24,6 +24,15 @@ int main() {
   }
   runtime.htp.kv_session = runtime.htp.kv_paged = true;
   nntrainer::validateHtpRuntimeConfig(runtime);
+  runtime.htp.kv_sparse_prefix_cache = true;
+  nntrainer::validateHtpRuntimeConfig(runtime);
+  runtime.htp.kv_seed_q = true;
+  try {
+    nntrainer::validateHtpRuntimeConfig(runtime);
+    std::cerr << "FAIL: sparse prefix admitted a hostless seed route\n";
+    return 1;
+  } catch (const std::invalid_argument &) {
+  }
   nntrainer::AttentionConfig config;
   config.num_heads_Q = 2;
   config.num_heads_KV = 1;
@@ -78,6 +87,21 @@ int main() {
   }
   if (!stream || entries.at("fresh") != entries.at("reused")) {
     std::cerr << "FAIL: fresh Q calibration inherited an earlier request\n";
+    return 1;
+  }
+  // A file-loaded source calibration must not override sparse recalibration.
+  std::stringstream saved(std::ios::in | std::ios::out | std::ios::binary);
+  nntrainer::HtpAttentionState::saveQ2Calibration(saved);
+  saved.seekg(0);
+  nntrainer::HtpAttentionState::loadQ2Calibration(saved);
+  if (!resumed.take_q2_calibration()) {
+    std::cerr << "FAIL: calibration file fixture did not load\n";
+    return 1;
+  }
+  resumed.restorePrefixCalibration({});
+  if (resumed.take_q2_calibration() ||
+      resumed.capturePrefixCalibration()->calibrated) {
+    std::cerr << "FAIL: sparse restore inherited file calibration\n";
     return 1;
   }
   std::cout << "Independent request K/V/Q/output calibration equality: PASS\n";

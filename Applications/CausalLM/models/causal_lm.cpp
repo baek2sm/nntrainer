@@ -42,6 +42,7 @@
 #include <utility>
 #include <vector>
 #ifdef ENABLE_HEXKL
+#include <htp_backend/htp_attention_state.h>
 #include <htp_backend/htp_backend.h>
 #endif
 
@@ -1297,6 +1298,11 @@ void CausalLM::enableDeviceKVManager(size_t max_sessions, size_t max_prefixes) {
       nntrainer::get_htp_ops()->release_decode_kv(handle);
     },
     [this]() { setSessionTokenPosition(0); }, max_sessions, max_prefixes);
+  if (nntrainer::htpRuntimeConfig().htp.kv_sparse_prefix_cache)
+    device_kv_manager_->setSparseRestore(
+      [this](uint32_t handle,
+             const std::vector<nntrainer::kv::SparsePrefixRun> &runs,
+             size_t rows) { restoreSparseDevicePrefill(handle, runs, rows); });
   device_kv_manager_->setPrefixCapture([this](unsigned, unsigned) {
     // A prefill restore uses host FP16/calibration, never a decode snapshot.
     // Keep its identity separate from the DSP session handle namespace.
@@ -1831,8 +1837,9 @@ void CausalLM::registerCustomLayers() {
 #ifdef ENABLE_HEXKL
 void CausalLM::captureDevicePrefill(unsigned from, unsigned position,
                                     unsigned earliest) {
-  if (!device_prefill_capture_ || decode_prefix_restore_stats_.prefix_tokens ||
-      position < 64u ||
+  if (!device_prefill_capture_ ||
+      (device_kv_manager_ && device_kv_manager_->approximate()) ||
+      decode_prefix_restore_stats_.prefix_tokens || position < 64u ||
       (position < earliest && !system_prefix_writer_ &&
        (!device_prefix_flash_ || !device_prefix_flash_capture_)) ||
       REPETITION_PENALTY != 1.0f)
@@ -1885,6 +1892,83 @@ void CausalLM::captureDevicePrefill(unsigned from, unsigned position,
   } else
     frame.kv = std::move(snapshot);
   device_prefill_history_->emplace(position, std::move(frame));
+}
+
+void CausalLM::restoreSparseDevicePrefill(
+  uint32_t handle, const std::vector<nntrainer::kv::SparsePrefixRun> &runs,
+  size_t input_rows) {
+  const size_t length = nntrainer::kv::sparsePrefixLength(runs);
+  const auto saved = device_prefill_states_.find(handle);
+  if (!length || length >= input_rows || input_rows > MAX_SEQ_LEN ||
+      saved == device_prefill_states_.end() || !saved->second ||
+      REPETITION_PENALTY != 1.0f)
+    throw DeviceKVManager::PrefixUnavailable("Sparse prefix is incompatible");
+  std::vector<std::shared_ptr<const KVCacheManager::PrefixSnapshot>> snapshots;
+  const size_t source_end = runs.back().source + runs.back().count;
+  for (const auto &entry : *saved->second) {
+    const auto &frame = entry.second;
+    if (frame.plane != INIT_SEQ_LEN || frame.chunk != prefillDriveChunk())
+      throw DeviceKVManager::PrefixUnavailable("Sparse prefix layout changed");
+    auto payload = frame.kv;
+    try {
+      if (!payload && frame.flash)
+        payload = frame.flash->load();
+      if (!payload && frame.baked)
+        payload = PrefixFlashStore::loadSnapshot(frame.baked->payload,
+                                                 *frame.baked->layout);
+    } catch (const std::exception &) {
+      throw DeviceKVManager::PrefixUnavailable("Sparse source backing failed");
+    }
+    if (payload)
+      snapshots.push_back(std::move(payload));
+    if (entry.first >= source_end)
+      break;
+  }
+  if (snapshots.empty())
+    throw DeviceKVManager::PrefixUnavailable("Sparse source pages unavailable");
+  std::vector<unsigned> dims;
+  std::vector<nntrainer::kv::SparseRope> rope;
+  model->forEachLayer(
+    [&](ml::train::Layer &layer, nntrainer::RunLayerContext &, void *) {
+      auto *node = dynamic_cast<nntrainer::LayerNode *>(&layer);
+      auto *mha =
+        node ? dynamic_cast<HtpMHACoreLayer *>(node->getLayer()) : nullptr;
+      if (mha) {
+        dims.push_back(mha->sparsePrefixHeadDim());
+        // Gemma4 radix uses fused QKV: K is already rotated even though
+        // attention's local use_rope flag is false to avoid rotating twice.
+        rope.push_back(mha->sparsePrefixRope(true));
+      }
+    },
+    nullptr);
+  DevicePrefillFrame frame;
+  frame.from = static_cast<unsigned>(length);
+  frame.plane = INIT_SEQ_LEN;
+  frame.chunk = prefillDriveChunk();
+  try {
+    frame.kv = KVCacheManager::gatherSparsePrefix(snapshots, runs, dims, rope);
+  } catch (const std::invalid_argument &) {
+    throw DeviceKVManager::PrefixUnavailable(
+      "Sparse source history incomplete");
+  } catch (const std::out_of_range &) {
+    throw DeviceKVManager::PrefixUnavailable("Sparse source page unavailable");
+  }
+  // Position correction changes per-head K maxima. Recalibrate the restored
+  // rows together with the first suffix, using the existing Q8 prefill path.
+  for (size_t l = 0; l < dims.size(); ++l)
+    frame.calibration.push_back(
+      std::make_shared<nntrainer::HtpPrefixCalibration>());
+  auto history = std::make_shared<DevicePrefillHistory>();
+  history->emplace(static_cast<unsigned>(length), std::move(frame));
+  device_prefill_history_ = std::move(history);
+  global_token_len = static_cast<unsigned>(length);
+  SYS_PROMP_LEN = 0;
+  device_prefill_restored_ = true;
+  htp_pending_tokens_.clear();
+  htp_session_failed_ = false;
+  USE_KVCACHE = false;
+  PRE_COMPUTED_CACHE_PATH.clear();
+  retire_decode_capture();
 }
 
 void CausalLM::restoreDevicePrefill(uint32_t handle, unsigned position) {

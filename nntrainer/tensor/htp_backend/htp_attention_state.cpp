@@ -150,6 +150,10 @@ void HtpAttentionState::restorePrefixCalibration(
   const HtpPrefixCalibration &state) {
   beginHtpPrompt();
   q2_calibrated = state.calibrated;
+  // A sparse restore deliberately requests fresh calibration. A previously
+  // loaded file's process-local entry must not override that request.
+  if (!state.calibrated)
+    q2_store_.erase(q2_name_);
   q2_scale_k = state.scale_k;
   q2_scale_v = state.scale_v;
   q2_q_enc = state.q_enc;

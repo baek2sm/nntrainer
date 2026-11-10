@@ -146,6 +146,9 @@ protected:
   void captureDevicePrefill(unsigned from, unsigned position,
                             unsigned earliest);
   void restoreDevicePrefill(uint32_t handle, unsigned position);
+  void restoreSparseDevicePrefill(
+    uint32_t handle, const std::vector<nntrainer::kv::SparsePrefixRun> &runs,
+    size_t input_rows);
   /** Start an independent request; continuation steps must not call this. */
   void beginIndependentHtpPrompt(
     bool repeated,

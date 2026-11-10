@@ -208,6 +208,16 @@ public:
    * prompt token to be computed for its logits. Requires paged storage.
    */
   size_t reusePrefix(const TokenId *tokens, size_t count);
+  /** Opt-in approximate reuse of a radix history after token deletions.
+   * Applies model-supplied RoPE deltas to moved K, copies V unchanged, and
+   * resumes at the contiguous destination prefix. One RoPE spec per layer.
+   * Approximate rows and their continuations are never published as exact.
+   * Leave the final prompt token out of count to obtain fresh logits.
+   * Transactional: any allocation/encoding failure preserves this session.
+   */
+  SparsePrefixResult reuseSparsePrefix(const TokenId *tokens, size_t count,
+                                       const std::vector<SparseRope> &rope);
+  bool hasApproximateHistory() const;
   /** Committed token ids known for [0, knownTokenCount()). */
   std::vector<TokenId> committedTokens() const;
   size_t knownTokenCount() const;

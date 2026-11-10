@@ -24,6 +24,7 @@
 #endif
 
 #include <complex>
+#include <kv_cache/sparse_prefix.h>
 #include <memory>
 #include <unordered_map>
 
@@ -235,6 +236,10 @@ public:
   WIN_EXPORT std::shared_ptr<const HtpPrefixCalibration>
   capturePrefixCalibration() const;
   WIN_EXPORT void restorePrefixCalibration(const HtpPrefixCalibration &state);
+  /** Position correction uses the producer's frequencies. upstream_rope is
+   * true when fused QKV already rotated K and local use_rope is disabled. */
+  WIN_EXPORT kv::SparseRope sparsePrefixRope(bool upstream_rope = false);
+  WIN_EXPORT unsigned sparsePrefixHeadDim() const { return head_dim; }
 
 private:
   std::tuple<

@@ -2078,3 +2078,292 @@ GTEST_API_ int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+TEST(KvCacheCore, sparseDeletionRepositionsKeysAndPreservesExactCache) {
+  auto s = pagedSpec();
+  auto pool = std::make_shared<KvPagePool>();
+  auto cache = std::make_shared<KvPrefixCache>(pool);
+  KvCacheManager source, target;
+  source.initialize(s, std::make_shared<nntrainer::MemAllocator>(), pool,
+                    cache);
+  target.initialize(s, std::make_shared<nntrainer::MemAllocator>(), pool,
+                    cache);
+  const std::vector<TokenId> ids{10, 20, 30, 40, 50, 60};
+  std::vector<float> k(24), v(24);
+  SparseRope rope{{0.37f}, false};
+  for (size_t p = 0; p < ids.size(); ++p)
+    for (size_t h = 0; h < 2; ++h) {
+      float raw[]{float(ids[p]), float(h + 1)};
+      rope.reposition(raw, 0, p);
+      k[p * 4 + h * 2] = raw[0];
+      k[p * 4 + h * 2 + 1] = raw[1];
+      v[p * 4 + h * 2] = float(ids[p]);
+      v[p * 4 + h * 2 + 1] = float(h + 1);
+    }
+  auto write = source.beginStep(ids.size(), ids.data());
+  source.append(write, 0, k.data(), v.data(), k.size() * 4);
+  finish(source, std::move(write));
+  const std::vector<TokenId> subset{10, 30, 50, 60, 99};
+  const auto result = target.reuseSparsePrefix(subset.data(), 4, {rope});
+  ASSERT_EQ(result.tokens, 4u);
+  EXPECT_EQ(result.exact_tokens, 1u);
+  EXPECT_TRUE(result.approximate());
+  EXPECT_TRUE(target.hasApproximateHistory());
+  EXPECT_EQ(target.committedTokens(), (std::vector<TokenId>{10, 30, 50, 60}));
+  auto read = target.beginStep(1, &subset.back());
+  const float zero[4]{};
+  target.append(read, 0, zero, zero, sizeof(zero));
+  target.markReady(read, 0);
+  std::vector<float> actual_k, actual_v;
+  for (const auto &view : target.readKey(read, 0)) {
+    auto p = static_cast<const float *>(view.data());
+    actual_k.insert(actual_k.end(), p, p + view.sizeBytes() / 4);
+  }
+  for (const auto &view : target.readValue(read, 0)) {
+    auto p = static_cast<const float *>(view.data());
+    actual_v.insert(actual_v.end(), p, p + view.sizeBytes() / 4);
+  }
+  for (size_t p = 0; p < 4; ++p)
+    for (size_t h = 0; h < 2; ++h) {
+      float expected[]{float(subset[p]), float(h + 1)};
+      rope.reposition(expected, 0, p);
+      EXPECT_NEAR(actual_k[p * 4 + h * 2], expected[0], 1e-5);
+      EXPECT_NEAR(actual_k[p * 4 + h * 2 + 1], expected[1], 1e-5);
+      EXPECT_FLOAT_EQ(actual_v[p * 4 + h * 2], float(subset[p]));
+    }
+  target.commit(std::move(read));
+  EXPECT_EQ(cache->stats().blocks, 3u); // No approximate publication.
+  auto child = target.forkSession(target.activeSession());
+  target.selectSession(child);
+  EXPECT_TRUE(target.hasApproximateHistory());
+  EXPECT_EQ(target.reusePrefix(subset.data(), 4), 1u);
+  EXPECT_FALSE(target.hasApproximateHistory());
+  target.reset();
+  EXPECT_EQ(target.reusePrefix(ids.data(), ids.size()), 6u);
+  EXPECT_EQ(appendAndReadKeys(source, 99).front(), k.front());
+}
+
+TEST(KvCacheCore, sparseMissValidationAndFailureAreTransactional) {
+  auto allocator = std::make_shared<CountingAllocator>();
+  auto pool = std::make_shared<KvPagePool>(0, allocator);
+  auto cache = std::make_shared<KvPrefixCache>(pool);
+  KvCacheManager source, target;
+  source.initialize(pagedSpec(), allocator, pool, cache);
+  target.initialize(pagedSpec(), allocator, pool, cache);
+  appendTokens(source, {1, 2, 3, 4, 5, 6});
+  appendTokens(target, {8});
+  const TokenId request[]{1, 3, 6};
+  EXPECT_THROW(target.reuseSparsePrefix(request, 3, {}), std::invalid_argument);
+  EXPECT_EQ(target.committedLength(), 1u);
+  const TokenId miss[]{99};
+  EXPECT_EQ(target.reuseSparsePrefix(miss, 1, {{}}).tokens, 0u);
+  EXPECT_EQ(target.committedLength(), 1u);
+  allocator->fail_at = allocator->allocations;
+  EXPECT_THROW(target.reuseSparsePrefix(request, 3, {{}}), std::bad_alloc);
+  EXPECT_EQ(target.committedTokens(), (std::vector<TokenId>{8}));
+  allocator->fail_at = std::numeric_limits<size_t>::max();
+  EXPECT_EQ(target.reuseSparsePrefix(request, 3, {{}}).tokens, 3u);
+  target.setPosition(1);
+  EXPECT_FALSE(target.hasApproximateHistory());
+  target.reset();
+  const TokenId partial[]{1};
+  EXPECT_EQ(target.reuseSparsePrefix(partial, 1, {{}}).tokens, 1u);
+  EXPECT_FALSE(target.hasApproximateHistory());
+}
+
+TEST(KvCacheCore, sparseMatchingDoesNotSpliceSiblingHistories) {
+  auto pool = std::make_shared<KvPagePool>();
+  auto cache = std::make_shared<KvPrefixCache>(pool);
+  KvCacheManager manager;
+  manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                     pool, cache);
+  appendTokens(manager, {1, 2, 3, 4});
+  manager.reset();
+  appendTokens(manager, {1, 2, 5, 6});
+  manager.reset();
+  const TokenId request[]{1, 3, 5};
+  EXPECT_EQ(manager.reuseSparsePrefix(request, 3, {{}}).tokens, 2u);
+  EXPECT_EQ(manager.committedTokens(), (std::vector<TokenId>{1, 3}));
+}
+
+TEST(KvCacheCore, sparseRepeatedTokensAndRopeLayouts) {
+  const TokenId source[]{1, 1, 2, 1, 3};
+  const TokenId request[]{1, 2, 1, 3, 9};
+  const auto runs = matchSparseTokens(source, 5, request, 5);
+  ASSERT_EQ(runs.size(), 2u);
+  EXPECT_EQ(runs[1].source, 2u);
+  EXPECT_EQ(sparsePrefixLength(runs), 4u);
+  for (bool interleaved : {false, true}) {
+    SparseRope rope{{0.2f, 0.0f}, interleaved};
+    float key[]{1, 2, 3, 4, 5, 6};
+    const std::vector<float> original(key, key + 6);
+    rope.reposition(key, 0, 123);
+    rope.reposition(key, 123, 7);
+    float expected[]{1, 2, 3, 4, 5, 6};
+    rope.reposition(expected, 0, 7);
+    for (size_t d = 0; d < 6; ++d)
+      EXPECT_NEAR(key[d], expected[d], 1e-5);
+    EXPECT_FLOAT_EQ(key[4], original[4]);
+    EXPECT_FLOAT_EQ(key[5], original[5]);
+  }
+}
+
+TEST(KvCacheCore, sparseFloat16PackedAndAliases) {
+  for (const auto encoding : {Encoding::Float16, Encoding::TurboQuant4BitNC}) {
+    auto s = pagedSpec();
+    auto &layer = s.layers[0];
+    layer.head_dim = 64;
+    layer.encoding = encoding;
+    layer.storage_type =
+      encoding == Encoding::Float16 ? StorageType::UInt16 : StorageType::UInt8;
+    s.layers.push_back(layer);
+    s.layers[1].source = 0;
+    const auto geometry = s.layers[0];
+    auto pool = std::make_shared<KvPagePool>();
+    auto cache = std::make_shared<KvPrefixCache>(pool);
+    KvCacheManager source, target;
+    source.initialize(s, std::make_shared<nntrainer::MemAllocator>(), pool,
+                      cache);
+    target.initialize(s, std::make_shared<nntrainer::MemAllocator>(), pool,
+                      cache);
+    const TokenId ids[]{1, 2, 3, 4, 5, 6};
+    std::vector<float> k(6 * 128), v(k.size());
+    SparseRope rope;
+    for (size_t d = 0; d < 32; ++d)
+      rope.frequencies.push_back(std::pow(10000.0f, -float(d) / 32));
+    for (size_t p = 0; p < 6; ++p)
+      for (size_t h = 0; h < 2; ++h) {
+        auto row = k.data() + p * 128 + h * 64;
+        for (size_t d = 0; d < 64; ++d) {
+          row[d] = std::sin(float(p * 3 + d)) * 0.1f;
+          v[p * 128 + h * 64 + d] = float(p) * 0.1f;
+        }
+        rope.reposition(row, 0, p);
+      }
+    auto step = source.beginStep(6, ids);
+    if (encoding == Encoding::TurboQuant4BitNC)
+      source.appendTurboQuant(step, 0, k.data(), v.data(), k.size());
+    else {
+      std::vector<uint16_t> hk(k.size()), hv(v.size());
+      for (size_t i = 0; i < k.size(); ++i) {
+        hk[i] = nntrainer::compute_fp32_to_fp16(k[i]);
+        hv[i] = nntrainer::compute_fp32_to_fp16(v[i]);
+      }
+      source.append(step, 0, hk.data(), hv.data(), hk.size() * 2);
+    }
+    finish(source, std::move(step));
+    const TokenId subset[]{1, 3, 5};
+    ASSERT_EQ(target.reuseSparsePrefix(subset, 3, {rope, rope}).tokens, 3u);
+    auto read = target.beginStep(1);
+    std::vector<float> zero(128, 0);
+    if (encoding == Encoding::TurboQuant4BitNC)
+      target.appendTurboQuant(read, 0, zero.data(), zero.data(), zero.size());
+    else {
+      std::vector<uint16_t> hz(128, 0);
+      target.append(read, 0, hz.data(), hz.data(), hz.size() * 2);
+    }
+    target.markReady(read, 0);
+    const auto key_views = target.readKey(read, 1);
+    TurboQuant4BitNC codec(64);
+    for (size_t p = 0; p < 3; ++p)
+      for (size_t h = 0; h < 2; ++h) {
+        const auto *head =
+          static_cast<const uint8_t *>(key_views[p / 2].data()) +
+          (p % 2 * 2 + h) * geometry.headBytes();
+        float actual[64];
+        if (encoding == Encoding::TurboQuant4BitNC) {
+          codec.decodeKeyRotated(head, actual);
+          codec.rotate(actual);
+        } else {
+          const auto *half = reinterpret_cast<const uint16_t *>(head);
+          for (size_t d = 0; d < 64; ++d)
+            actual[d] = nntrainer::compute_fp16_to_fp32(half[d]);
+        }
+        float expected[64];
+        for (size_t d = 0; d < 64; ++d)
+          expected[d] = std::sin(float(p * 6 + d)) * 0.1f;
+        rope.reposition(expected, 0, p);
+        double error = 0;
+        for (size_t d = 0; d < 64; ++d)
+          error += (actual[d] - expected[d]) * (actual[d] - expected[d]);
+        EXPECT_LT(std::sqrt(error / 64),
+                  encoding == Encoding::Float16 ? 0.0001 : 0.025);
+      }
+    EXPECT_NO_THROW(target.attention(read, 1, std::vector<float>(128, 0.1f),
+                                     AttentionOptions{2}));
+    target.commit(std::move(read));
+    EXPECT_EQ(cache->stats().blocks, 3u);
+  }
+}
+
+TEST(KvCacheCore, sparseFlashReloadAndCorruptionFallback) {
+  FlashDirectory dir;
+  auto pool = std::make_shared<KvPagePool>(4096);
+  auto prefix =
+    std::make_shared<KvPrefixCache>(pool, 0, dir.options(8192, 3968));
+  KvCacheManager manager;
+  manager.initialize(pagedSpec(), std::make_shared<nntrainer::MemAllocator>(),
+                     nullptr, prefix);
+  appendTokens(manager, {1, 2, 3, 4, 5, 6});
+  manager.reset();
+  ASSERT_GT(prefix->stats().flash_blocks, 0u);
+  const TokenId subset[]{1, 3, 6};
+  ASSERT_EQ(manager.reuseSparsePrefix(subset, 3, {{}}).tokens, 3u);
+  EXPECT_GT(prefix->stats().flash_hits, 0u);
+  EXPECT_EQ(appendAndReadKeys(manager, 9), (std::vector<float>{1, 3, 6, 9}));
+  manager.reset();
+  for (const auto &entry :
+       std::filesystem::recursive_directory_iterator(dir.path))
+    if (entry.path().extension() == ".kv") {
+      std::fstream file(entry.path(),
+                        std::ios::in | std::ios::out | std::ios::binary);
+      file.seekp(40);
+      file.put('\xff');
+    }
+  const auto result = manager.reuseSparsePrefix(subset, 3, {{}});
+  EXPECT_LE(result.tokens, 1u);
+  EXPECT_GT(prefix->stats().flash_errors, 0u);
+}
+
+TEST(KvCacheCore, sparseRadixMatchesIndependentPrefixSubsequenceOracle) {
+  auto s = pagedSpec();
+  s.layers[0].capacity = s.layers[0].max_tokens = 32;
+  auto pool = std::make_shared<KvPagePool>();
+  auto prefix = std::make_shared<KvPrefixCache>(pool);
+  KvCacheManager manager;
+  manager.initialize(s, std::make_shared<nntrainer::MemAllocator>(), pool,
+                     prefix);
+  std::mt19937 random(4428);
+  std::vector<std::vector<TokenId>> sources;
+  for (size_t sample = 0; sample < 16; ++sample) {
+    std::vector<TokenId> source(16);
+    for (auto &id : source)
+      id = random() % 5;
+    appendTokens(manager, source);
+    manager.reset();
+    sources.push_back(source);
+  }
+  for (size_t sample = 0; sample < 100; ++sample) {
+    std::vector<TokenId> request(12);
+    for (auto &id : request)
+      id = random() % 6;
+    size_t expected = 0;
+    for (const auto &source : sources) {
+      // DP allows source deletions and requires every leading request token.
+      // It does not use the implementation's greedy scan or radix traversal.
+      std::vector<bool> reachable(request.size() + 1, false);
+      reachable[0] = true;
+      for (const auto id : source)
+        for (size_t j = request.size(); j > 0; --j)
+          reachable[j] =
+            reachable[j] || (reachable[j - 1] && id == request[j - 1]);
+      for (size_t j = 0; j <= request.size(); ++j)
+        if (reachable[j])
+          expected = std::max(expected, j);
+    }
+    EXPECT_EQ(
+      manager.reuseSparsePrefix(request.data(), request.size(), {{}}).tokens,
+      expected);
+    manager.reset();
+  }
+}

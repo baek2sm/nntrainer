@@ -268,4 +268,41 @@ int main() {
   assert(live.empty());
   std::cout
     << "Device sessions, compressed radix, LRU, failure isolation: PASS\n";
+  {
+    unsigned restored = 0;
+    uint32_t next = 100;
+    Manager m([&](unsigned, unsigned) { return next++; },
+              [&](uint32_t, unsigned length) { restored = length; },
+              [](uint32_t) {}, [] {}, 8, 8);
+    m.publish({1, 2, 3, 4, 5, 6}, 6, 0);
+    // Default remains exact; a deletion inside the compressed edge misses.
+    assert(m.reuse({1, 3, 5, 9}) == 0);
+    m.setSparseRestore(
+      [&](uint32_t, const std::vector<nntrainer::kv::SparsePrefixRun> &runs,
+          size_t rows) {
+        assert(rows == 4 && runs.size() == 3);
+        assert(runs[1].source == 2 && runs[1].destination == 1);
+        restored = unsigned(nntrainer::kv::sparsePrefixLength(runs));
+      });
+    assert(m.reuse({1, 3, 5, 9}) == 3 && restored == 3);
+    assert(m.tokens() == Manager::Tokens({1, 3, 5}) && m.approximate());
+    const auto prefixes = m.stats().prefixes;
+    m.publish({1, 3, 5}, 3, 0);
+    assert(m.stats().prefixes == prefixes && m.stats().sparse_hits == 1);
+    auto child = m.fork(3, 9);
+    auto empty = m.create();
+    m.select(empty, 3, 9);
+    assert(!m.approximate());
+    m.select(child, 0, 0);
+    assert(m.approximate());
+    m.forgetTokens();
+    assert(!m.approximate());
+    assert(m.reuse({1, 2, 3, 4, 5, 6, 9}) == 6);
+    assert(!m.approximate());
+    m.setSparseRestore(
+      [](uint32_t, const std::vector<nntrainer::kv::SparsePrefixRun> &,
+         size_t) { throw Manager::PrefixUnavailable("missing sliding row"); });
+    auto before = m.tokens();
+    assert(m.reuse({1, 3, 5, 9}) == 0 && m.tokens() == before);
+  }
 }

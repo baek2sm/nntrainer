@@ -13,10 +13,12 @@
 #include "kv_cache_manager.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -831,6 +833,118 @@ size_t KVCacheManager::prefixPayloadBytes(unsigned position) const {
              layer_caches_[l].key_cache.getDim().getDataTypeSize() * 2u;
   }
   return bytes;
+}
+
+std::shared_ptr<const KVCacheManager::PrefixSnapshot>
+KVCacheManager::gatherSparsePrefix(
+  const std::vector<std::shared_ptr<const PrefixSnapshot>> &history,
+  const std::vector<nntrainer::kv::SparsePrefixRun> &runs,
+  const std::vector<unsigned> &head_dims,
+  const std::vector<nntrainer::kv::SparseRope> &rope) {
+  using namespace nntrainer::kv;
+  const size_t length = sparsePrefixLength(runs);
+  if (history.empty() || !history.front() || !length ||
+      length > std::numeric_limits<unsigned>::max())
+    throw std::invalid_argument("Empty or oversized sparse prefix history");
+  size_t expected = 0, source_end = 0;
+  for (const auto &run : runs) {
+    if (!run.count || run.destination != expected || run.source < source_end)
+      throw std::invalid_argument("Unordered sparse prefix plan");
+    expected = checkedAdd(expected, run.count);
+    source_end = checkedAdd(run.source, run.count);
+  }
+  const auto &first = *history.front();
+  const size_t layers = first.layers.size();
+  if (head_dims.size() != layers || rope.size() != layers ||
+      (first.element_bytes != 2 && first.element_bytes != 4))
+    throw std::invalid_argument("Invalid sparse prefix geometry");
+  auto result = std::make_shared<PrefixSnapshot>();
+  result->position = static_cast<unsigned>(length);
+  result->element_bytes = first.element_bytes;
+  result->layers.resize(layers);
+  for (size_t l = 0; l < layers; ++l) {
+    auto &dst = result->layers[l];
+    dst.width = first.layers[l].width;
+    const size_t dim = head_dims[l];
+    if (!dim || !dst.width || dst.width % dim)
+      throw std::invalid_argument("Sparse prefix head geometry mismatch");
+    rope[l].validate(dim);
+    size_t retained = 0;
+    for (const auto &snapshot : history) {
+      if (!snapshot || snapshot->layers.size() != layers ||
+          snapshot->element_bytes != result->element_bytes ||
+          snapshot->layers[l].width != dst.width ||
+          snapshot->layers[l].base > snapshot->position)
+        throw std::invalid_argument("Incompatible sparse source history");
+      retained = std::max<size_t>(retained, snapshot->position -
+                                              snapshot->layers[l].base);
+    }
+    dst.base = length > retained ? static_cast<unsigned>(length - retained) : 0;
+    const size_t row_bytes = checkedMultiply(dst.width, result->element_bytes);
+    std::vector<float> key(dim);
+    std::shared_ptr<PrefixSnapshot::Page> page;
+    for (const auto &run : runs)
+      for (size_t t = 0; t < run.count; ++t) {
+        const size_t src = run.source + t, pos = run.destination + t;
+        if (pos < dst.base)
+          continue;
+        const PrefixSnapshot::Layer *found = nullptr;
+        for (const auto &snapshot : history)
+          if (snapshot->layers[l].base <= src && src < snapshot->position) {
+            found = &snapshot->layers[l];
+            break;
+          }
+        if (!found)
+          throw std::invalid_argument("Missing sparse sliding history");
+        const size_t row = src - found->base;
+        const auto &input = found->pages.at(row / 64);
+        const size_t offset = checkedMultiply(row % 64, row_bytes);
+        if (!input || input->keySize() < checkedAdd(offset, row_bytes) ||
+            input->valueSize() < checkedAdd(offset, row_bytes))
+          throw std::invalid_argument("Incomplete sparse source page");
+        const size_t output_row = pos - dst.base;
+        if (output_row % 64 == 0) {
+          page = std::make_shared<PrefixSnapshot::Page>();
+          const size_t bytes =
+            checkedMultiply(std::min<size_t>(64, length - pos), row_bytes);
+          page->key.resize(bytes);
+          page->value.resize(bytes);
+          dst.pages.push_back(page);
+        }
+        auto *out = page->key.data() + output_row % 64 * row_bytes;
+        std::memcpy(out, input->keyData() + offset, row_bytes);
+        std::memcpy(page->value.data() + output_row % 64 * row_bytes,
+                    input->valueData() + offset, row_bytes);
+        if (src == pos || rope[l].frequencies.empty())
+          continue;
+        for (size_t h = 0; h < dst.width / dim; ++h) {
+          auto *head = out + h * dim * result->element_bytes;
+          for (size_t d = 0; d < dim; ++d) {
+            if (result->element_bytes == 4)
+              std::memcpy(&key[d], head + d * 4, 4);
+            else {
+              uint16_t bits;
+              std::memcpy(&bits, head + d * 2, 2);
+              key[d] = nntrainer::compute_fp16_to_fp32(bits);
+            }
+          }
+          rope[l].reposition(key.data(), src, pos);
+          for (size_t d = 0; d < dim; ++d) {
+            if (!sparseFinite(key[d]))
+              throw std::invalid_argument("Nonfinite sparse prefix key");
+            if (result->element_bytes == 4)
+              std::memcpy(head + d * 4, &key[d], 4);
+            else {
+              const uint16_t bits = nntrainer::compute_fp32_to_fp16(key[d]);
+              if (!sparseFinite(nntrainer::compute_fp16_to_fp32(bits)))
+                throw std::invalid_argument("Sparse prefix FP16 overflow");
+              std::memcpy(head + d * 2, &bits, 2);
+            }
+          }
+        }
+      }
+  }
+  return result;
 }
 
 void KVCacheManager::restorePrefix(const PrefixSnapshot &state) {

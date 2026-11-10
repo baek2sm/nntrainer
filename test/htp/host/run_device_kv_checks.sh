@@ -11,7 +11,7 @@ if [ "${SANITIZE:-0}" = 1 ]; then
   sanitizers="-fsanitize=address,undefined -fno-omit-frame-pointer"
 fi
 ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -Werror $sanitizers \
-  -I Applications/CausalLM test/htp/host/device_kv_manager_check.cpp \
+  -I nntrainer -I Applications/CausalLM test/htp/host/device_kv_manager_check.cpp \
   -o "$check_dir/manager"
 "$check_dir/manager"
 ${CXX:-c++} -std=c++17 -O2 -Wall -Wextra -Werror $sanitizers \

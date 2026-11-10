@@ -5,8 +5,10 @@
  * @author Codex (OpenAI)
  * @bug Sessions are thread confined; asynchronous device access is unsupported.
  */
+#include <fp16.h>
 #include <kv_cache/kv_cache_manager.h>
 #include <kv_cache/turboquant.h>
+#include <limits>
 
 #include <algorithm>
 #include <cstring>
@@ -53,8 +55,10 @@ struct SessionState {
    * reference. They are never written in place: a step that has to append to
    * one of them copies it first. */
   size_t shared_pages = 0;
+  size_t approximate_from = std::numeric_limits<size_t>::max();
 
   void forgetPrefix() noexcept {
+    approximate_from = std::numeric_limits<size_t>::max();
     tokens.clear();
     pending_tokens.clear();
     pending_known = false;
@@ -325,6 +329,8 @@ SessionId KvCacheManager::forkSession(SessionId parent, size_t at_position) {
   const size_t blocks = std::min(src.block_ids.size(), full);
   next->block_ids.assign(src.block_ids.begin(), src.block_ids.begin() + blocks);
   next->prefix_epoch = src.prefix_epoch;
+  if (at_position > src.approximate_from)
+    next->approximate_from = src.approximate_from;
   // Full pages are shared with the parent; the tail copy is private.
   next->shared_pages = full;
   next->position = at_position;
@@ -629,7 +635,8 @@ void KvCacheManager::publishPrefix() noexcept {
       s.prefix_epoch = cache.epoch();
     }
     const size_t page_tokens = s.spec.page_tokens;
-    const size_t full = std::min(s.tokens.size(), s.position) / page_tokens;
+    const size_t full =
+      std::min({s.tokens.size(), s.position, s.approximate_from}) / page_tokens;
     if (s.block_ids.size() >= full)
       return;
     std::vector<std::shared_ptr<KvStorage>> keys(s.spec.layers.size()),
@@ -691,6 +698,8 @@ void KvCacheManager::setPosition(size_t position) {
       throw std::out_of_range("KV rewind precedes retained ring history");
   state_->releaseTail(position);
   state_->position = position;
+  if (position <= state_->approximate_from)
+    state_->approximate_from = std::numeric_limits<size_t>::max();
   state_->high_water = std::max(state_->high_water, position);
   if (state_->tokens.size() > position)
     state_->tokens.resize(position);
@@ -715,7 +724,7 @@ size_t KvCacheManager::reusePrefix(const TokenId *tokens, size_t count) {
 
   // Rows this session already holds for the same leading tokens.
   size_t own = 0;
-  const size_t known = std::min(s.tokens.size(), count);
+  const size_t known = std::min({s.tokens.size(), count, s.approximate_from});
   while (own < known && s.tokens[own] == tokens[own])
     ++own;
 
@@ -759,6 +768,7 @@ size_t KvCacheManager::reusePrefix(const TokenId *tokens, size_t count) {
     s.block_ids.swap(ids);
     s.prefix_epoch = s.prefix->epoch();
     s.shared_pages = s.block_ids.size();
+    s.approximate_from = std::numeric_limits<size_t>::max();
     s.position = cached;
     s.stats.backing_bytes = backing;
     s.prefix->recordHit(s.block_ids.size());
@@ -766,9 +776,134 @@ size_t KvCacheManager::reusePrefix(const TokenId *tokens, size_t count) {
     s.releaseTail(own);
     s.position = own;
     s.tokens.resize(own);
+    if (own <= s.approximate_from)
+      s.approximate_from = std::numeric_limits<size_t>::max();
   }
   ++s.epoch->generation;
   return s.position;
+}
+
+bool KvCacheManager::hasApproximateHistory() const {
+  return state_ && state_->position > state_->approximate_from;
+}
+
+SparsePrefixResult
+KvCacheManager::reuseSparsePrefix(const TokenId *tokens, size_t count,
+                                  const std::vector<SparseRope> &rope) {
+  requireIdle();
+  auto &s = *state_;
+  if (!s.prefix || !s.spec.page_tokens)
+    throw std::logic_error("Sparse reuse requires a paged prefix cache");
+  if ((count && !tokens) || rope.size() != s.spec.layers.size())
+    throw std::invalid_argument("Incomplete sparse prefix parameters");
+  for (size_t i = 0; i < rope.size(); ++i) {
+    rope[i].validate(s.spec.layers[i].head_dim);
+    const int owner = s.spec.layers[i].source;
+    if (owner >= 0 && (rope[i].frequencies != rope[owner].frequencies ||
+                       rope[i].interleaved != rope[owner].interleaved))
+      throw std::invalid_argument("Aliased KV requires the owner's RoPE");
+  }
+  count = std::min(count, s.spec.layers.front().max_tokens);
+  std::vector<std::vector<std::shared_ptr<KvStorage>>> source_k, source_v;
+  const auto runs = s.prefix->matchSparse(tokens, count, source_k, source_v);
+  const size_t length = sparsePrefixLength(runs);
+  if (!length)
+    return {}; // A miss does not discard the caller's current session.
+  const size_t exact = runs.front().source == 0 ? runs.front().count : 0;
+  if (exact == length && length % s.spec.page_tokens == 0) {
+    const size_t reused = reusePrefix(tokens, length);
+    return {reused, reused};
+  }
+
+  // Stage a private destination table. A shifted row must never modify the
+  // shared source; even a failure halfway through preserves the live session.
+  auto keys = s.key_pages, values = s.value_pages;
+  for (auto &pages : keys)
+    std::fill(pages.begin(), pages.end(), nullptr);
+  for (auto &pages : values)
+    std::fill(pages.begin(), pages.end(), nullptr);
+  std::vector<TokenId> adopted(tokens, tokens + length);
+  const size_t page_tokens = s.spec.page_tokens;
+  const size_t pages = 1 + (length - 1) / page_tokens;
+  size_t backing = 0;
+  for (size_t i = 0; i < s.spec.layers.size(); ++i) {
+    const auto &layer = s.spec.layers[i];
+    if (layer.source >= 0)
+      continue;
+    const size_t stride = 1 + (layer.max_tokens - 1) / page_tokens;
+    keys[i].resize(stride);
+    values[i].resize(stride);
+    const size_t bytes = checkedMultiply(page_tokens, layer.rowBytes());
+    for (size_t p = 0; p < pages; ++p) {
+      keys[i][p] = s.pool->acquire(bytes);
+      values[i][p] = s.pool->acquire(bytes);
+      backing = checkedAdd(backing, 2 * roundedPageBytes(bytes));
+    }
+    std::unique_ptr<TurboQuant4BitNC> codec;
+    if (layer.encoding == Encoding::TurboQuant4BitNC)
+      codec = std::make_unique<TurboQuant4BitNC>(layer.head_dim);
+    std::vector<float> row(layer.head_dim);
+    for (const auto &run : runs)
+      for (size_t t = 0; t < run.count; ++t) {
+        const size_t src = run.source + t, dst = run.destination + t;
+        const auto *k = static_cast<const uint8_t *>(
+                          source_k.at(src / page_tokens).at(i)->data()) +
+                        src % page_tokens * layer.rowBytes();
+        const auto *v = static_cast<const uint8_t *>(
+                          source_v.at(src / page_tokens).at(i)->data()) +
+                        src % page_tokens * layer.rowBytes();
+        auto *out_k =
+          static_cast<uint8_t *>(keys[i][dst / page_tokens]->data()) +
+          dst % page_tokens * layer.rowBytes();
+        auto *out_v =
+          static_cast<uint8_t *>(values[i][dst / page_tokens]->data()) +
+          dst % page_tokens * layer.rowBytes();
+        std::memcpy(out_v, v, layer.rowBytes());
+        if (src == dst || rope[i].frequencies.empty()) {
+          std::memcpy(out_k, k, layer.rowBytes());
+          continue;
+        }
+        for (size_t h = 0; h < layer.num_kv_heads; ++h) {
+          const auto *head = k + h * layer.headBytes();
+          auto *out = out_k + h * layer.headBytes();
+          if (codec) {
+            codec->decodeKeyRotated(head, row.data());
+            codec->rotate(row.data()); // Undo Hadamard before RoPE.
+          } else if (layer.encoding == Encoding::Float32) {
+            std::memcpy(row.data(), head, layer.headBytes());
+          } else {
+            for (size_t d = 0; d < layer.head_dim; ++d) {
+              uint16_t bits;
+              std::memcpy(&bits, head + 2 * d, 2);
+              row[d] = compute_fp16_to_fp32(bits);
+            }
+          }
+          rope[i].reposition(row.data(), src, dst);
+          if (codec) {
+            codec->encodeKey(row.data(), out);
+          } else if (layer.encoding == Encoding::Float32) {
+            std::memcpy(out, row.data(), layer.headBytes());
+          } else {
+            for (size_t d = 0; d < layer.head_dim; ++d) {
+              const uint16_t bits = compute_fp32_to_fp16(row[d]);
+              std::memcpy(out + 2 * d, &bits, 2);
+            }
+          }
+        }
+      }
+  }
+  s.key_pages.swap(keys);
+  s.value_pages.swap(values);
+  s.tokens.swap(adopted);
+  s.block_ids.clear();
+  s.shared_pages = 0;
+  s.approximate_from =
+    exact < length ? exact : std::numeric_limits<size_t>::max();
+  s.position = length;
+  s.high_water = length;
+  s.stats.backing_bytes = backing;
+  ++s.epoch->generation;
+  return {length, exact};
 }
 
 std::vector<TokenId> KvCacheManager::committedTokens() const {

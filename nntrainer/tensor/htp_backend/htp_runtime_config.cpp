@@ -73,6 +73,8 @@ void validateHtpRuntimeConfig(const HtpRuntimeConfig &config) {
              !h.kv_seed_q && !h.kv_request_reserve),
           "htp.kv_turboquant currently requires a single resident conversation "
           "without INT8 KV sessions");
+  require(!h.kv_sparse_prefix_cache || (h.kv_prefix_cache && !h.kv_seed_q),
+          "htp.kv_sparse_prefix_cache requires host-backed prefix caching");
   require(!h.kv_prefix_cache || (h.kv_paged && h.kv_session),
           "htp.kv_prefix_cache requires paged KV sessions");
   require(h.profile <= 3, "htp.profile must be 0..3");

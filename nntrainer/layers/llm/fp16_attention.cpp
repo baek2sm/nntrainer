@@ -1253,6 +1253,23 @@ void Fp16Attention::one_batch_incremental_forwarding(
  * @brief rotary embedding-related member function
  * @note seq_len -> max_position_embeddings
  */
+kv::SparseRope Fp16Attention::sparsePrefixRope(bool upstream_rope) {
+  if (!use_rope && !upstream_rope)
+    return {};
+  // Reuse the producer's frequency generation, including partial RoPE/YaRN.
+  const std::lock_guard<std::mutex> lock(rope_init_mtx);
+  thetas.clear();
+  if (rope_scaling_type == "default")
+    _compute_default_parameters(head_dim, theta);
+  else if (rope_scaling_type == "yarn")
+    _compute_yarn_parameters(head_dim, theta);
+  else if (rope_scaling_type == "proportional")
+    _compute_proportional_parameters(head_dim, theta);
+  else
+    throw std::invalid_argument("Unsupported sparse prefix RoPE");
+  return {thetas, false};
+}
+
 void Fp16Attention::precompute_freqs(int head_dim, unsigned int seq_len,
                                      float theta, bool is_fp16) {
   const std::string rope_cache_key = getRopeCacheKey(head_dim, seq_len, theta);

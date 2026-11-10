@@ -1,0 +1,531 @@
+{
+  "date": "2026-11-10",
+  "branch": "kv/sparse-prefix-reuse-20261110",
+  "base": "9034300447b30915963b14b32d74d4e0da78c77a",
+  "reference": {
+    "repo": "Quick.KV",
+    "commit": "d8f8626197c4734e67d8fbac959ac572302ed1fa",
+    "files": [
+      "quickkv/matching/sparse.py",
+      "quickkv/transfer/rope.py",
+      "docs/sparse.md"
+    ]
+  },
+  "device": {
+    "name": "Galaxy S26 Ultra",
+    "model": "SM-S948U",
+    "platform": "canoe"
+  },
+  "model": {
+    "name": "Gemma4 26B A4B",
+    "execution": "HTP NPU attention and MoE",
+    "kv_encoding": "Q8",
+    "prefill_plane": 512,
+    "max_seq_len": 2048,
+    "generation_budget": 24,
+    "sparse_prefix_opt_in": true
+  },
+  "checks": {
+    "kv_core": "76/76 PASS",
+    "causallm_kv_manager": "37/37 PASS",
+    "core_and_snapshot_asan_ubsan": "PASS (detect_leaks=0)",
+    "device_manager_asan_ubsan": "PASS (detect_leaks=0)",
+    "android_engine_and_app_build": "PASS",
+    "android_snapshot_check": "PASS",
+    "android_calibration_check": "PASS, including stale file calibration rejection",
+    "model_check": "PASS",
+    "clang_format_14": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "results": {
+    "cold": {
+      "decode_ms_per_token": 53.801406,
+      "ids": [
+        100,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812,
+        236778,
+        106,
+        106,
+        106,
+        107,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812
+      ],
+      "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|>\nthought\n<channel|>ORCHID-84",
+      "peak_memory_kb": 3578456,
+      "prefill_ms": 3200.0,
+      "prefill_tokens": 761,
+      "prefixes": 0,
+      "reused_tokens": 0,
+      "sparse_hits": 0,
+      "ttft_ms": 3558.618332
+    },
+    "cold_warm": {
+      "decode_ms_per_token": 52.407084,
+      "ids": [
+        100,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812,
+        236778,
+        106,
+        106,
+        106,
+        107,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812
+      ],
+      "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|>\nthought\n<channel|>ORCHID-84",
+      "peak_memory_kb": 4685412,
+      "prefill_ms": 2703.0,
+      "prefill_tokens": 761,
+      "prefixes": 0,
+      "reused_tokens": 0,
+      "sparse_hits": 0,
+      "ttft_ms": 2968.1973949999997
+    },
+    "deleted_tokens": 174,
+    "exact_source_repeat": {
+      "decode_ms_per_token": 46.816198,
+      "ids": [
+        100,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812,
+        236778,
+        106,
+        106,
+        106,
+        107,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812
+      ],
+      "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|>\nthought\n<channel|>ORCHID-84",
+      "peak_memory_kb": 4137748,
+      "prefill_ms": 0.0,
+      "prefill_tokens": 0,
+      "prefixes": 1,
+      "reused_tokens": 935,
+      "sparse_hits": 0,
+      "ttft_ms": 224.001927
+    },
+    "passed": true,
+    "producer_rope": [
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer0_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer1_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer2_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer3_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer4_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 512,
+        "local_rope": false,
+        "name": "layer5_attention",
+        "rotary_pairs": 64
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer6_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer7_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer8_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer9_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer10_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 512,
+        "local_rope": false,
+        "name": "layer11_attention",
+        "rotary_pairs": 64
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer12_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer13_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer14_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer15_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer16_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 512,
+        "local_rope": false,
+        "name": "layer17_attention",
+        "rotary_pairs": 64
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer18_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer19_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer20_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer21_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer22_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 512,
+        "local_rope": false,
+        "name": "layer23_attention",
+        "rotary_pairs": 64
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer24_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer25_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer26_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer27_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 256,
+        "local_rope": false,
+        "name": "layer28_attention",
+        "rotary_pairs": 128
+      },
+      {
+        "head_dim": 512,
+        "local_rope": false,
+        "name": "layer29_attention",
+        "rotary_pairs": 64
+      }
+    ],
+    "quality": {
+      "cold_has_code": true,
+      "same_tokens": false,
+      "sparse_has_code": true,
+      "suffix_has_code": true,
+      "suffix_same_tokens": true
+    },
+    "source": {
+      "decode_ms_per_token": 54.439115,
+      "ids": [
+        100,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812,
+        236778,
+        106,
+        106,
+        106,
+        107,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812
+      ],
+      "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|>\nthought\n<channel|>ORCHID-84",
+      "peak_memory_kb": 4323456,
+      "prefill_ms": 2798.0,
+      "prefill_tokens": 935,
+      "prefixes": 1,
+      "reused_tokens": 0,
+      "sparse_hits": 0,
+      "ttft_ms": 3070.430624
+    },
+    "source_tokens": 936,
+    "sparse": {
+      "decode_ms_per_token": 44.879583,
+      "ids": [
+        100,
+        45518,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812,
+        236778,
+        106,
+        106,
+        106,
+        107,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828
+      ],
+      "output": "<|channel>thoughtthought\n<channel|>ORCHID-842<turn|><turn|><turn|>\nthought\n<channel|>ORCHID-8",
+      "peak_memory_kb": 4270660,
+      "prefill_ms": 0.0,
+      "prefill_tokens": 0,
+      "prefixes": 1,
+      "reused_tokens": 761,
+      "sparse_hits": 1,
+      "ttft_ms": 514.4519789999999
+    },
+    "subset_tokens": 762,
+    "suffix_cold": {
+      "decode_ms_per_token": 50.578021,
+      "ids": [
+        100,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812,
+        236778,
+        106,
+        106,
+        106,
+        107,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812
+      ],
+      "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|>\nthought\n<channel|>ORCHID-84",
+      "peak_memory_kb": 4685732,
+      "prefill_ms": 2741.0,
+      "prefill_tokens": 763,
+      "prefixes": 0,
+      "reused_tokens": 0,
+      "sparse_hits": 0,
+      "ttft_ms": 3015.2834359999997
+    },
+    "suffix_sparse": {
+      "decode_ms_per_token": 52.530729,
+      "ids": [
+        100,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812,
+        236778,
+        106,
+        106,
+        106,
+        107,
+        45518,
+        107,
+        101,
+        1579,
+        2293,
+        1735,
+        236772,
+        236828,
+        236812
+      ],
+      "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|>\nthought\n<channel|>ORCHID-84",
+      "peak_memory_kb": 4758704,
+      "prefill_ms": 1208.0,
+      "prefill_tokens": 24,
+      "prefixes": 1,
+      "reused_tokens": 739,
+      "sparse_hits": 1,
+      "ttft_ms": 1855.7371349999999
+    }
+  },
+  "limitations": [
+    "Position-corrected KV reuse is approximate because retained KV contains deleted causal history.",
+    "Default off. Device TurboQuant and device KV sessions remain mutually exclusive. CPU packed sparse reuse is covered independently.",
+    "One retained-fact fixture with two subset forms is not a broad quality benchmark. Full-subset generation differs from cold. Cold output already includes repeated thought/turn markers.",
+    "Sequential single-device timings, not thermally controlled repeated benchmarks. Source snapshot memory and gathering allocations are additional costs.",
+    "Core sparse Flash reload/corruption is tested on host. HTP sparse Flash/baked source loading is implemented; real-model device tests used DRAM sources."
+  ],
+  "source_sha256": {
+    "Applications/CausalLM/app_build/meson.build": "1f848553f9a4b5dc184fed2977506fefebd8cf4daf84ef0cc147f4782f39aa36",
+    "Applications/CausalLM/device_kv_manager.h": "d85fe35dbf3e47e6505f65c2cafc75978fabb12c554cc73f64c9b6e6b7c714cb",
+    "Applications/CausalLM/kv_cache_manager.cpp": "2e983f0c62aab43294644abb338bedfb4792a831b3010b29d6869a3b1f2b8f23",
+    "Applications/CausalLM/kv_cache_manager.h": "85a7ec45935e3ee89efaa7f879934358a9c95828522d4a26ce73293f3903e2d0",
+    "Applications/CausalLM/layers/mha_core.h": "d54a2d24f59ac5912490d8ad4bec7264f6b0ccb1af658cdbf5ab0012dc5a2b7f",
+    "Applications/CausalLM/models/causal_lm.cpp": "49649a2f8f2ea58366344ad1fb74d3624cc38259ad1a70eb9313bf93a5b0c936",
+    "Applications/CausalLM/models/causal_lm.h": "bd8e4be37d04aee211d5b099f68c834b18aca30667e3a4269a8b4e5b05f779ed",
+    "nntrainer/kv_cache/kv_cache_manager.cpp": "ea833d7bd15625c2340b3917e806c65e0a68bb449988207c2bcd0ba3505d6a3a",
+    "nntrainer/kv_cache/kv_cache_manager.h": "ac55a67f10358a3168fd2b14099922f1980b01702a48e5aa3ab845411ed6c36f",
+    "nntrainer/kv_cache/kv_prefix_cache.cpp": "88d2b16379ecd3485e8c21badc03bfba34334be35c9364b625ff88d43a2e3f84",
+    "nntrainer/kv_cache/kv_prefix_cache.h": "9a72694f90e29951c31d38023ca9029fb1606ee1fb6c2fbeccecd9971099cc19",
+    "nntrainer/kv_cache/sparse_prefix.h": "0f71d1e36397aadc65fb07d39ea3e1c331bb9da279d2b0dec2a3769a0c522f5a",
+    "nntrainer/layers/llm/fp16_attention.cpp": "969cc17a2c070fa1b3be0cbacdd2d1612ba97e10ab1bb65f752ec2289b2d267d",
+    "nntrainer/layers/llm/fp16_attention.h": "55fd870cfe1cc6d7e1d33a57f3559b2139aa4d1a45df0bec7e37b619a1294e1d",
+    "nntrainer/tensor/htp_backend/htp_attention_state.cpp": "68f50379a82ce8d6cb64eb567bd0a7723a709a60c010d3b603026c196c8b2cc8",
+    "nntrainer/tensor/htp_backend/htp_runtime_config.cpp": "9ee821ca3db630a4a08ada53c5776fa18e05d1f5769869a0db8ef2c8ce51e309",
+    "nntrainer/tensor/htp_backend/htp_runtime_config.h": "a9489ce762473424be9fe19f9123eb21828d4952a80700730eb6a862d3acccbc",
+    "test/htp/host/attention_calibration_check.cpp": "4f76a29236e9ac2f70de76ad35486fb12ecbf3088f2469e09e88cbe9afd85adc",
+    "test/htp/host/device_kv_manager_check.cpp": "7b5762d1d83616e5e96bd1cebca1da686fb47284b6928d0578e28b464cfee035",
+    "test/htp/host/prefill_prefix_check.cpp": "62bfc07a96dd1d0c54e288868c113e4b1854c238cbd99c3015b9c064f48d370a",
+    "test/htp/host/run_device_kv_checks.sh": "cb87e8dc62e780bbf124306d247933006ab2e2f1ef0a4215160f6d04cb07690c",
+    "test/unittest/unittest_kv_cache_core.cpp": "b617ee68b131c064b220a40536f8a5364f65e5e619f5bf62f793adc1ee35691a",
+    "tools/kv_cache/check_htp_sparse_prefix.cpp": "df5d80c4726319619610bc266ea2cbc5c5cad8a7072ced065415ab65fb321a6f"
+  },
+  "binary_sha256": {
+    "/tmp/nntr-pr4428-validation/builddir/android_build_result/lib/arm64-v8a/libnntrainer.so": "8f9e21e811c60082e6b812f7acaa8703820f02541103d96f2f5a32a67e67776d",
+    "/tmp/nntr-pr4428-validation/builddir_app/htp/libcausallm.so": "6298d893d828cdd517beb858d52ffb37ae859603ac0322d652694cbc9775528a",
+    "/tmp/nntr-pr4428-validation/builddir_app/htp/htp_sparse_prefix_check": "202464f4f53e3efabd035619d03afed501c79e37f9403457ca078cdcefa9e461"
+  }
+}

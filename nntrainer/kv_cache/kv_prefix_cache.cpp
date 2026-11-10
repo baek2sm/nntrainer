@@ -609,6 +609,75 @@ size_t KvPrefixCache::match(const TokenId *tokens, size_t count,
   return ids.size() * page_tokens;
 }
 
+std::vector<SparsePrefixRun>
+KvPrefixCache::matchSparse(const TokenId *tokens, size_t count,
+                           std::vector<LayerPages> &keys,
+                           std::vector<LayerPages> &values) {
+  if (count && !tokens)
+    throw std::invalid_argument("Sparse prefix requires token IDs");
+  auto &core = *core_;
+  std::vector<TokenId> best_tokens;
+  std::vector<SparsePrefixRun> best;
+  // Walk compressed radix paths. A leaf represents one causal source history;
+  // never join pages across siblings, even if their local tokens are equal.
+  struct Path {
+    const Core::RadixNode *node;
+    std::vector<TokenId> tokens;
+    std::vector<SparsePrefixRun> runs;
+    size_t matched = 0;
+  };
+  std::vector<Path> pending{{&core.root, {}, {}, 0}};
+  while (!pending.empty()) {
+    auto path = std::move(pending.back());
+    pending.pop_back();
+    const size_t offset = path.tokens.size();
+    for (size_t i = 0; i < path.node->edge.size() && path.matched < count;
+         ++i) {
+      if (path.node->edge[i] != tokens[path.matched])
+        continue;
+      const size_t src = offset + i;
+      if (!path.runs.empty() &&
+          path.runs.back().source + path.runs.back().count == src)
+        ++path.runs.back().count;
+      else
+        path.runs.push_back({src, path.matched, 1});
+      ++path.matched;
+    }
+    path.tokens.insert(path.tokens.end(), path.node->edge.begin(),
+                       path.node->edge.end());
+    if (path.node->block) {
+      const auto &runs = path.runs;
+      const size_t length = path.matched;
+      if (length > sparsePrefixLength(best) ||
+          (length && length == sparsePrefixLength(best) &&
+           runs.back().source + runs.back().count <
+             best.back().source + best.back().count)) {
+        best = runs;
+        best_tokens = path.tokens;
+      }
+    }
+    if (path.node->block && path.matched == count)
+      continue;
+    for (const auto &child : path.node->children)
+      pending.push_back(
+        {child.second.get(), path.tokens, path.runs, path.matched});
+  }
+  std::vector<uint64_t> ids;
+  const size_t loaded =
+    match(best_tokens.data(), best_tokens.size(), ids, keys, values);
+  // Flash corruption/eviction may shorten a source. Never reuse missing rows.
+  std::vector<SparsePrefixRun> available;
+  for (auto run : best) {
+    if (run.source >= loaded)
+      break;
+    run.count = std::min(run.count, loaded - run.source);
+    available.push_back(run);
+    if (run.source + run.count == loaded)
+      break;
+  }
+  return available;
+}
+
 uint64_t KvPrefixCache::insert(uint64_t parent, const TokenId *tokens,
                                const LayerPages &keys,
                                const LayerPages &values) {

@@ -6,6 +6,8 @@
 #ifndef NNTR_DEVICE_KV_MANAGER_H
 #define NNTR_DEVICE_KV_MANAGER_H
 
+#include <kv_cache/sparse_prefix.h>
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -37,13 +39,22 @@ public:
   using PrefixLengths = std::function<std::vector<unsigned>(uint32_t)>;
   using PrefixCompatible = std::function<bool(uint32_t, unsigned, size_t)>;
   using Release = std::function<void(uint32_t)>;
+  using SparseRestore = std::function<void(
+    uint32_t, const std::vector<nntrainer::kv::SparsePrefixRun> &, size_t)>;
+  /** Install explicitly to permit approximate token-deletion reuse. The
+   * callback must stage/validate before changing live backend state. */
+  void setSparseRestore(SparseRestore restore) {
+    sparse_restore_ = std::move(restore);
+  }
+  bool approximate() const { return sessions_.at(active_).approximate; }
   struct Session {
     uint32_t handle = 0;
     Tokens tokens; /**< Known processed tokens; excludes pending feedback. */
+    bool approximate = false;
   };
   struct Stats {
     size_t sessions = 0, prefixes = 0, radix_nodes = 0;
-    uint64_t lookups = 0, hits = 0, reused_tokens = 0;
+    uint64_t lookups = 0, hits = 0, reused_tokens = 0, sparse_hits = 0;
   };
 
   DeviceKVManager(Capture capture, Restore restore, Release release,
@@ -110,6 +121,7 @@ public:
     try {
       Session child;
       child.tokens = sessions_.at(active_).tokens;
+      child.approximate = sessions_.at(active_).approximate;
       if (position)
         child.handle = capture_(position, pending);
       sessions_.at(id) = std::move(child);
@@ -131,8 +143,10 @@ public:
         restore_(target->second.handle, 0);
       else {
         Tokens old_tokens = sessions_.at(active_).tokens;
+        const bool old_approximate = sessions_.at(active_).approximate;
         reset_();
         sessions_.at(active_).tokens = std::move(old_tokens);
+        sessions_.at(active_).approximate = old_approximate;
       }
     } catch (...) {
       releaseNoThrow(outgoing);
@@ -158,7 +172,10 @@ public:
   void setTokens(Tokens tokens) {
     sessions_.at(active_).tokens = std::move(tokens);
   }
-  void forgetTokens() { sessions_.at(active_).tokens.clear(); }
+  void forgetTokens() {
+    sessions_.at(active_).tokens.clear();
+    sessions_.at(active_).approximate = false;
+  }
 
   /** Longest published state strictly before the final prompt token.
    * Leaves at least one token to produce fresh logits under this request's
@@ -185,6 +202,48 @@ public:
         candidates.emplace_back(node->terminal, offset);
       }
     }
+    // Sparse candidates reference a single original history. Keep exact radix
+    // hits at equal length; only a longer sparse hit pays gather/rotation cost.
+    if (sparse_restore_ && tokens.size() > minimum_suffix_) {
+      struct Candidate {
+        uint32_t handle;
+        std::vector<nntrainer::kv::SparsePrefixRun> runs;
+      };
+      std::vector<Candidate> sparse;
+      const size_t exact = candidates.empty() ? 0 : candidates.back().second;
+      for (const auto &entry : prefixes_) {
+        const auto &p = entry.second;
+        auto runs = nntrainer::kv::matchSparseTokens(
+          p.tokens.data(), p.tokens.size(), tokens.data(),
+          tokens.size() - minimum_suffix_);
+        const size_t length = nntrainer::kv::sparsePrefixLength(runs);
+        if (length > exact && !runs.empty() &&
+            (runs.size() > 1 || runs.front().source != 0))
+          sparse.push_back({entry.first, std::move(runs)});
+      }
+      std::stable_sort(sparse.begin(), sparse.end(),
+                       [](const auto &a, const auto &b) {
+                         return nntrainer::kv::sparsePrefixLength(a.runs) >
+                                nntrainer::kv::sparsePrefixLength(b.runs);
+                       });
+      for (const auto &candidate : sparse) {
+        const size_t length = nntrainer::kv::sparsePrefixLength(candidate.runs);
+        Tokens adopted(tokens.begin(), tokens.begin() + length);
+        try {
+          sparse_restore_(candidate.handle, candidate.runs, tokens.size());
+        } catch (const PrefixUnavailable &) {
+          continue;
+        }
+        auto &session = sessions_.at(active_);
+        session.tokens = std::move(adopted);
+        session.approximate = true;
+        prefixes_.at(candidate.handle).used = ++clock_;
+        ++stats_.hits;
+        ++stats_.sparse_hits;
+        stats_.reused_tokens += length;
+        return length;
+      }
+    }
     for (auto it = candidates.rbegin(); it != candidates.rend(); ++it) {
       auto &p = prefixes_.at(it->first);
       Tokens adopted(p.tokens.begin(), p.tokens.begin() + it->second);
@@ -194,6 +253,7 @@ public:
         continue;
       }
       sessions_.at(active_).tokens = std::move(adopted);
+      sessions_.at(active_).approximate = false;
       p.used = ++clock_;
       ++stats_.hits;
       stats_.reused_tokens += it->second;
@@ -206,7 +266,8 @@ public:
    * Terminals borrow one handle; pages and boundary metadata can be shared. */
   void publish(const Tokens &tokens, unsigned position, unsigned pending,
                Capture capture_override = {}) {
-    if (!max_prefixes_ || tokens.empty() || tokens.size() != position)
+    if (approximate() || !max_prefixes_ || tokens.empty() ||
+        tokens.size() != position)
       return;
     // Equal token histories can have different quantizer states depending on
     // prefill chunking. Retain the first valid state; never combine its pages
@@ -360,6 +421,7 @@ private:
       } catch (...) {
       }
   }
+  SparseRestore sparse_restore_;
   Capture capture_;
   Capture prefix_capture_;
   Restore restore_;

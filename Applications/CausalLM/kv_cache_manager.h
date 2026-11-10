@@ -223,6 +223,13 @@ public:
                 bool owned = false) const;
   size_t prefixPayloadBytes(unsigned position) const;
   void restorePrefix(const PrefixSnapshot &snapshot);
+  /** Gather one source history into a contiguous approximate prefix. Missing
+   * sliding rows reject the plan. K is position-corrected; V is byte copied. */
+  static std::shared_ptr<const PrefixSnapshot> gatherSparsePrefix(
+    const std::vector<std::shared_ptr<const PrefixSnapshot>> &history,
+    const std::vector<nntrainer::kv::SparsePrefixRun> &runs,
+    const std::vector<unsigned> &head_dims,
+    const std::vector<nntrainer::kv::SparseRope> &rope);
   unsigned prefixMinPosition() const {
     unsigned first = 0;
     for (unsigned l = 0; l < bases_.size(); ++l)

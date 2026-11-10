@@ -468,6 +468,16 @@ public:
       throw std::logic_error("HTP prefix requires FP16 prefill attention");
     return fp16_attention_->capturePrefixCalibration();
   }
+  nntrainer::kv::SparseRope sparsePrefixRope(bool upstream_rope = false) {
+    if (!fp16_attention_)
+      throw std::logic_error("Sparse prefix requires explicit FP16 attention");
+    return fp16_attention_->sparsePrefixRope(upstream_rope);
+  }
+  unsigned sparsePrefixHeadDim() const {
+    if (!fp16_attention_)
+      throw std::logic_error("Sparse prefix requires explicit FP16 attention");
+    return fp16_attention_->sparsePrefixHeadDim();
+  }
   void restorePrefixCalibration(const nntrainer::HtpPrefixCalibration &state) {
     if (!fp16_attention_)
       throw std::logic_error("HTP prefix requires FP16 prefill attention");

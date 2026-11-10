@@ -10,6 +10,7 @@
 #include <kv_cache/kv_cache_spec.h>
 #include <kv_cache/kv_page_pool.h>
 #include <kv_cache/kv_storage.h>
+#include <kv_cache/sparse_prefix.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -114,6 +115,11 @@ private:
    * equal block. Returns 0 when the parent is gone or the cache is full. */
   uint64_t insert(uint64_t parent, const TokenId *tokens,
                   const LayerPages &keys, const LayerPages &values);
+  /** Match one complete radix history allowing arbitrary token deletions.
+   * Source pages remain immutable; returned runs may end inside a page. */
+  std::vector<SparsePrefixRun> matchSparse(const TokenId *tokens, size_t count,
+                                           std::vector<LayerPages> &keys,
+                                           std::vector<LayerPages> &values);
   bool contains(uint64_t id) const;
   /** Changes whenever blocks are dropped, so sessions revalidate their ids. */
   uint64_t epoch() const;
