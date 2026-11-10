@@ -81,9 +81,12 @@ as [the benefit matrix](sparse-kv-prefix-benefit.md):
 
 ```sh
 ./htp_prefill_check
-./htp_sparse_benefit MODEL_DIR miss.json 6 4k_cache_miss cache
-./htp_sparse_benefit MODEL_DIR miss-10.json 10 4k_cache_miss cache
+./htp_sparse_benefit MODEL_DIR miss.json 6 4k_cache_miss cache 1024
+./htp_sparse_benefit MODEL_DIR miss-10.json 10 4k_cache_miss cache 1024
 ```
 
 [Raw lookup and full-model samples](validation/sparse-prefix-miss-s26u-20261110.json).
 The prior benefit matrix remains unchanged as a historical measurement.
+Current sparse-enabled publication uses owned source pages; exact replay of
+the historical retained-source memory requires commit `9bf6f1fad` and its
+original 1024-row driver (without the new final row-count argument).

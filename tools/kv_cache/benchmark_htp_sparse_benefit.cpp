@@ -2,8 +2,8 @@
 /** @file benchmark_htp_sparse_benefit.cpp
  * @brief Same Q8 request: KV-cold, exact prefix, sparse prefix TTFT matrix.
  * Usage: htp_sparse_benefit MODEL_DIR OUTPUT_JSON REPEATS [CASE]
- * [all|cold|cache] K means 1024 tokens. Model load and source preparation are
- * reported apart.
+ * [all|cold|cache] [PREFILL_ROWS=4096]. K means 1024 tokens. Model load and
+ * source preparation are reported apart.
  */
 #include <chrono>
 #include <filesystem>
@@ -85,7 +85,7 @@ struct Observer {
   static void end(BaseStreamer *) {}
 };
 int main(int argc, char **argv) {
-  if (argc < 4 || argc > 6)
+  if (argc < 4 || argc > 7)
     return 2;
   json report{{"passed", false}, {"samples", json::array()}};
   auto write = [&] { std::ofstream(argv[2]) << report.dump(2) << '\n'; };
@@ -94,7 +94,10 @@ int main(int argc, char **argv) {
     const unsigned repeats = std::stoul(argv[3]);
     require(repeats && repeats <= 10, "Invalid repeat count");
     const std::string filter = argc >= 5 ? argv[4] : "all";
-    const std::string experiment = argc == 6 ? argv[5] : "all";
+    const std::string experiment = argc >= 6 ? argv[5] : "all";
+    const auto prefill_rows = argc == 7 ? std::stoul(argv[6]) : 4096ul;
+    require(prefill_rows && prefill_rows <= 4096 && prefill_rows % 64 == 0,
+            "Prefill rows must be a multiple of 64, at most 4096");
     require(experiment == "all" || experiment == "cold" ||
               experiment == "cache",
             "Invalid experiment mode");
@@ -105,7 +108,7 @@ int main(int argc, char **argv) {
          nc = read(dir / "nntr_config.json");
     nc["attention_kv_dtype"] = "q8";
     nc["skip_prefill"] = true;
-    nc["init_seq_len"] = 1024;
+    nc["init_seq_len"] = prefill_rows;
     nc["max_seq_len"] = 28672;
     nc["num_to_generate"] = 16;
     for (const char *key : {"kv_session", "kv_paged", "kv_prefix_cache",
@@ -283,6 +286,7 @@ int main(int argc, char **argv) {
     std::cout << "BENEFIT warmup\n" << std::flush;
     report["warmup"] =
       run("<bos><|turn>user\nSay READY.<turn|>\n<|turn>model\n", "warmup");
+    write();
     if (cold_only) {
       // Warm model weights/workspaces on the same long source, then discard
       // request KV normally. No prefix manager or retained source is created.
@@ -305,6 +309,7 @@ int main(int argc, char **argv) {
           result["native_boundary"] = boundary;
           result["input_tokens"] = ids.size();
           report["producer"].push_back(std::move(result));
+          write();
           prepared = true;
           break;
         }

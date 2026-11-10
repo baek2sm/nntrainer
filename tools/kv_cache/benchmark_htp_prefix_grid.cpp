@@ -2,8 +2,10 @@
 /** @file benchmark_htp_prefix_grid.cpp
  * @brief Same-model 4K..20K recompute/DRAM/Flash comparison with exact IDs.
  * Usage: htp_prefix_grid_bench MODEL_DIR FLASH_DIRECTORY OUTPUT_JSON
+ * [COMMON_PREFIX_TOKENS]
  * Does not change numerical runtime settings. K means 1024 tokens.
  */
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -96,7 +98,7 @@ static unsigned adviseDropFiles(const std::filesystem::path &root) {
   return count;
 }
 int main(int argc, char **argv) {
-  if (argc != 4)
+  if (argc < 4 || argc > 5)
     return 2;
   json report;
   auto write = [&] {
@@ -120,7 +122,14 @@ int main(int argc, char **argv) {
     model->enableDeviceKVManager(1, 1);
     model->enableDeviceKVPrefixFlash(flash_dir.string(), size_t(3) << 30,
                                      size_t(768) << 20);
-    const std::vector<unsigned> lengths{4096, 8192, 12288, 16384, 20480};
+    std::vector<unsigned> lengths{4096, 8192, 12288, 16384, 20480};
+    if (argc == 5) {
+      const auto length = std::stoul(argv[4]);
+      require(std::find(lengths.begin(), lengths.end(), length) !=
+                lengths.end(),
+              "Common prefix must be 4096, 8192, 12288, 16384 or 20480");
+      lengths = {static_cast<unsigned>(length)};
+    }
     std::string filler = "<bos><|turn>user\n";
     for (unsigned i = 0; i < 2400; ++i)
       filler += "The mountain village has orchards, a bridge and a library. ";
@@ -325,26 +334,29 @@ int main(int argc, char **argv) {
       model->clearDeviceKVPrefixes();
     }
     report["cold_backup_20K"] = json::array();
-    const auto long_source = sourceOf(20992);
-    const bool backup_modes[] = {false, true, true, false};
-    for (bool backup : backup_modes) {
-      model->drainDeviceKVPrefixFlash();
-      model->clearDeviceKVPrefixes();
-      auto result = run(long_source, true, true, backup, 0, false);
-      model->drainDeviceKVPrefixFlash();
-      result["backup_enabled"] = backup;
-      const auto &reference = report["dram_producers"].back();
-      require(result["ids"] == reference["ids"] &&
-                result["position"] == reference["position"],
-              "20K cold backup output IDs/position changed");
-      require(result["backup_submitted"].get<unsigned>() ==
-                  (backup ? 4u : 0u) &&
-                result["backup_skipped"].get<unsigned>() == 0 &&
-                result["backup_failed"].get<unsigned>() == 0,
-              "20K cold backup was incomplete");
-      report["cold_backup_20K"].push_back(result);
-      write();
-      std::cout << "GRID cold backup=" << backup << " PASS\n" << std::flush;
+    // A filtered run measures only the requested prefix, not backup overhead.
+    if (argc == 4) {
+      const auto long_source = sourceOf(20992);
+      const bool backup_modes[] = {false, true, true, false};
+      for (bool backup : backup_modes) {
+        model->drainDeviceKVPrefixFlash();
+        model->clearDeviceKVPrefixes();
+        auto result = run(long_source, true, true, backup, 0, false);
+        model->drainDeviceKVPrefixFlash();
+        result["backup_enabled"] = backup;
+        const auto &reference = report["dram_producers"].back();
+        require(result["ids"] == reference["ids"] &&
+                  result["position"] == reference["position"],
+                "20K cold backup output IDs/position changed");
+        require(result["backup_submitted"].get<unsigned>() ==
+                    (backup ? 4u : 0u) &&
+                  result["backup_skipped"].get<unsigned>() == 0 &&
+                  result["backup_failed"].get<unsigned>() == 0,
+                "20K cold backup was incomplete");
+        report["cold_backup_20K"].push_back(result);
+        write();
+        std::cout << "GRID cold backup=" << backup << " PASS\n" << std::flush;
+      }
     }
     model->clearDeviceKVPrefixes();
     model->drainDeviceKVPrefixFlash();

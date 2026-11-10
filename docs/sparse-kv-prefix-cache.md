@@ -164,3 +164,7 @@ in [sparse-kv-prefix-miss.md](sparse-kv-prefix-miss.md).
 
 Quality improvements, Quick.KV experiment evidence and reproduction commands
 are tracked in [sparse-kv-quality-todo.md](sparse-kv-quality-todo.md).
+
+The 4096-row prefill comparison against `5e97254` and the owned sparse-source
+snapshot correction are recorded in
+[sparse-kv-prefix-4096-validation.md](sparse-kv-prefix-4096-validation.md).

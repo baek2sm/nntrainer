@@ -1,5 +1,10 @@
 # Sparse prefix reuse benefit on Galaxy S26 Ultra
 
+This is the historical **1024-row** experiment. The performance reference from
+`5e97254` used 4096-row prefill. See the
+[4096-row validation](sparse-kv-prefix-4096-validation.md) for the source-memory
+correction and comparison against that baseline.
+
 Measured on 2026-11-10. All variants use Q8 KV, with **TurboQuant off**.
 The primary comparison is full request-KV recomputation versus existing exact
 prefix caching versus sparse prefix caching. Fan cooling is enabled for every
@@ -154,9 +159,9 @@ export ADSP_LIBRARY_PATH="$PWD;/vendor/lib/rfsa/adsp;/vendor/dsp/cdsp"
 export NNTR_NUM_THREADS=8
 export NNTR_HTP_KV_MANAGER=1
 ./htp_prefill_check
-./htp_sparse_benefit MODEL_DIR benefit-cold.json 2 all cold
+./htp_sparse_benefit MODEL_DIR benefit-cold.json 2 all cold 1024
 ./htp_prefill_check
-./htp_sparse_benefit MODEL_DIR benefit-cache.json 2 all cache
+./htp_sparse_benefit MODEL_DIR benefit-cache.json 2 all cache 1024
 ```
 
 Copy the two JSON reports to the host, then:
@@ -177,6 +182,9 @@ source memory); `all` is a different baseline and is not used for this table.
 
 [Raw cohorts, metadata and summary](validation/sparse-prefix-benefit-s26u-20261110.json)
 and [CSV table](validation/sparse-prefix-benefit-s26u-20261110.csv).
+Current tools can repeat the 1024-row setup with the explicit final argument
+shown above. Exact historical replay, including borrowed source snapshots,
+requires commit `c70ca384a` and its original driver without that extra argument.
 The earlier pre-fan/mixed-cooling cold cohort and failed 4096-plane pilot are
 excluded. The checked-in raw report contains only the 48 final samples.
 

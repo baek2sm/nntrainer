@@ -1877,7 +1877,13 @@ void CausalLM::captureDevicePrefill(unsigned from, unsigned position,
   const auto *previous = device_prefill_history_->empty()
                            ? nullptr
                            : device_prefill_history_->rbegin()->second.kv.get();
-  auto snapshot = kv_cache.capturePrefix(position, previous, archive);
+  // Sparse lookup retains several source histories. Borrowing even a small
+  // prefix pins the entire shared KV slab, including unused global capacity
+  // and prefill scratch rows of sliding layers. Keep only the captured pages;
+  // previous owned pages can still be shared across incremental checkpoints.
+  const bool owned =
+    archive || nntrainer::htpRuntimeConfig().htp.kv_sparse_prefix_cache;
+  auto snapshot = kv_cache.capturePrefix(position, previous, owned);
   if (system_prefix_writer_) {
     frame.baked = system_prefix_writer_->add(from, frame.plane, frame.chunk,
                                              *snapshot, frame.calibration);

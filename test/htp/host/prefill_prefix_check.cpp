@@ -220,7 +220,7 @@ int main() {
 
   // Borrowed RPC slabs survive owner release. Sliding compaction freezes only
   // pages in the mutated layer before its original memmove.
-  std::shared_ptr<const Manager::PrefixSnapshot> pinned, still_borrowed;
+  std::shared_ptr<const Manager::PrefixSnapshot> pinned, still_borrowed, owned;
   std::map<void *, std::shared_ptr<void>> slabs;
   {
     Manager borrowed;
@@ -245,6 +245,7 @@ int main() {
     require(pinned->layers[0].pages[0]->key_view ==
             reinterpret_cast<unsigned char *>(k));
     const auto staged = borrowed.capturePrefix(159, pinned.get(), true);
+    owned = staged;
     require(borrowed.prefixPayloadBytes(159) == 159u * 8u * 2u * 2u);
     for (const auto &page : staged->layers[0].pages)
       require(!page->key_view && !page->value_view && !page->key_owner);
@@ -260,6 +261,17 @@ int main() {
     require(still_borrowed->layers[0].pages[0]->key_view != nullptr);
   }
   require(slabs.empty());
+  // Owned sparse sources outlive the producer without retaining slab capacity.
+  require(owned->layers[0].pages.size() == 3);
+  size_t owned_bytes = 0;
+  for (const auto &page : owned->layers[0].pages) {
+    require(!page->key_owner && !page->value_owner && !page->slab_bytes);
+    owned_bytes += page->keySize() + page->valueSize();
+  }
+  require(owned_bytes == 159u * 8u * 2u * 2u);
+  require(reinterpret_cast<const uint16_t *>(
+            owned->layers[0].pages.back()->valueData())[30u * 8u + 7u] ==
+          159u * 8u - 1u);
   require(reinterpret_cast<const uint16_t *>(
             still_borrowed->layers[0].pages[0]->keyData())[0] == 95u * 8u);
   still_borrowed.reset();
