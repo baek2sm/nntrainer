@@ -148,3 +148,7 @@ and verifies exact source replay and absence of cache contamination.
 
 Existing-path performance comparisons and the small-gain regression fix are
 recorded in [sparse-kv-prefix-regression.md](sparse-kv-prefix-regression.md).
+
+A repeated Q8-only cold/exact/sparse benefit matrix at 4K–24K on S26U is
+recorded in [sparse-kv-prefix-benefit.md](sparse-kv-prefix-benefit.md), with raw
+cohorts and CSV. TurboQuant is disabled in all three variants.

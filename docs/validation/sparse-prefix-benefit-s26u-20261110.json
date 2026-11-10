@@ -1,0 +1,3504 @@
+{
+  "metadata": {
+    "device": {
+      "model": "Galaxy S26 Ultra SM-S948U",
+      "serial": "R3CY70LV96T",
+      "dsp": "v81",
+      "ram_gb": 12
+    },
+    "date": "2026-11-10",
+    "branch": "kv/sparse-prefix-reuse-20261110",
+    "parent_commit": "87214599810317a229244824239e20417663131f",
+    "binaries_sha256": {
+      "htp_sparse_benefit": "9ea49aee077e2b7a729772faca65e2ecb515f706adcc30156eb88ef7022b50ed",
+      "libccapi-nntrainer.so": "a562d5ee5734216fc36514c55a354e8850751f62e51c94b744ff047f25597298",
+      "libnntrainer.so": "8f9e21e811c60082e6b812f7acaa8703820f02541103d96f2f5a32a67e67776d",
+      "htp_prefill_check": "a545cffefe3ab8e18adcba5a0de12d10a021a8c6d50392ac96c09253e0fb2127"
+    },
+    "verification": {
+      "kv_core_tests_passed": 76,
+      "causallm_kv_tests_passed": 37,
+      "core_snapshot_asan_ubsan": "passed; LeakSanitizer disabled under ptrace",
+      "device_manager_asan_ubsan": "passed",
+      "android_build": "passed",
+      "clang_format": "14"
+    },
+    "limitations": [
+      "Two repeats per case/mode",
+      "Cached cohort precedes final cold cohort; fan enabled throughout both; clocks and thermals not locked",
+      "Synthetic token-deletion and secret retrieval fixture",
+      "Sparse KV reuse is approximate",
+      "Source KV preparation excluded from request TTFT; source memory cost reported separately",
+      "Cold means warm model with cold request KV, not model/disk loading"
+    ],
+    "cooling": {
+      "external_fan_enabled_local": "2026-11-10T11:31:00+09:00 (approximate user notification)",
+      "final_comparison": "Cached cohort and a complete replacement cold cohort both run with fan enabled; earlier cold cohort excluded",
+      "order": "initial cold (excluded), cached, final cooled cold"
+    },
+    "implementation_commit": "c70ca384a74f5076803306cda41d973ef0040253",
+    "source_files": {
+      "tools/kv_cache/benchmark_htp_sparse_benefit.cpp": {
+        "sha256": "e400d8010df4da3087b39ce1a33cec145253fa2cdb22385c739e6988af65e273",
+        "matches_android_build_source": true
+      },
+      "Applications/CausalLM/device_kv_manager.h": {
+        "sha256": "b3e6406bced5b5ef78a67507f051a2eb68d481e04d2be84843534cbcb7309edb",
+        "matches_android_build_source": true
+      },
+      "Applications/CausalLM/kv_cache_manager.cpp": {
+        "sha256": "9bfd18141999006e044a3b415d0e639ce55cb7126b67b203c2fc96b52a1e6d61",
+        "matches_android_build_source": true
+      },
+      "Applications/CausalLM/kv_cache_manager.h": {
+        "sha256": "bdc37485f6e458c3d11bf78a7c4926d869a1f441dacf56d727b6b53ad9a412d6",
+        "matches_android_build_source": true
+      },
+      "Applications/CausalLM/models/causal_lm.cpp": {
+        "sha256": "2f7a94c4ee760c19dba2c97e13d8b7eeae1c76aa54e2ae4d59e187f8d28d0401",
+        "matches_android_build_source": true
+      },
+      "nntrainer/kv_cache/sparse_prefix.h": {
+        "sha256": "a56bd4ac101321cd6c3f5c37a8c9bfdff911a2de1e4b677fb2f233c06f54b7ab",
+        "matches_android_build_source": true
+      }
+    }
+  },
+  "summary": {
+    "metric": "external first-visible-token latency, milliseconds",
+    "rows": [
+      {
+        "context_tokens": 24576,
+        "deleted_source_ranges": [],
+        "expected_exact_rows": 24576,
+        "expected_sparse_context_rows": 24576,
+        "input_tokens": 24594,
+        "name": "24k_exact_control",
+        "cold": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 90441.678533,
+            "min": 89755.140174,
+            "max": 91128.216892
+          },
+          "model_ttft_ms": {
+            "median": 90440.89470549999,
+            "min": 89754.38981,
+            "max": 91127.399601
+          },
+          "prefill_ms": {
+            "median": 89642.0,
+            "min": 88956.0,
+            "max": 90328.0
+          },
+          "wall_ms": {
+            "median": 92080.7775165,
+            "min": 91406.21835,
+            "max": 92755.336683
+          },
+          "reused_tokens": [
+            0
+          ],
+          "prefill_tokens": [
+            24593
+          ],
+          "prefix_host_bytes": [
+            0
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "exact": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 2492.4882024999997,
+            "min": 2404.58776,
+            "max": 2580.388645
+          },
+          "model_ttft_ms": {
+            "median": 2472.1184885000002,
+            "min": 2384.302603,
+            "max": 2559.934374
+          },
+          "prefill_ms": {
+            "median": 1500.5,
+            "min": 1500.0,
+            "max": 1501.0
+          },
+          "wall_ms": {
+            "median": 4168.153124,
+            "min": 4032.09578,
+            "max": 4304.210468
+          },
+          "reused_tokens": [
+            24576
+          ],
+          "prefill_tokens": [
+            17
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "sparse": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 2321.1365619999997,
+            "min": 2316.371197,
+            "max": 2325.901927
+          },
+          "model_ttft_ms": {
+            "median": 2301.0057804999997,
+            "min": 2296.268958,
+            "max": 2305.7426029999997
+          },
+          "prefill_ms": {
+            "median": 1455.5,
+            "min": 1451.0,
+            "max": 1460.0
+          },
+          "wall_ms": {
+            "median": 3973.2604935,
+            "min": 3972.858384,
+            "max": 3973.662603
+          },
+          "reused_tokens": [
+            24576
+          ],
+          "prefill_tokens": [
+            17
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "sparse_vs_cold": 38.96439357065283,
+        "sparse_vs_exact": 1.0738223003787228,
+        "exact_vs_cold": 36.285699744651055
+      },
+      {
+        "context_tokens": 4096,
+        "deleted_source_ranges": [
+          [
+            512,
+            20992
+          ]
+        ],
+        "expected_exact_rows": 0,
+        "expected_sparse_context_rows": 4096,
+        "input_tokens": 4114,
+        "name": "4k_at_0k",
+        "cold": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 14372.269446999999,
+            "min": 14286.054473,
+            "max": 14458.484421
+          },
+          "model_ttft_ms": {
+            "median": 14371.575775499998,
+            "min": 14285.384785999999,
+            "max": 14457.766764999998
+          },
+          "prefill_ms": {
+            "median": 13720.5,
+            "min": 13613.0,
+            "max": 13828.0
+          },
+          "wall_ms": {
+            "median": 15573.7349415,
+            "min": 15489.774681,
+            "max": 15657.695202
+          },
+          "reused_tokens": [
+            0
+          ],
+          "prefill_tokens": [
+            4113
+          ],
+          "prefix_host_bytes": [
+            0
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "exact": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 12798.3058285,
+            "min": 12797.914839,
+            "max": 12798.696818
+          },
+          "model_ttft_ms": {
+            "median": 12783.301766,
+            "min": 12778.325568,
+            "max": 12788.277963999999
+          },
+          "prefill_ms": {
+            "median": 12223.5,
+            "min": 12213.0,
+            "max": 12234.0
+          },
+          "wall_ms": {
+            "median": 14000.328276,
+            "min": 13998.742599,
+            "max": 14001.913953
+          },
+          "reused_tokens": [
+            0
+          ],
+          "prefill_tokens": [
+            4113
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "sparse": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 2942.562707,
+            "min": 2935.712447,
+            "max": 2949.412967
+          },
+          "model_ttft_ms": {
+            "median": 2932.884686,
+            "min": 2926.102603,
+            "max": 2939.666769
+          },
+          "prefill_ms": {
+            "median": 1397.0,
+            "min": 1389.0,
+            "max": 1405.0
+          },
+          "wall_ms": {
+            "median": 4022.6132535,
+            "min": 4011.627186,
+            "max": 4033.599321
+          },
+          "reused_tokens": [
+            4096
+          ],
+          "prefill_tokens": [
+            17
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": false
+        },
+        "sparse_vs_cold": 4.884269556196751,
+        "sparse_vs_exact": 4.349374033067972,
+        "exact_vs_cold": 1.1229821852666628
+      },
+      {
+        "context_tokens": 8192,
+        "deleted_source_ranges": [
+          [
+            4096,
+            20480
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 8192,
+        "input_tokens": 8210,
+        "name": "8k_at_4k",
+        "cold": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 27800.7386875,
+            "min": 27774.343583,
+            "max": 27827.133792
+          },
+          "model_ttft_ms": {
+            "median": 27800.049207999997,
+            "min": 27773.620457999998,
+            "max": 27826.477958
+          },
+          "prefill_ms": {
+            "median": 27156.0,
+            "min": 27134.0,
+            "max": 27178.0
+          },
+          "wall_ms": {
+            "median": 29068.285145,
+            "min": 29042.656551,
+            "max": 29093.913739
+          },
+          "reused_tokens": [
+            0
+          ],
+          "prefill_tokens": [
+            8209
+          ],
+          "prefix_host_bytes": [
+            0
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "exact": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 13939.7506715,
+            "min": 13904.783484,
+            "max": 13974.717859
+          },
+          "model_ttft_ms": {
+            "median": 13929.105437499999,
+            "min": 13892.996974,
+            "max": 13965.213901
+          },
+          "prefill_ms": {
+            "median": 13304.5,
+            "min": 13269.0,
+            "max": 13340.0
+          },
+          "wall_ms": {
+            "median": 15233.8909055,
+            "min": 15187.608275,
+            "max": 15280.173536
+          },
+          "reused_tokens": [
+            4096
+          ],
+          "prefill_tokens": [
+            4113
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "sparse": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 3201.1302335,
+            "min": 3157.096145,
+            "max": 3245.164322
+          },
+          "model_ttft_ms": {
+            "median": 3189.336978,
+            "min": 3145.2131759999997,
+            "max": 3233.46078
+          },
+          "prefill_ms": {
+            "median": 1489.5,
+            "min": 1473.0,
+            "max": 1506.0
+          },
+          "wall_ms": {
+            "median": 4472.2231495,
+            "min": 4420.373384,
+            "max": 4524.072915
+          },
+          "reused_tokens": [
+            8192
+          ],
+          "prefill_tokens": [
+            17
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": false
+        },
+        "sparse_vs_cold": 8.684663434359457,
+        "sparse_vs_exact": 4.3546340369472505,
+        "exact_vs_cold": 1.99434978018215
+      },
+      {
+        "context_tokens": 20480,
+        "deleted_source_ranges": [
+          [
+            4096,
+            8192
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 20480,
+        "input_tokens": 20498,
+        "name": "20k_at_4k",
+        "cold": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 73448.8739305,
+            "min": 73126.538514,
+            "max": 73771.209347
+          },
+          "model_ttft_ms": {
+            "median": 73448.11755,
+            "min": 73125.780858,
+            "max": 73770.45424199999
+          },
+          "prefill_ms": {
+            "median": 72695.0,
+            "min": 72378.0,
+            "max": 73012.0
+          },
+          "wall_ms": {
+            "median": 74782.246977,
+            "min": 74458.509972,
+            "max": 75105.983982
+          },
+          "reused_tokens": [
+            0
+          ],
+          "prefill_tokens": [
+            20497
+          ],
+          "prefix_host_bytes": [
+            0
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "exact": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 56366.865473,
+            "min": 55636.706281,
+            "max": 57097.024665
+          },
+          "model_ttft_ms": {
+            "median": 56351.87812949999,
+            "min": 55624.932791,
+            "max": 57078.823467999995
+          },
+          "prefill_ms": {
+            "median": 55569.5,
+            "min": 54839.0,
+            "max": 56300.0
+          },
+          "wall_ms": {
+            "median": 57781.5048735,
+            "min": 57048.301801,
+            "max": 58514.707946
+          },
+          "reused_tokens": [
+            4096
+          ],
+          "prefill_tokens": [
+            16401
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "sparse": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 4309.940909999999,
+            "min": 4306.6388,
+            "max": 4313.24302
+          },
+          "model_ttft_ms": {
+            "median": 4291.8852325,
+            "min": 4288.706873,
+            "max": 4295.0635919999995
+          },
+          "prefill_ms": {
+            "median": 1605.5,
+            "min": 1603.0,
+            "max": 1608.0
+          },
+          "wall_ms": {
+            "median": 5680.992628,
+            "min": 5668.300258,
+            "max": 5693.684998
+          },
+          "reused_tokens": [
+            20480
+          ],
+          "prefill_tokens": [
+            17
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "sparse_vs_cold": 17.041735713843003,
+        "sparse_vs_exact": 13.078338346174682,
+        "exact_vs_cold": 1.3030505300260553
+      },
+      {
+        "context_tokens": 20480,
+        "deleted_source_ranges": [
+          [
+            12288,
+            16384
+          ]
+        ],
+        "expected_exact_rows": 12288,
+        "expected_sparse_context_rows": 20480,
+        "input_tokens": 20498,
+        "name": "20k_at_12k",
+        "cold": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 74124.2863,
+            "min": 74116.164347,
+            "max": 74132.408253
+          },
+          "model_ttft_ms": {
+            "median": 74123.53275849999,
+            "min": 74115.38742,
+            "max": 74131.678097
+          },
+          "prefill_ms": {
+            "median": 73367.0,
+            "min": 73357.0,
+            "max": 73377.0
+          },
+          "wall_ms": {
+            "median": 75455.45059650001,
+            "min": 75447.921742,
+            "max": 75462.979451
+          },
+          "reused_tokens": [
+            0
+          ],
+          "prefill_tokens": [
+            20497
+          ],
+          "prefix_host_bytes": [
+            0
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "exact": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 31317.431941000003,
+            "min": 30940.032488,
+            "max": 31694.831394
+          },
+          "model_ttft_ms": {
+            "median": 31299.264936,
+            "min": 30921.796758999997,
+            "max": 31676.733113
+          },
+          "prefill_ms": {
+            "median": 30510.0,
+            "min": 30135.0,
+            "max": 30885.0
+          },
+          "wall_ms": {
+            "median": 32712.850743000003,
+            "min": 32321.453582,
+            "max": 33104.247904
+          },
+          "reused_tokens": [
+            12288
+          ],
+          "prefill_tokens": [
+            8209
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "sparse": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 3839.522707,
+            "min": 3821.142342,
+            "max": 3857.903072
+          },
+          "model_ttft_ms": {
+            "median": 3821.342447,
+            "min": 3802.939062,
+            "max": 3839.7458319999996
+          },
+          "prefill_ms": {
+            "median": 1613.5,
+            "min": 1607.0,
+            "max": 1620.0
+          },
+          "wall_ms": {
+            "median": 5210.952576,
+            "min": 5179.28156,
+            "max": 5242.623592
+          },
+          "reused_tokens": [
+            20480
+          ],
+          "prefill_tokens": [
+            17
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "sparse_vs_cold": 19.305599147743237,
+        "sparse_vs_exact": 8.156595059043104,
+        "exact_vs_cold": 2.3668698774422285
+      },
+      {
+        "context_tokens": 20480,
+        "deleted_source_ranges": [
+          [
+            16384,
+            17408
+          ],
+          [
+            12288,
+            13312
+          ],
+          [
+            8192,
+            9216
+          ],
+          [
+            4096,
+            5120
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 20480,
+        "input_tokens": 20498,
+        "name": "20k_multi_holes",
+        "cold": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 74573.2368985,
+            "min": 74333.957471,
+            "max": 74812.516326
+          },
+          "model_ttft_ms": {
+            "median": 74572.473982,
+            "min": 74333.17002399999,
+            "max": 74811.77794
+          },
+          "prefill_ms": {
+            "median": 73811.0,
+            "min": 73577.0,
+            "max": 74045.0
+          },
+          "wall_ms": {
+            "median": 75902.5685125,
+            "min": 75667.313148,
+            "max": 76137.823877
+          },
+          "reused_tokens": [
+            0
+          ],
+          "prefill_tokens": [
+            20497
+          ],
+          "prefix_host_bytes": [
+            0
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "exact": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 56918.157114,
+            "min": 56898.071072,
+            "max": 56938.243156
+          },
+          "model_ttft_ms": {
+            "median": 56899.821462,
+            "min": 56879.757842,
+            "max": 56919.885082
+          },
+          "prefill_ms": {
+            "median": 56115.0,
+            "min": 56091.0,
+            "max": 56139.0
+          },
+          "wall_ms": {
+            "median": 58336.648207499995,
+            "min": 58318.139822,
+            "max": 58355.156593
+          },
+          "reused_tokens": [
+            4096
+          ],
+          "prefill_tokens": [
+            16401
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "sparse": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 4258.010389,
+            "min": 4201.975415,
+            "max": 4314.045363
+          },
+          "model_ttft_ms": {
+            "median": 4239.8335405,
+            "min": 4183.83953,
+            "max": 4295.827550999999
+          },
+          "prefill_ms": {
+            "median": 1583.5,
+            "min": 1553.0,
+            "max": 1614.0
+          },
+          "wall_ms": {
+            "median": 5849.131951,
+            "min": 5779.42406,
+            "max": 5918.839842
+          },
+          "reused_tokens": [
+            20480
+          ],
+          "prefill_tokens": [
+            17
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": false
+        },
+        "sparse_vs_cold": 17.51363432347417,
+        "sparse_vs_exact": 13.36731287951773,
+        "exact_vs_cold": 1.3101836159090512
+      },
+      {
+        "context_tokens": 24575,
+        "deleted_source_ranges": [
+          [
+            4096,
+            4097
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 24575,
+        "input_tokens": 24593,
+        "name": "24k_one_token_at_4k",
+        "cold": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 90777.35155349999,
+            "min": 90370.810955,
+            "max": 91183.892152
+          },
+          "model_ttft_ms": {
+            "median": 90776.58816849999,
+            "min": 90370.050955,
+            "max": 91183.125382
+          },
+          "prefill_ms": {
+            "median": 89975.5,
+            "min": 89569.0,
+            "max": 90382.0
+          },
+          "wall_ms": {
+            "median": 92182.8436885,
+            "min": 91774.833559,
+            "max": 92590.853818
+          },
+          "reused_tokens": [
+            0
+          ],
+          "prefill_tokens": [
+            24592
+          ],
+          "prefix_host_bytes": [
+            0
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "exact": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 73325.4579145,
+            "min": 73211.432055,
+            "max": 73439.483774
+          },
+          "model_ttft_ms": {
+            "median": 73306.27744549999,
+            "min": 73193.13283599999,
+            "max": 73419.422055
+          },
+          "prefill_ms": {
+            "median": 72469.0,
+            "min": 72354.0,
+            "max": 72584.0
+          },
+          "wall_ms": {
+            "median": 74842.739789,
+            "min": 74727.890388,
+            "max": 74957.58919
+          },
+          "reused_tokens": [
+            4096
+          ],
+          "prefill_tokens": [
+            20496
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "sparse": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 4659.1670815,
+            "min": 4579.472915,
+            "max": 4738.861248
+          },
+          "model_ttft_ms": {
+            "median": 4638.9618985,
+            "min": 4559.3877059999995,
+            "max": 4718.536091
+          },
+          "prefill_ms": {
+            "median": 1589.5,
+            "min": 1580.0,
+            "max": 1599.0
+          },
+          "wall_ms": {
+            "median": 6116.634112,
+            "min": 6022.362445,
+            "max": 6210.905779
+          },
+          "reused_tokens": [
+            24575
+          ],
+          "prefill_tokens": [
+            17
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": true,
+          "ids_equal_cold": true
+        },
+        "sparse_vs_cold": 19.48360081653792,
+        "sparse_vs_exact": 15.737889762668303,
+        "exact_vs_cold": 1.238005927754989
+      },
+      {
+        "context_tokens": 4096,
+        "deleted_source_ranges": [],
+        "expected_exact_rows": 0,
+        "expected_sparse_context_rows": 0,
+        "input_tokens": 4114,
+        "name": "4k_cache_miss",
+        "cold": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 14191.258432,
+            "min": 14110.620359,
+            "max": 14271.896505
+          },
+          "model_ttft_ms": {
+            "median": 14190.560958,
+            "min": 14109.908588,
+            "max": 14271.213328
+          },
+          "prefill_ms": {
+            "median": 13552.5,
+            "min": 13498.0,
+            "max": 13607.0
+          },
+          "wall_ms": {
+            "median": 15482.1246295,
+            "min": 15418.073015,
+            "max": 15546.176244
+          },
+          "reused_tokens": [
+            0
+          ],
+          "prefill_tokens": [
+            4113
+          ],
+          "prefix_host_bytes": [
+            0
+          ],
+          "code_present": false,
+          "ids_equal_cold": true
+        },
+        "exact": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 13389.027078,
+            "min": 13229.292026,
+            "max": 13548.76213
+          },
+          "model_ttft_ms": {
+            "median": 13374.1090835,
+            "min": 13209.088537,
+            "max": 13539.12963
+          },
+          "prefill_ms": {
+            "median": 12806.0,
+            "min": 12644.0,
+            "max": 12968.0
+          },
+          "wall_ms": {
+            "median": 14684.849707500001,
+            "min": 14551.287442,
+            "max": 14818.411973
+          },
+          "reused_tokens": [
+            0
+          ],
+          "prefill_tokens": [
+            4113
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": false,
+          "ids_equal_cold": true
+        },
+        "sparse": {
+          "n": 2,
+          "ttft_ms": {
+            "median": 13659.023615,
+            "min": 13652.880933,
+            "max": 13665.166297
+          },
+          "model_ttft_ms": {
+            "median": 13649.4617655,
+            "min": 13643.339629999999,
+            "max": 13655.583901
+          },
+          "prefill_ms": {
+            "median": 13058.0,
+            "min": 13037.0,
+            "max": 13079.0
+          },
+          "wall_ms": {
+            "median": 14959.2601765,
+            "min": 14952.819004,
+            "max": 14965.701349
+          },
+          "reused_tokens": [
+            0
+          ],
+          "prefill_tokens": [
+            4113
+          ],
+          "prefix_host_bytes": [
+            3019898880
+          ],
+          "code_present": false,
+          "ids_equal_cold": true
+        },
+        "sparse_vs_cold": 1.038965802534781,
+        "sparse_vs_exact": 0.9802331012369363,
+        "exact_vs_cold": 1.0599170760747938
+      }
+    ],
+    "all_exact_ids_equal_cold": true,
+    "all_cold_ids_stable": true
+  },
+  "cold": {
+    "cache_tier": "none; prefix caching and TurboQuant disabled",
+    "cases": [
+      {
+        "context_tokens": 24576,
+        "deleted_source_ranges": [],
+        "expected_exact_rows": 24576,
+        "expected_sparse_context_rows": 24576,
+        "input_tokens": 24594,
+        "name": "24k_exact_control"
+      },
+      {
+        "context_tokens": 4096,
+        "deleted_source_ranges": [
+          [
+            512,
+            20992
+          ]
+        ],
+        "expected_exact_rows": 0,
+        "expected_sparse_context_rows": 4096,
+        "input_tokens": 4114,
+        "name": "4k_at_0k"
+      },
+      {
+        "context_tokens": 8192,
+        "deleted_source_ranges": [
+          [
+            4096,
+            20480
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 8192,
+        "input_tokens": 8210,
+        "name": "8k_at_4k"
+      },
+      {
+        "context_tokens": 20480,
+        "deleted_source_ranges": [
+          [
+            4096,
+            8192
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 20480,
+        "input_tokens": 20498,
+        "name": "20k_at_4k"
+      },
+      {
+        "context_tokens": 20480,
+        "deleted_source_ranges": [
+          [
+            12288,
+            16384
+          ]
+        ],
+        "expected_exact_rows": 12288,
+        "expected_sparse_context_rows": 20480,
+        "input_tokens": 20498,
+        "name": "20k_at_12k"
+      },
+      {
+        "context_tokens": 20480,
+        "deleted_source_ranges": [
+          [
+            16384,
+            17408
+          ],
+          [
+            12288,
+            13312
+          ],
+          [
+            8192,
+            9216
+          ],
+          [
+            4096,
+            5120
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 20480,
+        "input_tokens": 20498,
+        "name": "20k_multi_holes"
+      },
+      {
+        "context_tokens": 24575,
+        "deleted_source_ranges": [
+          [
+            4096,
+            4097
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 24575,
+        "input_tokens": 24593,
+        "name": "24k_one_token_at_4k"
+      },
+      {
+        "context_tokens": 4096,
+        "deleted_source_ranges": [],
+        "expected_exact_rows": 0,
+        "expected_sparse_context_rows": 0,
+        "input_tokens": 4114,
+        "name": "4k_cache_miss"
+      }
+    ],
+    "cold_weight_warmup": {
+      "decode_ms_per_token": 122.724323,
+      "decode_tokens": 15,
+      "external_ttft_ms": 81831.456583,
+      "flash_hits": 0,
+      "flash_read_ms": 0.0,
+      "ids": [
+        9744,
+        815,
+        614,
+        79310,
+        236764,
+        496,
+        9427,
+        532,
+        496,
+        10810,
+        11825,
+        236761,
+        107,
+        236909,
+        19558,
+        236743
+      ],
+      "kv_bytes": 405012480,
+      "mode": "cold",
+      "output": " village has an orchard, a library and a stone bridge.\n| Record ",
+      "peak_memory_kb": 4535840,
+      "position": 24592,
+      "prefill_ms": 81159.0,
+      "prefill_tokens": 24576,
+      "prefix_host_bytes": 0,
+      "reused_tokens": 0,
+      "sparse_hits": 0,
+      "ttft_ms": 81830.981271,
+      "wall_ms": 83681.575593
+    },
+    "config": {
+      "act_scale_bytes": 2368,
+      "act_scale_json": "/data/local/tmp/nntr_tq_hybrid_20261110/longgen-q8/act_scales.json",
+      "act_scale_offset": 6604559480,
+      "act_scale_sites": 296,
+      "attention_engine": "htp",
+      "attention_kv_dtype": "q8",
+      "attn_proj_engine": "htp",
+      "bad_word_ids": [],
+      "batch_size": 1,
+      "dense_ffn_engine": "htp",
+      "embedding_dtype": "Q4_0",
+      "fc_layer_dtype": "QS4CX_WH_AFFINE",
+      "gemma4_execution_profile": "htp_fused",
+      "gemma4_weight_format": "htp_fused_v1",
+      "htp": {
+        "kv_paged": false,
+        "kv_prefix_cache": false,
+        "kv_request_reserve": true,
+        "kv_seed_q": false,
+        "kv_session": false,
+        "kv_sparse_prefix_cache": false,
+        "kv_turboquant": false,
+        "oproj_u16": true,
+        "page_cache": 0
+      },
+      "init_seq_len": 1024,
+      "lmhead_dtype": "QS4CX_WH_AFFINE",
+      "lmhead_engine": "htp",
+      "max_seq_len": 28672,
+      "model_file_name": "/data/local/tmp/nntr_tq_hybrid_20261110/longgen-q8/nntr_gemma4_26b_a4b_tl2_rotated.bin",
+      "model_tensor_type": "Q4_0-FP32",
+      "model_type": "CausalLM",
+      "moe": {
+        "cache_grow": 0
+      },
+      "moe_cache_experts": 16,
+      "moe_decode_prefetch": true,
+      "moe_engine": "htp",
+      "moe_hadamard": "both",
+      "moe_hadamard_scope": "all",
+      "moe_hadamard_signs": "/data/local/tmp/nntr_tq_hybrid_20261110/longgen-q8/rotation_signs.json",
+      "moe_layer_dtype": "TL2CX_WH",
+      "num_to_generate": 16,
+      "sample_input": "<bos><|turn>user\nRead the following notes and write a detailed tutorial of at least 1500 words explaining these tradeoffs with examples.\nAttention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. Attention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. Attention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. Attention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. Attention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. Attention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. \n<turn|>\n<|turn>model\n",
+      "skip_prefill": true,
+      "tokenizer_file": "/data/local/tmp/nntr_tq_hybrid_20261110/longgen-q8/tokenizer.json"
+    },
+    "experiment": "cold",
+    "model_load_ms": 1420.272135,
+    "passed": true,
+    "samples": [
+      {
+        "case": "24k_exact_control",
+        "result": {
+          "decode_ms_per_token": 111.05177099999999,
+          "decode_tokens": 15,
+          "external_ttft_ms": 89755.140174,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 4460196,
+          "position": 24609,
+          "prefill_ms": 88956.0,
+          "prefill_tokens": 24593,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 89754.38981,
+          "wall_ms": 91406.21835
+        },
+        "round": 0
+      },
+      {
+        "case": "24k_exact_control",
+        "result": {
+          "decode_ms_per_token": 109.541145,
+          "decode_tokens": 15,
+          "external_ttft_ms": 91128.216892,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 4568628,
+          "position": 24609,
+          "prefill_ms": 90328.0,
+          "prefill_tokens": 24593,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 91127.399601,
+          "wall_ms": 92755.336683
+        },
+        "round": 1
+      },
+      {
+        "case": "4k_at_0k",
+        "result": {
+          "decode_ms_per_token": 80.135105,
+          "decode_tokens": 15,
+          "external_ttft_ms": 14458.484421,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 4411436,
+          "position": 4129,
+          "prefill_ms": 13828.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 14457.766764999998,
+          "wall_ms": 15657.695202
+        },
+        "round": 0
+      },
+      {
+        "case": "4k_at_0k",
+        "result": {
+          "decode_ms_per_token": 80.883021,
+          "decode_tokens": 15,
+          "external_ttft_ms": 14286.054473,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 4518812,
+          "position": 4129,
+          "prefill_ms": 13613.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 14285.384785999999,
+          "wall_ms": 15489.774681
+        },
+        "round": 1
+      },
+      {
+        "case": "8k_at_4k",
+        "result": {
+          "decode_ms_per_token": 86.410521,
+          "decode_tokens": 15,
+          "external_ttft_ms": 27774.343583,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            106,
+            107,
+            45518
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|>\nthought",
+          "peak_memory_kb": 4459572,
+          "position": 8225,
+          "prefill_ms": 27134.0,
+          "prefill_tokens": 8209,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 27773.620457999998,
+          "wall_ms": 29042.656551
+        },
+        "round": 0
+      },
+      {
+        "case": "8k_at_4k",
+        "result": {
+          "decode_ms_per_token": 86.250469,
+          "decode_tokens": 15,
+          "external_ttft_ms": 27827.133792,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            106,
+            107,
+            45518
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|>\nthought",
+          "peak_memory_kb": 4411736,
+          "position": 8225,
+          "prefill_ms": 27178.0,
+          "prefill_tokens": 8209,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 27826.477958,
+          "wall_ms": 29093.913739
+        },
+        "round": 1
+      },
+      {
+        "case": "20k_at_4k",
+        "result": {
+          "decode_ms_per_token": 103.943646,
+          "decode_tokens": 13,
+          "external_ttft_ms": 73126.538514,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 4584840,
+          "position": 20511,
+          "prefill_ms": 72378.0,
+          "prefill_tokens": 20497,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 73125.780858,
+          "wall_ms": 74458.509972
+        },
+        "round": 0
+      },
+      {
+        "case": "20k_at_4k",
+        "result": {
+          "decode_ms_per_token": 104.775469,
+          "decode_tokens": 13,
+          "external_ttft_ms": 73771.209347,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 4535532,
+          "position": 20511,
+          "prefill_ms": 73012.0,
+          "prefill_tokens": 20497,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 73770.45424199999,
+          "wall_ms": 75105.983982
+        },
+        "round": 1
+      },
+      {
+        "case": "20k_at_12k",
+        "result": {
+          "decode_ms_per_token": 102.33567699999999,
+          "decode_tokens": 13,
+          "external_ttft_ms": 74116.164347,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 4411900,
+          "position": 20511,
+          "prefill_ms": 73357.0,
+          "prefill_tokens": 20497,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 74115.38742,
+          "wall_ms": 75447.921742
+        },
+        "round": 0
+      },
+      {
+        "case": "20k_at_12k",
+        "result": {
+          "decode_ms_per_token": 102.372344,
+          "decode_tokens": 13,
+          "external_ttft_ms": 74132.408253,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 4412300,
+          "position": 20511,
+          "prefill_ms": 73377.0,
+          "prefill_tokens": 20497,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 74131.678097,
+          "wall_ms": 75462.979451
+        },
+        "round": 1
+      },
+      {
+        "case": "20k_multi_holes",
+        "result": {
+          "decode_ms_per_token": 104.37875,
+          "decode_tokens": 13,
+          "external_ttft_ms": 74333.957471,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 4568608,
+          "position": 20511,
+          "prefill_ms": 73577.0,
+          "prefill_tokens": 20497,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 74333.17002399999,
+          "wall_ms": 75667.313148
+        },
+        "round": 0
+      },
+      {
+        "case": "20k_multi_holes",
+        "result": {
+          "decode_ms_per_token": 103.323802,
+          "decode_tokens": 13,
+          "external_ttft_ms": 74812.516326,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 4430224,
+          "position": 20511,
+          "prefill_ms": 74045.0,
+          "prefill_tokens": 20497,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 74811.77794,
+          "wall_ms": 76137.823877
+        },
+        "round": 1
+      },
+      {
+        "case": "24k_one_token_at_4k",
+        "result": {
+          "decode_ms_per_token": 109.19359399999999,
+          "decode_tokens": 13,
+          "external_ttft_ms": 91183.892152,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 4503020,
+          "position": 24606,
+          "prefill_ms": 90382.0,
+          "prefill_tokens": 24592,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 91183.125382,
+          "wall_ms": 92590.853818
+        },
+        "round": 0
+      },
+      {
+        "case": "24k_one_token_at_4k",
+        "result": {
+          "decode_ms_per_token": 109.045625,
+          "decode_tokens": 13,
+          "external_ttft_ms": 90370.810955,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 4503132,
+          "position": 24606,
+          "prefill_ms": 89569.0,
+          "prefill_tokens": 24592,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 90370.050955,
+          "wall_ms": 91774.833559
+        },
+        "round": 1
+      },
+      {
+        "case": "4k_cache_miss",
+        "result": {
+          "decode_ms_per_token": 85.672761,
+          "decode_tokens": 15,
+          "external_ttft_ms": 14110.620359,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            818,
+            9744,
+            815,
+            614,
+            79310,
+            236764,
+            496,
+            9427,
+            532,
+            496,
+            10810,
+            11825
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>The village has an orchard, a library and a stone bridge",
+          "peak_memory_kb": 4411908,
+          "position": 4129,
+          "prefill_ms": 13498.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 14109.908588,
+          "wall_ms": 15418.073015
+        },
+        "round": 0
+      },
+      {
+        "case": "4k_cache_miss",
+        "result": {
+          "decode_ms_per_token": 84.781875,
+          "decode_tokens": 15,
+          "external_ttft_ms": 14271.896505,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            818,
+            9744,
+            815,
+            614,
+            79310,
+            236764,
+            496,
+            9427,
+            532,
+            496,
+            10810,
+            11825
+          ],
+          "kv_bytes": 405012480,
+          "mode": "cold",
+          "output": "<|channel>thought\n<channel|>The village has an orchard, a library and a stone bridge",
+          "peak_memory_kb": 4411792,
+          "position": 4129,
+          "prefill_ms": 13607.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 0,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 14271.213328,
+          "wall_ms": 15546.176244
+        },
+        "round": 1
+      }
+    ],
+    "source_cached_context_tokens": 24576,
+    "source_tokens": 24577,
+    "warmup": {
+      "decode_ms_per_token": 54.119636,
+      "decode_tokens": 15,
+      "external_ttft_ms": 2512.87151,
+      "flash_hits": 0,
+      "flash_read_ms": 0.0,
+      "ids": [
+        100,
+        45518,
+        107,
+        101,
+        156274,
+        236761,
+        106,
+        100,
+        45518,
+        107,
+        101,
+        13513,
+        108,
+        13513,
+        108,
+        13513
+      ],
+      "kv_bytes": 300154880,
+      "mode": "warmup",
+      "output": "<|channel>thought\n<channel|>READY.<turn|><|channel>thought\n<channel|>***\n\n***\n\n***",
+      "peak_memory_kb": 4324220,
+      "position": 27,
+      "prefill_ms": 1568.0,
+      "prefill_tokens": 11,
+      "prefix_host_bytes": 0,
+      "reused_tokens": 0,
+      "sparse_hits": 0,
+      "ttft_ms": 2512.867499,
+      "wall_ms": 3363.287811
+    }
+  },
+  "cache": {
+    "cache_tier": "DRAM; common producer frames at 4K, 12K, 24K",
+    "cases": [
+      {
+        "context_tokens": 24576,
+        "deleted_source_ranges": [],
+        "expected_exact_rows": 24576,
+        "expected_sparse_context_rows": 24576,
+        "input_tokens": 24594,
+        "name": "24k_exact_control"
+      },
+      {
+        "context_tokens": 4096,
+        "deleted_source_ranges": [
+          [
+            512,
+            20992
+          ]
+        ],
+        "expected_exact_rows": 0,
+        "expected_sparse_context_rows": 4096,
+        "input_tokens": 4114,
+        "name": "4k_at_0k"
+      },
+      {
+        "context_tokens": 8192,
+        "deleted_source_ranges": [
+          [
+            4096,
+            20480
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 8192,
+        "input_tokens": 8210,
+        "name": "8k_at_4k"
+      },
+      {
+        "context_tokens": 20480,
+        "deleted_source_ranges": [
+          [
+            4096,
+            8192
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 20480,
+        "input_tokens": 20498,
+        "name": "20k_at_4k"
+      },
+      {
+        "context_tokens": 20480,
+        "deleted_source_ranges": [
+          [
+            12288,
+            16384
+          ]
+        ],
+        "expected_exact_rows": 12288,
+        "expected_sparse_context_rows": 20480,
+        "input_tokens": 20498,
+        "name": "20k_at_12k"
+      },
+      {
+        "context_tokens": 20480,
+        "deleted_source_ranges": [
+          [
+            16384,
+            17408
+          ],
+          [
+            12288,
+            13312
+          ],
+          [
+            8192,
+            9216
+          ],
+          [
+            4096,
+            5120
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 20480,
+        "input_tokens": 20498,
+        "name": "20k_multi_holes"
+      },
+      {
+        "context_tokens": 24575,
+        "deleted_source_ranges": [
+          [
+            4096,
+            4097
+          ]
+        ],
+        "expected_exact_rows": 4096,
+        "expected_sparse_context_rows": 24575,
+        "input_tokens": 24593,
+        "name": "24k_one_token_at_4k"
+      },
+      {
+        "context_tokens": 4096,
+        "deleted_source_ranges": [],
+        "expected_exact_rows": 0,
+        "expected_sparse_context_rows": 0,
+        "input_tokens": 4114,
+        "name": "4k_cache_miss"
+      }
+    ],
+    "config": {
+      "act_scale_bytes": 2368,
+      "act_scale_json": "/data/local/tmp/nntr_tq_hybrid_20261110/longgen-q8/act_scales.json",
+      "act_scale_offset": 6604559480,
+      "act_scale_sites": 296,
+      "attention_engine": "htp",
+      "attention_kv_dtype": "q8",
+      "attn_proj_engine": "htp",
+      "bad_word_ids": [],
+      "batch_size": 1,
+      "dense_ffn_engine": "htp",
+      "embedding_dtype": "Q4_0",
+      "fc_layer_dtype": "QS4CX_WH_AFFINE",
+      "gemma4_execution_profile": "htp_fused",
+      "gemma4_weight_format": "htp_fused_v1",
+      "htp": {
+        "kv_paged": true,
+        "kv_prefix_cache": true,
+        "kv_request_reserve": true,
+        "kv_seed_q": false,
+        "kv_session": true,
+        "kv_sparse_prefix_cache": true,
+        "kv_turboquant": false,
+        "oproj_u16": true,
+        "page_cache": 0
+      },
+      "init_seq_len": 1024,
+      "lmhead_dtype": "QS4CX_WH_AFFINE",
+      "lmhead_engine": "htp",
+      "max_seq_len": 28672,
+      "model_file_name": "/data/local/tmp/nntr_tq_hybrid_20261110/longgen-q8/nntr_gemma4_26b_a4b_tl2_rotated.bin",
+      "model_tensor_type": "Q4_0-FP32",
+      "model_type": "CausalLM",
+      "moe": {
+        "cache_grow": 0
+      },
+      "moe_cache_experts": 16,
+      "moe_decode_prefetch": true,
+      "moe_engine": "htp",
+      "moe_hadamard": "both",
+      "moe_hadamard_scope": "all",
+      "moe_hadamard_signs": "/data/local/tmp/nntr_tq_hybrid_20261110/longgen-q8/rotation_signs.json",
+      "moe_layer_dtype": "TL2CX_WH",
+      "num_to_generate": 16,
+      "sample_input": "<bos><|turn>user\nRead the following notes and write a detailed tutorial of at least 1500 words explaining these tradeoffs with examples.\nAttention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. Attention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. Attention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. Attention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. Attention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. Attention uses the current query to compare earlier keys and combine the corresponding values. During prefill, the model processes many prompt tokens together. During decode, it appends one token and reuses the cached history. Reducing cache precision saves memory but introduces numerical error. \n<turn|>\n<|turn>model\n",
+      "skip_prefill": true,
+      "tokenizer_file": "/data/local/tmp/nntr_tq_hybrid_20261110/longgen-q8/tokenizer.json"
+    },
+    "experiment": "cache",
+    "model_load_ms": 1441.192083,
+    "passed": true,
+    "producer": [
+      {
+        "decode_ms_per_token": 78.94901,
+        "decode_tokens": 15,
+        "external_ttft_ms": 9603.692965,
+        "flash_hits": 0,
+        "flash_read_ms": 0.0,
+        "ids": [
+          144,
+          236746,
+          9427,
+          532,
+          496,
+          10810,
+          11825,
+          236761,
+          107,
+          100,
+          45518,
+          107,
+          101,
+          22515,
+          580,
+          506
+        ],
+        "input_tokens": 4097,
+        "kv_bytes": 154009600,
+        "mode": "producer",
+        "native_boundary": 4096,
+        "output": "        a library and a stone bridge.\n<|channel>thought\n<channel|>Based on the",
+        "peak_memory_kb": 4432108,
+        "position": 4112,
+        "prefill_ms": 9190.0,
+        "prefill_tokens": 4096,
+        "prefix_host_bytes": 1006632960,
+        "reused_tokens": 0,
+        "sparse_hits": 0,
+        "ttft_ms": 9603.175205,
+        "wall_ms": 10832.524319
+      },
+      {
+        "decode_ms_per_token": 107.188334,
+        "decode_tokens": 15,
+        "external_ttft_ms": 23580.241189,
+        "flash_hits": 0,
+        "flash_read_ms": 0.0,
+        "ids": [
+          236825,
+          236770,
+          236819,
+          236787,
+          569,
+          759,
+          537,
+          2253,
+          236772,
+          893,
+          236772,
+          2149,
+          236772,
+          30400,
+          568,
+          519
+        ],
+        "input_tokens": 12289,
+        "kv_bytes": 237895680,
+        "mode": "producer",
+        "native_boundary": 12288,
+        "output": "619: de la lune-de-la-tour (le",
+        "peak_memory_kb": 5416808,
+        "position": 12304,
+        "prefill_ms": 22989.0,
+        "prefill_tokens": 8192,
+        "prefix_host_bytes": 2013265920,
+        "reused_tokens": 4096,
+        "sparse_hits": 0,
+        "ttft_ms": 23570.861969999998,
+        "wall_ms": 25167.850928
+      },
+      {
+        "decode_ms_per_token": 127.356927,
+        "decode_tokens": 15,
+        "external_ttft_ms": 43846.324983,
+        "flash_hits": 0,
+        "flash_read_ms": 0.0,
+        "ids": [
+          9744,
+          815,
+          614,
+          79310,
+          236764,
+          496,
+          9427,
+          532,
+          496,
+          10810,
+          11825,
+          236761,
+          107,
+          236909,
+          19558,
+          236743
+        ],
+        "input_tokens": 24577,
+        "kv_bytes": 363724800,
+        "mode": "producer",
+        "native_boundary": 24576,
+        "output": " village has an orchard, a library and a stone bridge.\n| Record ",
+        "peak_memory_kb": 6453064,
+        "position": 24592,
+        "prefill_ms": 42925.0,
+        "prefill_tokens": 12288,
+        "prefix_host_bytes": 3019898880,
+        "reused_tokens": 12288,
+        "sparse_hits": 0,
+        "ttft_ms": 43830.676909999995,
+        "wall_ms": 45762.355868
+      }
+    ],
+    "samples": [
+      {
+        "case": "24k_exact_control",
+        "result": {
+          "decode_ms_per_token": 115.820104,
+          "decode_tokens": 15,
+          "external_ttft_ms": 2580.388645,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 363724800,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 7094932,
+          "position": 24609,
+          "prefill_ms": 1501.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 24576,
+          "sparse_hits": 0,
+          "ttft_ms": 2559.934374,
+          "wall_ms": 4304.210468
+        },
+        "round": 0
+      },
+      {
+        "case": "24k_exact_control",
+        "result": {
+          "decode_ms_per_token": 109.874479,
+          "decode_tokens": 15,
+          "external_ttft_ms": 2316.371197,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 363724800,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 6844892,
+          "position": 24609,
+          "prefill_ms": 1451.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 24576,
+          "sparse_hits": 0,
+          "ttft_ms": 2296.268958,
+          "wall_ms": 3973.662603
+        },
+        "round": 0
+      },
+      {
+        "case": "24k_exact_control",
+        "result": {
+          "decode_ms_per_token": 111.255625,
+          "decode_tokens": 15,
+          "external_ttft_ms": 2325.901927,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 363724800,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 6844844,
+          "position": 24609,
+          "prefill_ms": 1460.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 24576,
+          "sparse_hits": 0,
+          "ttft_ms": 2305.7426029999997,
+          "wall_ms": 3972.858384
+        },
+        "round": 1
+      },
+      {
+        "case": "24k_exact_control",
+        "result": {
+          "decode_ms_per_token": 108.606562,
+          "decode_tokens": 15,
+          "external_ttft_ms": 2404.58776,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 363724800,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 6844644,
+          "position": 24609,
+          "prefill_ms": 1500.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 24576,
+          "sparse_hits": 0,
+          "ttft_ms": 2384.302603,
+          "wall_ms": 4032.09578
+        },
+        "round": 1
+      },
+      {
+        "case": "4k_at_0k",
+        "result": {
+          "decode_ms_per_token": 81.245989,
+          "decode_tokens": 15,
+          "external_ttft_ms": 12798.696818,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 154009600,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 6951960,
+          "position": 4129,
+          "prefill_ms": 12213.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 12778.325568,
+          "wall_ms": 14001.913953
+        },
+        "round": 0
+      },
+      {
+        "case": "4k_at_0k",
+        "result": {
+          "decode_ms_per_token": 78.311745,
+          "decode_tokens": 14,
+          "external_ttft_ms": 2949.412967,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 154009600,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|><eos>",
+          "peak_memory_kb": 6880284,
+          "position": 4128,
+          "prefill_ms": 1405.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 4096,
+          "sparse_hits": 1,
+          "ttft_ms": 2939.666769,
+          "wall_ms": 4033.599321
+        },
+        "round": 0
+      },
+      {
+        "case": "4k_at_0k",
+        "result": {
+          "decode_ms_per_token": 78.5025,
+          "decode_tokens": 14,
+          "external_ttft_ms": 2935.712447,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 154009600,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|><eos>",
+          "peak_memory_kb": 6869684,
+          "position": 4128,
+          "prefill_ms": 1389.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 4096,
+          "sparse_hits": 1,
+          "ttft_ms": 2926.102603,
+          "wall_ms": 4011.627186
+        },
+        "round": 1
+      },
+      {
+        "case": "4k_at_0k",
+        "result": {
+          "decode_ms_per_token": 81.312136,
+          "decode_tokens": 15,
+          "external_ttft_ms": 12797.914839,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 154009600,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 6921964,
+          "position": 4129,
+          "prefill_ms": 12234.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 12788.277963999999,
+          "wall_ms": 13998.742599
+        },
+        "round": 1
+      },
+      {
+        "case": "8k_at_4k",
+        "result": {
+          "decode_ms_per_token": 88.20151,
+          "decode_tokens": 15,
+          "external_ttft_ms": 13974.717859,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            106,
+            107,
+            45518
+          ],
+          "kv_bytes": 195952640,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|>\nthought",
+          "peak_memory_kb": 6922292,
+          "position": 8225,
+          "prefill_ms": 13340.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 4096,
+          "sparse_hits": 0,
+          "ttft_ms": 13965.213901,
+          "wall_ms": 15280.173536
+        },
+        "round": 0
+      },
+      {
+        "case": "8k_at_4k",
+        "result": {
+          "decode_ms_per_token": 85.088281,
+          "decode_tokens": 15,
+          "external_ttft_ms": 3245.164322,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 195952640,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 6974996,
+          "position": 8225,
+          "prefill_ms": 1506.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 8192,
+          "sparse_hits": 1,
+          "ttft_ms": 3233.46078,
+          "wall_ms": 4524.072915
+        },
+        "round": 0
+      },
+      {
+        "case": "8k_at_4k",
+        "result": {
+          "decode_ms_per_token": 83.863646,
+          "decode_tokens": 15,
+          "external_ttft_ms": 3157.096145,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 195952640,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 6974756,
+          "position": 8225,
+          "prefill_ms": 1473.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 8192,
+          "sparse_hits": 1,
+          "ttft_ms": 3145.2131759999997,
+          "wall_ms": 4420.373384
+        },
+        "round": 1
+      },
+      {
+        "case": "8k_at_4k",
+        "result": {
+          "decode_ms_per_token": 83.37119799999999,
+          "decode_tokens": 15,
+          "external_ttft_ms": 13904.783484,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            106,
+            107,
+            45518
+          ],
+          "kv_bytes": 195952640,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><turn|>\nthought",
+          "peak_memory_kb": 6884428,
+          "position": 8225,
+          "prefill_ms": 13269.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 4096,
+          "sparse_hits": 0,
+          "ttft_ms": 13892.996974,
+          "wall_ms": 15187.608275
+        },
+        "round": 1
+      },
+      {
+        "case": "20k_at_4k",
+        "result": {
+          "decode_ms_per_token": 110.628907,
+          "decode_tokens": 13,
+          "external_ttft_ms": 55636.706281,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 321781760,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 6886628,
+          "position": 20511,
+          "prefill_ms": 54839.0,
+          "prefill_tokens": 16401,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 4096,
+          "sparse_hits": 0,
+          "ttft_ms": 55624.932791,
+          "wall_ms": 57048.301801
+        },
+        "round": 0
+      },
+      {
+        "case": "20k_at_4k",
+        "result": {
+          "decode_ms_per_token": 105.868854,
+          "decode_tokens": 13,
+          "external_ttft_ms": 4313.24302,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 321781760,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 7095156,
+          "position": 20511,
+          "prefill_ms": 1608.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 20480,
+          "sparse_hits": 1,
+          "ttft_ms": 4295.0635919999995,
+          "wall_ms": 5693.684998
+        },
+        "round": 0
+      },
+      {
+        "case": "20k_at_4k",
+        "result": {
+          "decode_ms_per_token": 105.71578099999999,
+          "decode_tokens": 13,
+          "external_ttft_ms": 4306.6388,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 321781760,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 6966004,
+          "position": 20511,
+          "prefill_ms": 1603.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 20480,
+          "sparse_hits": 1,
+          "ttft_ms": 4288.706873,
+          "wall_ms": 5668.300258
+        },
+        "round": 1
+      },
+      {
+        "case": "20k_at_4k",
+        "result": {
+          "decode_ms_per_token": 110.58114599999999,
+          "decode_tokens": 13,
+          "external_ttft_ms": 57097.024665,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 321781760,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 6735920,
+          "position": 20511,
+          "prefill_ms": 56300.0,
+          "prefill_tokens": 16401,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 4096,
+          "sparse_hits": 0,
+          "ttft_ms": 57078.823467999995,
+          "wall_ms": 58514.707946
+        },
+        "round": 1
+      },
+      {
+        "case": "20k_at_12k",
+        "result": {
+          "decode_ms_per_token": 107.89724,
+          "decode_tokens": 13,
+          "external_ttft_ms": 31694.831394,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 321781760,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 6738168,
+          "position": 20511,
+          "prefill_ms": 30885.0,
+          "prefill_tokens": 8209,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 12288,
+          "sparse_hits": 0,
+          "ttft_ms": 31676.733113,
+          "wall_ms": 33104.247904
+        },
+        "round": 0
+      },
+      {
+        "case": "20k_at_12k",
+        "result": {
+          "decode_ms_per_token": 106.17724,
+          "decode_tokens": 13,
+          "external_ttft_ms": 3857.903072,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 321781760,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 6968796,
+          "position": 20511,
+          "prefill_ms": 1620.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 20480,
+          "sparse_hits": 1,
+          "ttft_ms": 3839.7458319999996,
+          "wall_ms": 5242.623592
+        },
+        "round": 0
+      },
+      {
+        "case": "20k_at_12k",
+        "result": {
+          "decode_ms_per_token": 104.823698,
+          "decode_tokens": 13,
+          "external_ttft_ms": 3821.142342,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 321781760,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 6968672,
+          "position": 20511,
+          "prefill_ms": 1607.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 20480,
+          "sparse_hits": 1,
+          "ttft_ms": 3802.939062,
+          "wall_ms": 5179.28156
+        },
+        "round": 1
+      },
+      {
+        "case": "20k_at_12k",
+        "result": {
+          "decode_ms_per_token": 106.553124,
+          "decode_tokens": 13,
+          "external_ttft_ms": 30940.032488,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 321781760,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 6625540,
+          "position": 20511,
+          "prefill_ms": 30135.0,
+          "prefill_tokens": 8209,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 12288,
+          "sparse_hits": 0,
+          "ttft_ms": 30921.796758999997,
+          "wall_ms": 32321.453582
+        },
+        "round": 1
+      },
+      {
+        "case": "20k_multi_holes",
+        "result": {
+          "decode_ms_per_token": 109.19645799999999,
+          "decode_tokens": 13,
+          "external_ttft_ms": 56898.071072,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 321781760,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 6625540,
+          "position": 20511,
+          "prefill_ms": 56091.0,
+          "prefill_tokens": 16401,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 4096,
+          "sparse_hits": 0,
+          "ttft_ms": 56879.757842,
+          "wall_ms": 58318.139822
+        },
+        "round": 0
+      },
+      {
+        "case": "20k_multi_holes",
+        "result": {
+          "decode_ms_per_token": 107.06098899999999,
+          "decode_tokens": 15,
+          "external_ttft_ms": 4314.045363,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 321781760,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 6911468,
+          "position": 20513,
+          "prefill_ms": 1614.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 20480,
+          "sparse_hits": 1,
+          "ttft_ms": 4295.827550999999,
+          "wall_ms": 5918.839842
+        },
+        "round": 0
+      },
+      {
+        "case": "20k_multi_holes",
+        "result": {
+          "decode_ms_per_token": 105.83401099999999,
+          "decode_tokens": 15,
+          "external_ttft_ms": 4201.975415,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            45518,
+            107,
+            100
+          ],
+          "kv_bytes": 321781760,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|>thought\n<|channel>",
+          "peak_memory_kb": 6968748,
+          "position": 20513,
+          "prefill_ms": 1553.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 20480,
+          "sparse_hits": 1,
+          "ttft_ms": 4183.83953,
+          "wall_ms": 5779.42406
+        },
+        "round": 1
+      },
+      {
+        "case": "20k_multi_holes",
+        "result": {
+          "decode_ms_per_token": 109.775156,
+          "decode_tokens": 13,
+          "external_ttft_ms": 56938.243156,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 321781760,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 6625312,
+          "position": 20511,
+          "prefill_ms": 56139.0,
+          "prefill_tokens": 16401,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 4096,
+          "sparse_hits": 0,
+          "ttft_ms": 56919.885082,
+          "wall_ms": 58355.156593
+        },
+        "round": 1
+      },
+      {
+        "case": "24k_one_token_at_4k",
+        "result": {
+          "decode_ms_per_token": 117.05255199999999,
+          "decode_tokens": 13,
+          "external_ttft_ms": 73211.432055,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 363724800,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 6647380,
+          "position": 24606,
+          "prefill_ms": 72354.0,
+          "prefill_tokens": 20496,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 4096,
+          "sparse_hits": 0,
+          "ttft_ms": 73193.13283599999,
+          "wall_ms": 74727.890388
+        },
+        "round": 0
+      },
+      {
+        "case": "24k_one_token_at_4k",
+        "result": {
+          "decode_ms_per_token": 114.38156199999999,
+          "decode_tokens": 13,
+          "external_ttft_ms": 4738.861248,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 363724800,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 7076164,
+          "position": 24606,
+          "prefill_ms": 1599.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 24575,
+          "sparse_hits": 1,
+          "ttft_ms": 4718.536091,
+          "wall_ms": 6210.905779
+        },
+        "round": 0
+      },
+      {
+        "case": "24k_one_token_at_4k",
+        "result": {
+          "decode_ms_per_token": 111.13932299999999,
+          "decode_tokens": 13,
+          "external_ttft_ms": 4579.472915,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 363724800,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 7076164,
+          "position": 24606,
+          "prefill_ms": 1580.0,
+          "prefill_tokens": 17,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 24575,
+          "sparse_hits": 1,
+          "ttft_ms": 4559.3877059999995,
+          "wall_ms": 6022.362445
+        },
+        "round": 1
+      },
+      {
+        "case": "24k_one_token_at_4k",
+        "result": {
+          "decode_ms_per_token": 117.687343,
+          "decode_tokens": 13,
+          "external_ttft_ms": 73439.483774,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            1579,
+            2293,
+            1735,
+            236772,
+            236828,
+            236812,
+            236778,
+            106,
+            106,
+            1
+          ],
+          "kv_bytes": 363724800,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>ORCHID-842<turn|><turn|><eos>",
+          "peak_memory_kb": 6648388,
+          "position": 24606,
+          "prefill_ms": 72584.0,
+          "prefill_tokens": 20496,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 4096,
+          "sparse_hits": 0,
+          "ttft_ms": 73419.422055,
+          "wall_ms": 74957.58919
+        },
+        "round": 1
+      },
+      {
+        "case": "4k_cache_miss",
+        "result": {
+          "decode_ms_per_token": 88.02349,
+          "decode_tokens": 15,
+          "external_ttft_ms": 13229.292026,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            818,
+            9744,
+            815,
+            614,
+            79310,
+            236764,
+            496,
+            9427,
+            532,
+            496,
+            10810,
+            11825
+          ],
+          "kv_bytes": 154009600,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>The village has an orchard, a library and a stone bridge",
+          "peak_memory_kb": 6648108,
+          "position": 4129,
+          "prefill_ms": 12644.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 13209.088537,
+          "wall_ms": 14551.287442
+        },
+        "round": 0
+      },
+      {
+        "case": "4k_cache_miss",
+        "result": {
+          "decode_ms_per_token": 84.220833,
+          "decode_tokens": 15,
+          "external_ttft_ms": 13652.880933,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            818,
+            9744,
+            815,
+            614,
+            79310,
+            236764,
+            496,
+            9427,
+            532,
+            496,
+            10810,
+            11825
+          ],
+          "kv_bytes": 154009600,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>The village has an orchard, a library and a stone bridge",
+          "peak_memory_kb": 6646524,
+          "position": 4129,
+          "prefill_ms": 13079.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 13643.339629999999,
+          "wall_ms": 14965.701349
+        },
+        "round": 0
+      },
+      {
+        "case": "4k_cache_miss",
+        "result": {
+          "decode_ms_per_token": 83.934479,
+          "decode_tokens": 15,
+          "external_ttft_ms": 13665.166297,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            818,
+            9744,
+            815,
+            614,
+            79310,
+            236764,
+            496,
+            9427,
+            532,
+            496,
+            10810,
+            11825
+          ],
+          "kv_bytes": 154009600,
+          "mode": "sparse",
+          "output": "<|channel>thought\n<channel|>The village has an orchard, a library and a stone bridge",
+          "peak_memory_kb": 6647916,
+          "position": 4129,
+          "prefill_ms": 13037.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 13655.583901,
+          "wall_ms": 14952.819004
+        },
+        "round": 1
+      },
+      {
+        "case": "4k_cache_miss",
+        "result": {
+          "decode_ms_per_token": 83.2475,
+          "decode_tokens": 15,
+          "external_ttft_ms": 13548.76213,
+          "flash_hits": 0,
+          "flash_read_ms": 0.0,
+          "ids": [
+            100,
+            45518,
+            107,
+            101,
+            818,
+            9744,
+            815,
+            614,
+            79310,
+            236764,
+            496,
+            9427,
+            532,
+            496,
+            10810,
+            11825
+          ],
+          "kv_bytes": 154009600,
+          "mode": "exact",
+          "output": "<|channel>thought\n<channel|>The village has an orchard, a library and a stone bridge",
+          "peak_memory_kb": 6646460,
+          "position": 4129,
+          "prefill_ms": 12968.0,
+          "prefill_tokens": 4113,
+          "prefix_host_bytes": 3019898880,
+          "reused_tokens": 0,
+          "sparse_hits": 0,
+          "ttft_ms": 13539.12963,
+          "wall_ms": 14818.411973
+        },
+        "round": 1
+      }
+    ],
+    "source_cached_context_tokens": 24576,
+    "source_tokens": 24577,
+    "warmup": {
+      "decode_ms_per_token": 52.862396,
+      "decode_tokens": 15,
+      "external_ttft_ms": 2368.935415,
+      "flash_hits": 0,
+      "flash_read_ms": 0.0,
+      "ids": [
+        100,
+        45518,
+        107,
+        101,
+        156274,
+        236761,
+        106,
+        100,
+        45518,
+        107,
+        101,
+        13513,
+        108,
+        13513,
+        108,
+        13513
+      ],
+      "kv_bytes": 7208960,
+      "mode": "warmup",
+      "output": "<|channel>thought\n<channel|>READY.<turn|><|channel>thought\n<channel|>***\n\n***\n\n***",
+      "peak_memory_kb": 4155968,
+      "position": 27,
+      "prefill_ms": 1549.0,
+      "prefill_tokens": 11,
+      "prefix_host_bytes": 0,
+      "reused_tokens": 0,
+      "sparse_hits": 0,
+      "ttft_ms": 2368.93453,
+      "wall_ms": 3221.562967
+    }
+  }
+}
