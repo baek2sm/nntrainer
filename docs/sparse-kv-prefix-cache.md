@@ -1,5 +1,9 @@
 # Sparse KV prefix reuse
 
+For a concise review of the implementation, measured benefits and portable
+Quick.KV experiment reproduction, start with
+[Sparse KV analysis and reproduction](sparse-kv-quality-todo.md).
+
 Branch: `kv/sparse-prefix-reuse-20261110`, based on
 `9034300447b30915963b14b32d74d4e0da78c77a` (TurboQuant experiments).
 

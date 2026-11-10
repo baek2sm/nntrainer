@@ -193,6 +193,7 @@ NNTrainer provides **20+ ready-to-run example applications**:
 
 ## Getting Started
 
+- **[Sparse KV branch review](docs/sparse-kv-quality-todo.md)** — Implementation, measured effects and reproducible Quick.KV quality experiments on this branch
 - **[Installation Guide](https://github.com/nntrainer/nntrainer/blob/main/docs/getting-started.md)** — Build & install on Linux, Android, or Windows
 - **[Create Your Model](https://github.com/nntrainer/nntrainer/blob/main/docs/how-to-create-model.md)** — Tutorial for building custom models
 - **[Run Examples](https://github.com/nntrainer/nntrainer/blob/main/docs/how-to-run-examples.md)** — Step-by-step guide for running applications

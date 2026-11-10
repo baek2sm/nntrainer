@@ -2,7 +2,7 @@
   "date": "2026-11-10",
   "nntrainer_base": "9bf6f1fad",
   "quickkv_head": "d8f8626197c4734e67d8fbac959ac572302ed1fa",
-  "source_status": "Benchmark sources/results are untracked. HEAD alone does not reproduce this study.",
+  "source_status": "Quick.KV benchmark sources/results were untracked at capture time. Use the checked-in shared_reference_bundle; Quick.KV HEAD alone is insufficient.",
   "historical_run": {
     "path": "benchmarks/results/sparse_bench_json_trace_v1/chunk_repair_v1/run.json",
     "sha256": "ebd378cf985dd288d1a7452a79413520c30b957a04da0bde7cdc69c0f9d6f3f1",
@@ -137,7 +137,7 @@
   "current_local_snapshot": {
     "path": "/tmp/quickkv-sparse-quality-20261110.tar.gz",
     "sha256": "86cf9b4f836e5f618c74243cb47960b282cc37e3c6d652055cc944fbe87aee36",
-    "distribution": "Local snapshot only; publish a source artifact before remote reproduction. Historical backend/runner versions cannot be recovered from their hashes.",
+    "distribution": "Identical frozen bundle is checked in as quickkv-sparse-reference-20261110.tar.gz next to this provenance file. Historical backend/runner versions cannot be recovered from hashes.",
     "files_sha256": {
       "benchmarks/sparse_bench/README.md": "5da385ad9e91ef6f1165c1880eccabd7ec22be461a63de6db2e52d377289de22",
       "benchmarks/sparse_bench/__init__.py": "43bc6cf9abb0e40f00a31ef18ecc24914f975aeeeee6f961ff420d910072b679",
@@ -191,5 +191,18 @@
       "notes": "Initial environment lacked matplotlib/six. Existing local and system packages were appended to sys.path for the successful run; no dependencies installed. NVML and plot layout warnings remain."
     },
     "full_model_or_device_experiments_rerun": false
+  },
+  "shared_reference_bundle": {
+    "path": "quickkv-sparse-reference-20261110.tar.gz",
+    "sha256": "86cf9b4f836e5f618c74243cb47960b282cc37e3c6d652055cc944fbe87aee36",
+    "scope": "Frozen sparse_bench HF reference, specifications, 18 contract tests and historical pilot config/findings. No weights or QuickKV serving connector.",
+    "historical_replay": "Current reference sources differ from historical pilot backend/runner; use this bundle for same-condition re-evaluation, not exact replay of old numbers.",
+    "verification": {
+      "source_file_sha256": "all match frozen snapshot",
+      "manifest_masks": 1024,
+      "manifest_sha256": "7b3123ed64e53928503a966f1ef34580fb4117bfd925c44a45397a67c9dd59e0",
+      "contract_tests": "18 passed from a freshly extracted published bundle; no model download",
+      "pytest": "9.1.1"
+    }
   }
 }
