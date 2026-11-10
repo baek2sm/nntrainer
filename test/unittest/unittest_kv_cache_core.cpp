@@ -2201,6 +2201,12 @@ TEST(KvCacheCore, sparseRepeatedTokensAndRopeLayouts) {
     rope.reposition(key, 123, 7);
     float expected[]{1, 2, 3, 4, 5, 6};
     rope.reposition(expected, 0, 7);
+    float cached[]{1, 2, 3, 4, 5, 6};
+    rope.reposition(cached, rope.rotation(0, 7));
+    for (size_t d = 0; d < 6; ++d)
+      EXPECT_FLOAT_EQ(cached[d], expected[d]);
+    EXPECT_THROW(rope.reposition(cached, std::vector<float>{}),
+                 std::invalid_argument);
     for (size_t d = 0; d < 6; ++d)
       EXPECT_NEAR(key[d], expected[d], 1e-5);
     EXPECT_FLOAT_EQ(key[4], original[4]);

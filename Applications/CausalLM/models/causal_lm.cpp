@@ -1905,8 +1905,7 @@ void CausalLM::restoreSparseDevicePrefill(
     throw DeviceKVManager::PrefixUnavailable("Sparse prefix is incompatible");
   std::vector<std::shared_ptr<const KVCacheManager::PrefixSnapshot>> snapshots;
   const size_t source_end = runs.back().source + runs.back().count;
-  for (const auto &entry : *saved->second) {
-    const auto &frame = entry.second;
+  auto load = [&](const DevicePrefillFrame &frame) {
     if (frame.plane != INIT_SEQ_LEN || frame.chunk != prefillDriveChunk())
       throw DeviceKVManager::PrefixUnavailable("Sparse prefix layout changed");
     auto payload = frame.kv;
@@ -1919,10 +1918,29 @@ void CausalLM::restoreSparseDevicePrefill(
     } catch (const std::exception &) {
       throw DeviceKVManager::PrefixUnavailable("Sparse source backing failed");
     }
+    return payload;
+  };
+  // The ending checkpoint normally contains every global row and the last
+  // sliding window needed by a subset with deletions earlier in its history.
+  // Try it first instead of loading all older (often Flash-backed) prefixes.
+  const auto ending =
+    saved->second->lower_bound(static_cast<unsigned>(source_end));
+  if (ending != saved->second->end()) {
+    auto payload = load(ending->second);
     if (payload)
       snapshots.push_back(std::move(payload));
-    if (entry.first >= source_end)
-      break;
+  }
+  if (snapshots.empty() ||
+      !KVCacheManager::coversSparsePrefix(*snapshots.front(), runs)) {
+    for (auto it = saved->second->begin(); it != saved->second->end(); ++it) {
+      if (it != ending) {
+        auto payload = load(it->second);
+        if (payload)
+          snapshots.push_back(std::move(payload));
+      }
+      if (it->first >= source_end)
+        break;
+    }
   }
   if (snapshots.empty())
     throw DeviceKVManager::PrefixUnavailable("Sparse source pages unavailable");

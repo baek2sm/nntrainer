@@ -223,6 +223,11 @@ public:
                 bool owned = false) const;
   size_t prefixPayloadBytes(unsigned position) const;
   void restorePrefix(const PrefixSnapshot &snapshot);
+  /** Range-only check: can this single checkpoint supply every destination
+   * row retained by gatherSparsePrefix? It does not read payload pages. */
+  static bool
+  coversSparsePrefix(const PrefixSnapshot &snapshot,
+                     const std::vector<nntrainer::kv::SparsePrefixRun> &runs);
   /** Gather one source history into a contiguous approximate prefix. Missing
    * sliding rows reject the plan. K is position-corrected; V is byte copied. */
   static std::shared_ptr<const PrefixSnapshot> gatherSparsePrefix(

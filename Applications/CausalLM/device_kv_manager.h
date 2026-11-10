@@ -222,8 +222,17 @@ public:
       std::vector<Candidate> sparse;
       for (const auto &entry : prefixes_) {
         const auto &p = entry.second;
+        size_t source_rows = p.tokens.size();
+        if (prefix_lengths_) {
+          source_rows = 0;
+          for (unsigned length : prefix_lengths_(p.handle))
+            source_rows =
+              std::max(source_rows, std::min<size_t>(length, p.tokens.size()));
+        }
+        // Known token IDs can include the final M1 prompt row, although the
+        // host prefill checkpoint stops one row earlier. Match backed rows.
         auto runs = nntrainer::kv::matchSparseTokens(
-          p.tokens.data(), p.tokens.size(), tokens.data(),
+          p.tokens.data(), source_rows, tokens.data(),
           tokens.size() - minimum_suffix_);
         const size_t length = nntrainer::kv::sparsePrefixLength(runs);
         if (length > exact && length - exact >= minimum_sparse_gain_ &&

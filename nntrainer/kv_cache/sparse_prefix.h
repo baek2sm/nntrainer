@@ -71,6 +71,30 @@ struct SparseRope {
       if (!sparseFinite(frequency))
         throw std::invalid_argument("Nonfinite sparse RoPE frequency");
   }
+  /** One position delta is shared by every token/head of a gathered run. */
+  std::vector<float> rotation(size_t source, size_t destination) const {
+    const double delta =
+      static_cast<double>(destination) - static_cast<double>(source);
+    std::vector<float> coefficients(2 * frequencies.size());
+    for (size_t i = 0; i < frequencies.size(); ++i) {
+      const double angle = delta * frequencies[i];
+      coefficients[2 * i] = static_cast<float>(std::cos(angle));
+      coefficients[2 * i + 1] = static_cast<float>(std::sin(angle));
+    }
+    return coefficients;
+  }
+  void reposition(float *key, const std::vector<float> &coefficients) const {
+    if (coefficients.size() != 2 * frequencies.size())
+      throw std::invalid_argument("Sparse RoPE coefficient geometry mismatch");
+    for (size_t i = 0; i < frequencies.size(); ++i) {
+      const size_t a = interleaved ? 2 * i : i;
+      const size_t b = interleaved ? 2 * i + 1 : i + frequencies.size();
+      const float c = coefficients[2 * i], s = coefficients[2 * i + 1];
+      const float x = key[a], y = key[b];
+      key[a] = x * c - y * s;
+      key[b] = y * c + x * s;
+    }
+  }
   void reposition(float *key, size_t source, size_t destination) const {
     const double delta =
       static_cast<double>(destination) - static_cast<double>(source);

@@ -60,6 +60,14 @@ static void checkSparseGather() {
     const auto b = cache.capturePrefix(192, nullptr, true);
     const std::vector<nntrainer::kv::SparsePrefixRun> runs{{0, 0, 65},
                                                            {80, 65, 79}};
+    require(!Manager::coversSparsePrefix(*a, runs));
+    require(!Manager::coversSparsePrefix(*b, runs));
+    require(Manager::coversSparsePrefix(*b, {{128, 0, 64}}));
+    require(!Manager::coversSparsePrefix(*b, {{128, 1, 64}}));
+    auto metadata = *b;
+    for (auto &layer : metadata.layers)
+      layer.pages.clear();
+    require(Manager::coversSparsePrefix(metadata, {{128, 0, 64}}));
     auto gathered = Manager::gatherSparsePrefix({a, b}, runs, {4, 4}, rope);
     require(gathered->position == 144 && gathered->layers[0].base == 16);
     cache.restorePrefix(*gathered);

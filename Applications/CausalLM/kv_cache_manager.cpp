@@ -835,6 +835,38 @@ size_t KVCacheManager::prefixPayloadBytes(unsigned position) const {
   return bytes;
 }
 
+bool KVCacheManager::coversSparsePrefix(
+  const PrefixSnapshot &snapshot,
+  const std::vector<nntrainer::kv::SparsePrefixRun> &runs) {
+  using namespace nntrainer::kv;
+  if (runs.empty() || snapshot.layers.empty() || !snapshot.position)
+    return false;
+  size_t length = 0, source_end = 0;
+  for (const auto &run : runs) {
+    if (!run.count || run.destination != length || run.source < source_end)
+      return false;
+    length = checkedAdd(length, run.count);
+    source_end = checkedAdd(run.source, run.count);
+  }
+  for (const auto &layer : snapshot.layers) {
+    if (layer.base >= snapshot.position)
+      return false;
+    const size_t retained = snapshot.position - layer.base;
+    const size_t base = length > retained ? length - retained : 0;
+    for (const auto &run : runs) {
+      const size_t end = run.destination + run.count;
+      if (end <= base)
+        continue;
+      const size_t skipped =
+        base > run.destination ? base - run.destination : 0;
+      const size_t first = run.source + skipped;
+      if (first < layer.base || run.source + run.count > snapshot.position)
+        return false;
+    }
+  }
+  return true;
+}
+
 std::shared_ptr<const KVCacheManager::PrefixSnapshot>
 KVCacheManager::gatherSparsePrefix(
   const std::vector<std::shared_ptr<const PrefixSnapshot>> &history,
@@ -883,7 +915,13 @@ KVCacheManager::gatherSparsePrefix(
     const size_t row_bytes = checkedMultiply(dst.width, result->element_bytes);
     std::vector<float> key(dim);
     std::shared_ptr<PrefixSnapshot::Page> page;
-    for (const auto &run : runs)
+    for (const auto &run : runs) {
+      if (run.destination + run.count <= dst.base)
+        continue;
+      const auto rotation =
+        run.source != run.destination && !rope[l].frequencies.empty()
+          ? rope[l].rotation(run.source, run.destination)
+          : std::vector<float>{};
       for (size_t t = 0; t < run.count; ++t) {
         const size_t src = run.source + t, pos = run.destination + t;
         if (pos < dst.base)
@@ -928,7 +966,7 @@ KVCacheManager::gatherSparsePrefix(
               key[d] = nntrainer::compute_fp16_to_fp32(bits);
             }
           }
-          rope[l].reposition(key.data(), src, pos);
+          rope[l].reposition(key.data(), rotation);
           for (size_t d = 0; d < dim; ++d) {
             if (!sparseFinite(key[d]))
               throw std::invalid_argument("Nonfinite sparse prefix key");
@@ -943,6 +981,7 @@ KVCacheManager::gatherSparsePrefix(
           }
         }
       }
+    }
   }
   return result;
 }

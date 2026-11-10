@@ -309,7 +309,9 @@ int main() {
     bool sparse_called = false;
     Manager m([&](unsigned, unsigned) { return next++; },
               [](uint32_t, unsigned) {}, [](uint32_t) {}, [] {}, 2, 4);
-    m.setPrefixLengths([](uint32_t) { return std::vector<unsigned>{512}; });
+    m.setPrefixLengths([](uint32_t) {
+      return std::vector<unsigned>{512, 700};
+    });
     Manager::Tokens source(700);
     for (unsigned i = 0; i < source.size(); ++i)
       source[i] = 100 + i;
@@ -336,6 +338,20 @@ int main() {
       rejected = true;
     }
     assert(rejected);
+  }
+  {
+    Manager m([](unsigned, unsigned) { return 1u; }, [](uint32_t, unsigned) {},
+              [](uint32_t) {}, [] {}, 2, 2);
+    m.setMinimumSparseGain(1);
+    m.setPrefixLengths([](uint32_t) { return std::vector<unsigned>{5}; });
+    m.publish({1, 2, 3, 4, 5, 6}, 6, 0); // Last known row has no host payload.
+    m.setSparseRestore(
+      [](uint32_t, const std::vector<nntrainer::kv::SparsePrefixRun> &runs,
+         size_t) {
+        assert(nntrainer::kv::sparsePrefixLength(runs) == 3);
+        assert(runs.back().source + runs.back().count == 5);
+      });
+    assert(m.reuse({1, 3, 5, 6, 99}) == 3);
   }
   std::cout << "Device sessions, radix, sparse gain policy, LRU, failure "
                "isolation: PASS\n";
