@@ -558,6 +558,22 @@ public:
     weight_load_hook_data = user_data;
   }
 
+  /** Per-network synchronous inference seam. Returning false before a node
+   * skips it; the after notification runs only for executed nodes. Intended
+   * for explicit partial graph replay, never training or asynchronous use.
+   * An installed hook cannot be replaced until cleared. */
+  using IncrementalNodeHook =
+    std::function<bool(LayerNode &, unsigned, unsigned, bool)>;
+  void setIncrementalNodeHook(IncrementalNodeHook hook) {
+    if (incremental_node_hook_ && hook)
+      throw std::logic_error("An incremental node hook is already installed");
+    incremental_node_hook_ = std::move(hook);
+  }
+
+private:
+  IncrementalNodeHook incremental_node_hook_;
+
+public:
   /**
    * @copydoc ml::train::Model::getTensor(const std::string &)
    */

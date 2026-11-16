@@ -809,6 +809,8 @@ sharedConstTensors NeuralNetwork::incremental_forwarding(
 
   unsigned int lookahead = std::get<props::FsuLookahead>(model_flex_props);
   bool fsu_mode = std::get<props::Fsu>(model_flex_props);
+  if (incremental_node_hook_ && fsu_mode)
+    throw std::invalid_argument("Partial graph replay does not support FSU");
 
   if (fsu_mode) {
     for (unsigned int i = 0; i < lookahead; ++i) {
@@ -838,6 +840,10 @@ sharedConstTensors NeuralNetwork::incremental_forwarding(
         std::find(graph_replay_feed_nodes_.begin(),
                   graph_replay_feed_nodes_.end(),
                   node->getName()) == graph_replay_feed_nodes_.end())
+      return;
+
+    if (incremental_node_hook_ &&
+        !incremental_node_hook_(*node, from, to, false))
       return;
 
     auto f = std::get<0>(node->getExecutionOrder());
@@ -914,6 +920,8 @@ sharedConstTensors NeuralNetwork::incremental_forwarding(
       model_graph.inActive(f);
       model_graph.LoadTensors(f + lookahead);
     }
+    if (incremental_node_hook_)
+      incremental_node_hook_(*node, from, to, true);
   };
 
   return model_graph.incremental_forwarding(from, to, training, forwarding_op,
