@@ -5797,6 +5797,38 @@ void MHACoreLayer::one_batch_incremental_forwarding(
  * @brief rotary embedding-related member function
  * @note seq_len -> max_position_embeddings
  */
+nntrainer::kv::SparseRope MHACoreLayer::sparsePrefixRope(bool upstream_rope) {
+  if (fp16_attention_)
+    return fp16_attention_->sparsePrefixRope(upstream_rope);
+  if (theta <= 0)
+    return {};
+  const std::lock_guard<std::mutex> lock(rope_init_mtx);
+  thetas.clear();
+  if (rope_scaling_type == "yarn")
+    _compute_yarn_parameters(head_dim, theta);
+  else if (rope_scaling_type == "proportional" ||
+           rope_partial_rotary_factor != 1.0f)
+    _compute_proportional_parameters(head_dim, theta);
+  else
+    _compute_default_parameters(head_dim, theta);
+  return {thetas, false};
+}
+
+std::vector<float>
+MHACoreLayer::sparsePrefixProbeKey(nntrainer::RunLayerContext &context,
+                                   unsigned from, unsigned rows) {
+  if (fp16_attention_)
+    return fp16_attention_->sparsePrefixProbeKey(context, from, rows);
+  auto &input = context.getInput(1);
+  auto dim = input.getDim();
+  dim.height(rows);
+  auto key = input.getSharedDataTensor(dim, 0, true);
+  nntrainer::Tensor rotated(dim, true);
+  apply_rotary_emb_tensor_v2(key, rotated, head_dim, from, theta > 0);
+  auto fp32 = rotated.clone(ml::train::TensorDim::DataType::FP32);
+  return {fp32.getData(), fp32.getData() + fp32.size()};
+}
+
 void MHACoreLayer::precompute_freqs(int head_dim, unsigned int seq_len,
                                     float theta, bool is_fp16) {
   const std::string cache_key =

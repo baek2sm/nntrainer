@@ -1,5 +1,8 @@
 # Sparse KV prefix reuse
 
+Optional contiguous block repair and the explicit CausalLM source API are
+described in [Sparse KV assembly and block repair](sparse-kv-block-repair.md).
+
 For a concise review of the implementation, measured benefits and portable
 Quick.KV experiment reproduction, start with
 [Sparse KV analysis and reproduction](sparse-kv-quality-todo.md).

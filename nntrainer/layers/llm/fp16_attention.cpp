@@ -1253,6 +1253,19 @@ void Fp16Attention::one_batch_incremental_forwarding(
  * @brief rotary embedding-related member function
  * @note seq_len -> max_position_embeddings
  */
+std::vector<float> Fp16Attention::sparsePrefixProbeKey(RunLayerContext &context,
+                                                       unsigned from,
+                                                       unsigned rows) {
+  auto &input = context.getInput(1);
+  auto dim = input.getDim();
+  dim.height(rows);
+  auto key = input.getSharedDataTensor(dim, 0, true);
+  Tensor rotated(dim, true);
+  apply_rotary_emb_tensor_v2(key, rotated, head_dim, from, false);
+  auto fp32 = rotated.clone(ml::train::TensorDim::DataType::FP32);
+  return {fp32.getData(), fp32.getData() + fp32.size()};
+}
+
 kv::SparseRope Fp16Attention::sparsePrefixRope(bool upstream_rope) {
   if (!use_rope && !upstream_rope)
     return {};

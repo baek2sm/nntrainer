@@ -468,16 +468,16 @@ public:
       throw std::logic_error("HTP prefix requires FP16 prefill attention");
     return fp16_attention_->capturePrefixCalibration();
   }
-  nntrainer::kv::SparseRope sparsePrefixRope(bool upstream_rope = false) {
-    if (!fp16_attention_)
-      throw std::logic_error("Sparse prefix requires explicit FP16 attention");
-    return fp16_attention_->sparsePrefixRope(upstream_rope);
-  }
+  /** Frequencies of the actual cache producer, including fused upstream RoPE.
+   */
+  nntrainer::kv::SparseRope sparsePrefixRope(bool upstream_rope = false);
   unsigned sparsePrefixHeadDim() const {
-    if (!fp16_attention_)
-      throw std::logic_error("Sparse prefix requires explicit FP16 attention");
-    return fp16_attention_->sparsePrefixHeadDim();
+    return fp16_attention_ ? fp16_attention_->sparsePrefixHeadDim() : head_dim;
   }
+  /** Fresh projected K, rotated exactly once to its subset position. The
+   * result is temporary probe data; cache rows and Q/K inputs are untouched. */
+  std::vector<float> sparsePrefixProbeKey(nntrainer::RunLayerContext &context,
+                                          unsigned from, unsigned rows);
   void restorePrefixCalibration(const nntrainer::HtpPrefixCalibration &state) {
     if (!fp16_attention_)
       throw std::logic_error("HTP prefix requires FP16 prefill attention");

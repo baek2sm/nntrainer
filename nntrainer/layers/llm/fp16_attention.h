@@ -239,6 +239,8 @@ public:
   /** Position correction uses the producer's frequencies. upstream_rope is
    * true when fused QKV already rotated K and local use_rope is disabled. */
   WIN_EXPORT kv::SparseRope sparsePrefixRope(bool upstream_rope = false);
+  WIN_EXPORT std::vector<float>
+  sparsePrefixProbeKey(RunLayerContext &context, unsigned from, unsigned rows);
   WIN_EXPORT unsigned sparsePrefixHeadDim() const { return head_dim; }
 
 private:

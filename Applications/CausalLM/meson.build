@@ -36,6 +36,7 @@ causallm_src = [
     meson.current_source_dir() / 'prefix_flash_store.cpp',
     meson.current_source_dir() / 'baked_prefix.cpp',
     meson.current_source_dir() / 'models' / 'causal_lm_baked.cpp',
+    meson.current_source_dir() / 'models' / 'causal_lm_sparse.cpp',
     meson.current_source_dir() / 'api' / 'streamer.cpp',
     # factory.cpp: the ONE out-of-line Factory::Instance() definition. Must be
     # compiled into libcausallm exactly once so every consumer .so (the api lib
@@ -457,6 +458,12 @@ if get_option('enable-test')
     suite: 'unittests'
   )
 
+  executable('sparse_block_repair_check',
+    meson.source_root() / 'tools' / 'kv_cache' / 'check_sparse_block_repair.cpp',
+    dependencies: [nntrainer_dep, nntrainer_ccapi_dep, causallm_dep],
+    include_directories: causallm_inc,
+    build_by_default: false, install: false)
+
   unittest_kv_cache_manager = executable(
     'unittest_kv_cache_manager',
     meson.source_root() / 'test' / 'unittest' / 'layers' / 'unittest_kv_cache_manager.cpp',
@@ -546,6 +553,7 @@ if get_option('enable-test')
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen2.cpp',
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen2_reference.cpp',
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3.cpp',
+        meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_sparse.cpp',
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3_reference.cpp',
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen3_embedding_reference.cpp',
         meson.source_root() / 'test' / 'unittest' / 'models' / 'unittest_causallm_qwen2_embedding_reference.cpp',

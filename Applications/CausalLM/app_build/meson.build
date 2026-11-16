@@ -233,6 +233,7 @@ causallm_src = [
   causallm_root / 'llm_util.cpp',
   causallm_root / 'models' / 'causal_lm.cpp',
   causallm_root / 'models' / 'causal_lm_baked.cpp',
+  causallm_root / 'models' / 'causal_lm_sparse.cpp',
   causallm_root / 'models' / 'transformer.cpp',
   causallm_root / 'models' / 'sentence_transformer.cpp',
   causallm_root / 'models' / 'model_registry.cpp',

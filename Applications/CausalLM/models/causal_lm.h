@@ -42,6 +42,7 @@
 
 #include <baked_prefix.h>
 #include <device_kv_manager.h>
+#include <kv_cache/sparse_recompute.h>
 #include <kv_cache_manager.h>
 #include <prefix_flash_store.h>
 #include <token_sampler.h>
@@ -78,6 +79,43 @@ public:
    * @param nntr_cfg Configuration for nntrainer (nntrainer_config.json)
    */
   CausalLM(json &cfg, json &generation_cfg, json &nntr_cfg);
+  /** One immutable superset cache. Token IDs must describe these exact KV
+   * rows; approximate/repaired histories must never be supplied as sources. */
+  struct SparseKVPrefix {
+    std::vector<uint32_t> tokens;
+    std::shared_ptr<const KVCacheManager::PrefixSnapshot> kv;
+
+  private:
+    friend class CausalLM;
+    std::shared_ptr<const char> identity_;
+  };
+  WIN_EXPORT std::shared_ptr<const SparseKVPrefix>
+  captureSparseKVPrefix(const std::vector<uint32_t> &tokens);
+  /** Arm one superset for subsequent independent run() calls. nullptr clears
+   * it. Existing device prefix lookup takes precedence. Last prompt row is
+   * always evaluated afresh to produce logits. */
+  WIN_EXPORT void
+  setSparseKVPrefix(std::shared_ptr<const SparseKVPrefix> source);
+  WIN_EXPORT void
+  setSparseKVRecompute(const nntrainer::kv::SparseRecomputeOptions &options);
+  const nntrainer::kv::SparseRecomputeStats &getSparseKVRecomputeStats() const {
+    return sparse_recompute_stats_;
+  }
+
+protected:
+  std::shared_ptr<const char> sparse_kv_identity_ =
+    std::make_shared<const char>(0);
+  std::shared_ptr<const SparseKVPrefix> sparse_kv_source_;
+  nntrainer::kv::SparseRecomputeOptions sparse_recompute_options_;
+  nntrainer::kv::SparseRecomputeStats sparse_recompute_stats_;
+  bool sparse_kv_approximate_ = false;
+  void repairSparseKVPrefix(const std::vector<uint32_t> &tokens,
+                            size_t exact_tokens);
+  size_t restoreArmedSparseKVPrefix(const std::vector<uint32_t> &tokens);
+  void sparseKVGeometry(std::vector<unsigned> &dims,
+                        std::vector<nntrainer::kv::SparseRope> &rope);
+
+public:
   struct SystemPrefixStats {
     uint64_t loaded_assets = 0, hits = 0, reused_tokens = 0, errors = 0;
     double restore_ms = 0;

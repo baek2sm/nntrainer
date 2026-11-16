@@ -1,0 +1,164 @@
+{
+  "base_commit": "73f8feec47e2bab4d7ac39a1f7d46e3f3b501b20",
+  "scope": "Synchronous CPU reference; NPU/GPU block repair intentionally unsupported",
+  "tests": {
+    "unittest_kv_cache_core": {
+      "tests": 76,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 0.042
+    },
+    "unittest_kv_cache_manager": {
+      "tests": 37,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 0.003
+    },
+    "unittest_causallm_models": {
+      "tests": 135,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "seconds": 4.359
+    }
+  },
+  "smoke": {
+    "q40_short": {
+      "block_repair": {
+        "budget_tokens": 20,
+        "first_layer_tokens": 139,
+        "ids": [
+          7212,
+          7212,
+          7212,
+          7212,
+          7212,
+          7212,
+          7212,
+          7212
+        ],
+        "prefix_tokens": 139,
+        "probe_ms": 17.529333,
+        "probe_tokens": 139,
+        "replay_calls": 1,
+        "replay_ms": 31.83339,
+        "selected_tokens": 11,
+        "text": "paredparedparedparedparedparedparedpared"
+      },
+      "cold_subset": {
+        "ids": [
+          7212,
+          7212,
+          7212,
+          7212,
+          7212,
+          7212,
+          7212,
+          7212
+        ],
+        "text": "paredparedparedparedparedparedparedpared"
+      },
+      "passed": true,
+      "rope_only": {
+        "budget_tokens": 0,
+        "first_layer_tokens": 0,
+        "ids": [
+          7212,
+          7212,
+          7212,
+          7212,
+          7212,
+          7212,
+          7212,
+          7212
+        ],
+        "prefix_tokens": 139,
+        "probe_ms": 0.0,
+        "probe_tokens": 0,
+        "replay_calls": 0,
+        "replay_ms": 0.0,
+        "selected_tokens": 0,
+        "text": "paredparedparedparedparedparedparedpared"
+      },
+      "source_tokens": 220
+    },
+    "fp32_longer": {
+      "block_repair": {
+        "budget_tokens": 59,
+        "first_layer_tokens": 395,
+        "ids": [
+          83940,
+          83940,
+          83940,
+          83940,
+          83940,
+          83940,
+          83940,
+          83940
+        ],
+        "prefix_tokens": 395,
+        "probe_ms": 329.042754,
+        "probe_tokens": 395,
+        "replay_calls": 2,
+        "replay_ms": 1291.760251,
+        "selected_tokens": 43,
+        "text": "iveringiveringiveringiveringiveringiveringiveringivering"
+      },
+      "cold_subset": {
+        "ids": [
+          83940,
+          83940,
+          83940,
+          83940,
+          83940,
+          83940,
+          83940,
+          83940
+        ],
+        "text": "iveringiveringiveringiveringiveringiveringiveringivering"
+      },
+      "passed": true,
+      "rope_only": {
+        "budget_tokens": 0,
+        "first_layer_tokens": 0,
+        "ids": [
+          83940,
+          83940,
+          83940,
+          83940,
+          83940,
+          83940,
+          83940,
+          83940
+        ],
+        "prefix_tokens": 395,
+        "probe_ms": 0.0,
+        "probe_tokens": 0,
+        "replay_calls": 0,
+        "replay_ms": 0.0,
+        "selected_tokens": 0,
+        "text": "iveringiveringiveringiveringiveringiveringiveringivering"
+      },
+      "source_tokens": 476
+    }
+  },
+  "smoke_note": "These local 0.6B checkpoints emitted repeated tokens even for cold subset. The smoke validates API execution and strict budget only, not generation quality or performance improvement. All raw outputs and timings are retained.",
+  "source_sha256": {
+    "nntrainer/models/neuralnet.h": "4dbb39eba0f344dfe126640d171d51b10f8c9a5e4700bd79bcfdcd3ccbdb84a7",
+    "nntrainer/models/neuralnet.cpp": "8e3670de42a15ac02f8f7a8ed27c22c625954d91cb099fe82072bd934ea36521",
+    "nntrainer/kv_cache/sparse_recompute.h": "2baf9b66aa2603d6a3c75d202f62a5649b90e1caf143bf5f2bb9ec9bef92968a",
+    "Applications/CausalLM/models/causal_lm.h": "309cecd79a6f774e787a874081ada011d1fa8079cae29a869cf5899a6b1ad247",
+    "Applications/CausalLM/models/causal_lm.cpp": "bdb9b0a674b4d3e1974631fd67fdb5a71a0e7321e8990251ca30de056d9f3db2",
+    "Applications/CausalLM/models/causal_lm_sparse.cpp": "54bbf3b01fb5f28a174fc0ea1a78ed395525e39f03b464e9a40f60a7377810ce",
+    "Applications/CausalLM/layers/mha_core.h": "dfad71acad887199b272879dacfc0d51c7fcf1aa9b5bfbe521936604c3c7cc68",
+    "Applications/CausalLM/layers/mha_core.cpp": "3d85cabf4583ac4c1a6895e63382eb3914ca8d67aae8305d90acab1fafd92a09",
+    "nntrainer/layers/llm/fp16_attention.h": "107f20b1ca6bc53fef43128aafd8c5533a765256eabb2611f9732699f228cd85",
+    "nntrainer/layers/llm/fp16_attention.cpp": "d1c1816dd3ab1b22e8159af63f75f6eaff8c2097c907b5713599e9740fa76acb",
+    "test/unittest/models/unittest_causallm_sparse.cpp": "8a823dea271116271001ba3e9f047eb36ec288d71fae0229aecefc4d6d5411b0",
+    "tools/kv_cache/check_sparse_block_repair.cpp": "63525b727ead645c5277f77e6170d6ca75309181bdc893f9c1dc75b85d0bb97c",
+    "Applications/CausalLM/meson.build": "822bd54ba59022e9c5e290f1f416a2c38a9560075c80647b544a79b94bb59c5f",
+    "Applications/CausalLM/app_build/meson.build": "09cc843635420ae73677bbd890633b902b7ca6814047d4d420d59ffe874e3711"
+  }
+}

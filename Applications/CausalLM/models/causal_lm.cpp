@@ -242,6 +242,16 @@ namespace causallm {
 
 CausalLM::CausalLM(json &cfg, json &generation_cfg, json &nntr_cfg) :
   Transformer(cfg, generation_cfg, nntr_cfg, ModelType::CAUSALLM) {
+  if (nntr_cfg.contains("sparse_kv_recompute")) {
+    const auto &c = nntr_cfg.at("sparse_kv_recompute");
+    sparse_recompute_options_.enabled = c.value("enabled", false);
+    const auto block_tokens = c.value("block_tokens", int64_t{32});
+    if (block_tokens <= 0)
+      throw std::invalid_argument("Sparse block_tokens must be positive");
+    sparse_recompute_options_.block_tokens = static_cast<size_t>(block_tokens);
+    sparse_recompute_options_.ratio = c.value("ratio", 0.15);
+    sparse_recompute_options_.validate();
+  }
   system_prefix_config_ = cfg;
   system_prefix_nntr_ = nntr_cfg;
   // Declare CausalLM's static-residency boundaries so the core planner
@@ -1123,6 +1133,7 @@ void CausalLM::setSessionTokenPosition(unsigned int pos) {
     throw std::invalid_argument(
       "Resident HTP KV can resume only at its current position");
   if (pos == 0u) {
+    sparse_kv_approximate_ = false;
     if (device_kv_manager_)
       device_kv_manager_->forgetTokens();
     device_prefill_history_.reset();
@@ -2206,6 +2217,11 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   // Settle the original full-request plane BEFORE matching cached call shapes.
   if (!kv_cache.isAllocated())
     growPrefillPlane(static_cast<unsigned int>(_input.size()));
+  std::vector<uint32_t> sparse_request_tokens;
+  if (sparse_kv_source_ ||
+      (sparse_recompute_options_.enabled && device_kv_manager_))
+    sparse_request_tokens.assign(_input.begin(), _input.end());
+  sparse_recompute_stats_ = {};
   size_t device_prefix_hit = 0;
   if (device_kv_manager_ && !system_prefix_writer_ && global_token_len == 0 &&
       SYS_PROMP_LEN == 0) {
@@ -2268,6 +2284,22 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
         .count();
   }
 #endif
+
+  if (device_prefix_hit && device_kv_manager_->approximate() &&
+      sparse_recompute_options_.enabled) {
+    sparse_kv_approximate_ = true;
+    // Device matching already established ordered deletion provenance. An
+    // empty exact region is conservative; zero-error blocks sort last.
+    repairSparseKVPrefix(
+      std::vector<uint32_t>(sparse_request_tokens.begin(),
+                            sparse_request_tokens.begin() + device_prefix_hit),
+      0);
+  } else if (!device_prefix_hit && sparse_kv_source_ && global_token_len == 0 &&
+             SYS_PROMP_LEN == 0 && !USE_KVCACHE) {
+    device_prefix_hit = restoreArmedSparseKVPrefix(sparse_request_tokens);
+    if (device_prefix_hit)
+      _input.erase(_input.begin(), _input.begin() + device_prefix_hit);
+  }
 
   // | <------------------- MAX_SEQ_LEN -------------------> |
   //                       ||             ||
