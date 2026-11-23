@@ -13,12 +13,20 @@
 #include "kv_cache_manager.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
+#include <limits>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <system_error>
+#include <thread>
 #include <utility>
 
 #include <fp16.h>
@@ -33,6 +41,12 @@
 #if defined(ENABLE_CUDA) && ENABLE_CUDA == 1
 #include <cuda_context_manager.h>
 #include <cuda_mem_allocator.h>
+#endif
+
+#if defined(__linux__)
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 namespace causallm {
@@ -65,13 +79,370 @@ private:
 };
 } // namespace
 
+#if defined(__linux__)
+/**
+ * Stable tensor addresses backed by demand-allocated anonymous pages. The
+ * file is sparse and private to this cache. A single worker loads lookahead
+ * layers while the model computes and writes back the current layer.
+ */
+class KVFlashStorage {
+public:
+  KVFlashStorage(const std::string &directory, unsigned layers,
+                 unsigned lookahead) :
+    lookahead_(lookahead), layers_(layers) {
+    const long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0)
+      throw std::runtime_error("KV FSU: cannot determine page size");
+    page_ = static_cast<size_t>(page);
+
+    std::string path = directory + "/nntr-kv-XXXXXX";
+    fd_ = mkostemp(path.data(), O_CLOEXEC);
+    if (fd_ < 0)
+      fail("create backing file");
+    try {
+      if (unlink(path.c_str()))
+        fail("unlink backing file");
+      worker_ = std::thread([this] {
+        for (;;) {
+          std::unique_lock<std::mutex> lock(mutex_);
+          work_.wait(lock, [this] { return job_.valid() || stopping_; });
+          if (!job_.valid())
+            return;
+          auto job = std::move(job_);
+          lock.unlock();
+          job();
+        }
+      });
+    } catch (...) {
+      close(fd_);
+      throw;
+    }
+  }
+
+  ~KVFlashStorage() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stopping_ = true;
+    }
+    work_.notify_one();
+    worker_.join();
+    close(fd_);
+  }
+
+  void addLayer(unsigned layer, nntrainer::Tensor &k, nntrainer::Tensor &v) {
+    const size_t bytes = alignUp(k.bytes());
+    if (bytes > (static_cast<size_t>(std::numeric_limits<off_t>::max()) -
+                 next_offset_) /
+                  2)
+      throw std::overflow_error("KV FSU: backing file offset overflow");
+
+    auto &entry = layers_[layer];
+    entry.owner = layer;
+    entry.offset = next_offset_;
+    entry.capacity = bytes;
+    for (auto *tensor : {&k, &v}) {
+      auto data = std::make_shared<Mapping>(bytes);
+      entry.addresses[tensor == &v] = data->getAddr<char>();
+      tensor->setData(data, 0, false);
+    }
+    next_offset_ += 2 * bytes;
+
+    // Try direct I/O before the first inference. Some filesystems accept the
+    // flag but refuse direct writes to encrypted or compressed files.
+    if (entry.offset == 0) {
+      const int flags = fcntl(fd_, F_GETFL);
+      if (flags >= 0 && fcntl(fd_, F_SETFL, flags | O_DIRECT) == 0) {
+        ssize_t n;
+        do {
+          n = pwrite(fd_, entry.addresses[0], page_, 0);
+        } while (n < 0 && errno == EINTR);
+        direct_ = n == static_cast<ssize_t>(page_);
+        if (!direct_ && fcntl(fd_, F_SETFL, flags) != 0)
+          fail("disable unsupported direct I/O");
+        if (madvise(entry.addresses[0], page_, MADV_DONTNEED))
+          fail("release direct I/O probe");
+      }
+    }
+  }
+
+  void alias(unsigned layer, unsigned source) {
+    layers_[layer].owner = layers_[source].owner;
+  }
+
+  void begin(unsigned layer) {
+    wait();
+    load(layer);
+    const unsigned end =
+      layer + 1 + std::min<unsigned>(lookahead_, layers_.size() - layer - 1);
+    if (layer + 1 == end)
+      return;
+    const auto owner = layers_[layer].owner;
+    std::packaged_task<void()> task([this, layer, end, owner] {
+      for (unsigned next = layer + 1; next < end; ++next) {
+        const auto target = layers_[next].owner;
+        if (target != inactive && target != owner)
+          load(next);
+      }
+    });
+    pending_ = task.get_future();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      job_ = std::move(task);
+    }
+    work_.notify_one();
+  }
+
+  void load(unsigned layer) {
+    auto &entry = layers_[layers_[layer].owner];
+    if (entry.resident != 0 || entry.saved == 0)
+      return;
+    account(entry, entry.saved);
+    for (unsigned p = 0; p < 2; ++p)
+      transfer(entry, p, 0, entry.saved, false);
+    read_bytes_ += 2 * entry.saved;
+  }
+
+  void store(unsigned layer, size_t start, size_t end, bool replace = false) {
+    if (layers_[layer].owner != layer)
+      return;
+    auto &entry = layers_[layer];
+    const size_t first = start / page_ * page_;
+    const size_t last = alignUp(end);
+    if (last > entry.capacity || first > last)
+      throw std::out_of_range("KV FSU: write outside layer capacity");
+    account(entry, std::max(entry.resident, last));
+    for (unsigned p = 0; p < 2; ++p)
+      transfer(entry, p, first, last - first, true);
+    if (!direct_ && last != first) {
+      int rc;
+      do {
+        rc = fdatasync(fd_);
+      } while (rc && errno == EINTR);
+      if (rc)
+        fail("sync backing file");
+    }
+    entry.saved = replace ? last : std::max(entry.saved, last);
+    write_bytes_ += 2 * (last - first);
+  }
+
+  void evict(unsigned layer) {
+    auto &entry = layers_[layers_[layer].owner];
+    size_t bytes = entry.resident;
+    if (!bytes)
+      return;
+    for (unsigned p = 0; p < 2; ++p) {
+      if (madvise(entry.addresses[p], bytes, MADV_DONTNEED))
+        fail("release KV pages");
+      if (!direct_) {
+        const auto off = static_cast<off_t>(entry.offset + p * entry.capacity);
+        posix_fadvise(fd_, off, static_cast<off_t>(bytes), POSIX_FADV_DONTNEED);
+      }
+    }
+    resident_bytes_ -= 2 * bytes;
+    entry.resident = 0;
+  }
+
+  void finishStep() {
+    wait();
+    for (unsigned i = 0; i < layers_.size(); ++i)
+      if (layers_[i].owner == i)
+        evict(i);
+  }
+
+  void startStep(unsigned from) {
+    if (from == 0)
+      reset();
+    else if (failed_)
+      throw std::runtime_error("KV FSU: start a new prompt after an I/O error");
+  }
+
+  void abortStep() noexcept {
+    failed_ = true;
+    try {
+      finishStep();
+    } catch (...) {
+      // Preserve the inference or I/O exception that triggered the abort.
+    }
+  }
+
+  void reset() {
+    finishStep();
+    failed_ = false;
+    for (auto &layer : layers_)
+      layer.saved = 0;
+  }
+
+  void report() const {
+    std::fprintf(stderr,
+                 "[kv-fsu] lookahead=%u direct_io=%d peak_kv_bytes=%zu "
+                 "read_bytes=%zu write_bytes=%zu\n",
+                 lookahead_, direct_, peak_bytes_.load(), read_bytes_.load(),
+                 write_bytes_);
+  }
+
+private:
+  class Mapping final : public nntrainer::MemoryData {
+  public:
+    explicit Mapping(size_t size) :
+      MemoryData(mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)),
+      size_(size) {
+      if (getAddr<void>() == MAP_FAILED)
+        fail("reserve KV address space");
+    }
+    ~Mapping() override { munmap(getAddr<void>(), size_); }
+
+  private:
+    size_t size_;
+  };
+
+  static constexpr unsigned inactive = std::numeric_limits<unsigned>::max();
+  struct Layer {
+    unsigned owner = inactive;
+    char *addresses[2]{};
+    size_t offset = 0;
+    size_t capacity = 0;
+    size_t saved = 0;
+    size_t resident = 0;
+  };
+
+  [[noreturn]] static void fail(const char *operation) {
+    throw std::system_error(errno, std::generic_category(),
+                            std::string("KV FSU: ") + operation);
+  }
+
+  size_t alignUp(size_t bytes) const {
+    return (bytes + page_ - 1) / page_ * page_;
+  }
+
+  void wait() {
+    if (pending_.valid())
+      pending_.get();
+  }
+
+  void account(Layer &entry, size_t bytes) {
+    const size_t added = 2 * (bytes - entry.resident);
+    entry.resident = bytes;
+    const size_t now = resident_bytes_.fetch_add(added) + added;
+    size_t peak = peak_bytes_.load();
+    while (now > peak && !peak_bytes_.compare_exchange_weak(peak, now)) {
+    }
+  }
+
+  void transfer(const Layer &entry, unsigned plane, size_t first, size_t bytes,
+                bool write) {
+    char *address = entry.addresses[plane] + first;
+    auto offset =
+      static_cast<off_t>(entry.offset + plane * entry.capacity + first);
+    while (bytes) {
+      const ssize_t n = write ? pwrite(fd_, address, bytes, offset)
+                              : pread(fd_, address, bytes, offset);
+      if (n < 0 && errno == EINTR)
+        continue;
+      if (n < 0)
+        fail(write ? "write KV pages" : "read KV pages");
+      if (n == 0)
+        throw std::runtime_error("KV FSU: incomplete backing file transfer");
+      bytes -= static_cast<size_t>(n);
+      address += n;
+      offset += n;
+    }
+  }
+
+  const unsigned lookahead_;
+  std::vector<Layer> layers_;
+  size_t page_ = 0;
+  size_t next_offset_ = 0;
+  int fd_ = -1;
+  bool direct_ = false;
+  bool failed_ = false;
+  std::atomic<size_t> resident_bytes_{0}, peak_bytes_{0}, read_bytes_{0};
+  size_t write_bytes_ = 0;
+  std::mutex mutex_;
+  std::condition_variable work_;
+  std::packaged_task<void()> job_;
+  std::future<void> pending_;
+  bool stopping_ = false;
+  std::thread worker_;
+};
+#else
+class KVFlashStorage {
+public:
+  KVFlashStorage(const std::string &, unsigned, unsigned) {
+    throw std::invalid_argument("KV FSU requires Android or Linux");
+  }
+  void addLayer(unsigned, nntrainer::Tensor &, nntrainer::Tensor &) {}
+  void alias(unsigned, unsigned) {}
+  void begin(unsigned) {}
+  void load(unsigned) {}
+  void store(unsigned, size_t, size_t, bool = false) {}
+  void evict(unsigned) {}
+  void finishStep() {}
+  void startStep(unsigned) {}
+  void abortStep() noexcept {}
+  void reset() {}
+  void report() const {}
+};
+#endif
+
+KVCacheManager::KVCacheManager() = default;
+KVCacheManager::KVCacheManager(KVCacheManager &&) = default;
+
+void KVCacheManager::setFlashStorage(std::string directory,
+                                     unsigned lookahead) {
+  if (isAllocated() || directory.empty())
+    throw std::invalid_argument(
+      "KV FSU: specify a backing directory before allocating KV");
+  flash_directory_ = std::move(directory);
+  flash_lookahead_ = lookahead;
+}
+
+void KVCacheManager::beginFlashLayer(unsigned layer) { flash_->begin(layer); }
+
+void KVCacheManager::finishFlashLayer(unsigned layer, unsigned from,
+                                      unsigned to) {
+  const unsigned cap = getLayerCap(layer);
+  const size_t row_bytes = layer_caches_[layer].key_cache.bytes() / cap;
+  const unsigned count = std::min(to - from, cap);
+  const unsigned start = count == cap ? 0 : from % cap;
+  const unsigned first_rows = std::min(count, cap - start);
+  flash_->store(layer, start * row_bytes, (start + first_rows) * row_bytes);
+  if (first_rows < count)
+    flash_->store(layer, 0, (count - first_rows) * row_bytes);
+  flash_->evict(layer);
+}
+
+void KVCacheManager::beginFlashStep(unsigned from) {
+  if (flash_)
+    flash_->startStep(from);
+}
+
+void KVCacheManager::finishFlashStep() {
+  if (flash_)
+    flash_->finishStep();
+}
+
+void KVCacheManager::abortFlashStep() noexcept {
+  if (flash_)
+    flash_->abortStep();
+}
+
+void KVCacheManager::reportFlashStorage() const {
+  if (flash_)
+    flash_->report();
+}
+
 KVCacheManager::~KVCacheManager() { releaseShared(); }
 
 KVCacheManager &KVCacheManager::operator=(KVCacheManager &&other) noexcept {
   if (this != &other) {
     // The tensors go first so nothing still points into the blocks the
     // allocator gets back.
+    flash_.reset();
     layer_caches_.clear();
+    flash_ = std::move(other.flash_);
+    flash_directory_ = std::move(other.flash_directory_);
+    flash_lookahead_ = other.flash_lookahead_;
     core_shared_ = std::move(other.core_shared_);
     core_shared_requested_ = other.core_shared_requested_;
     releaseShared();
@@ -224,6 +595,7 @@ void KVCacheManager::allocate(unsigned int num_layers, unsigned int batch_size,
   cache_pos_ = 0;
 
   // Re-allocation: drop the old tensors before their blocks go back.
+  flash_.reset();
   layer_caches_.clear();
   core_shared_.reset();
   releaseShared();
@@ -233,6 +605,32 @@ void KVCacheManager::allocate(unsigned int num_layers, unsigned int batch_size,
   // a source that is not strictly earlier, or whose geometry differs, would
   // produce a cache that reads the wrong plane without ever crashing.
   validateKVSources(num_layers);
+  if (!flash_directory_.empty()) {
+    using DataType = ml::train::TensorDim::DataType;
+    if (batch_size != 1 || shared_alloc_ || core_shared_requested_ ||
+        !rows.empty() || dtype != DataType::FP16)
+      throw std::invalid_argument("KV FSU requires batch-one CPU attention "
+                                  "with FP16 externally bound KV");
+    flash_ = std::make_unique<KVFlashStorage>(flash_directory_, num_layers,
+                                              flash_lookahead_);
+    for (unsigned int i = 0; i < num_layers; ++i) {
+      ml::train::TensorDim dim({batch_size, 1, getLayerCap(i), kv_widths_[i]},
+                               {format, dtype});
+      const int source = getLayerKVSource(i);
+      if (source >= 0) {
+        aliasLayerCache(i, static_cast<unsigned>(source), dim);
+        flash_->alias(i, static_cast<unsigned>(source));
+      } else {
+        auto &entry = layer_caches_[i];
+        entry.key_cache = nntrainer::Tensor(dim, false);
+        entry.value_cache = nntrainer::Tensor(dim, false);
+        if (isLayerActive(i))
+          flash_->addLayer(i, entry.key_cache, entry.value_cache);
+      }
+    }
+    reportKVShare(num_layers, batch_size, dtype, "flash");
+    return;
+  }
   if (core_shared_requested_) {
     using namespace nntrainer::kv;
     using DataType = ml::train::TensorDim::DataType;
@@ -662,6 +1060,8 @@ void KVCacheManager::advance(unsigned int step_size) {
 }
 
 void KVCacheManager::reset() {
+  if (flash_)
+    flash_->reset();
   for (unsigned l = 0; l < prefix_views_.size(); ++l)
     freezePrefixViews(l);
   if (core_shared_)
@@ -734,6 +1134,8 @@ void KVCacheManager::validateSaveRange(unsigned int seq_len) const {
 std::shared_ptr<const KVCacheManager::PrefixSnapshot>
 KVCacheManager::capturePrefix(unsigned position, const PrefixSnapshot *previous,
                               bool owned) const {
+  if (flash_)
+    throw std::logic_error("KV FSU supports file snapshots only");
   if (!isAllocated() || batch_size_ != 1 || position == 0 ||
       position > max_seq_len_ || position > cache_pos_)
     throw std::invalid_argument(
@@ -813,6 +1215,8 @@ size_t KVCacheManager::prefixPayloadBytes(unsigned position) const {
 }
 
 void KVCacheManager::restorePrefix(const PrefixSnapshot &state) {
+  if (flash_)
+    throw std::logic_error("KV FSU supports file snapshots only");
   if (!isAllocated() || batch_size_ != 1 || !state.position ||
       state.position > max_seq_len_ ||
       state.layers.size() != layer_caches_.size() ||
@@ -1222,6 +1626,8 @@ void KVCacheManager::save(const std::string &path, unsigned int seq_len,
       padding.save(f);
       continue;
     }
+    if (flash_)
+      flash_->load(li);
     // [HTP window] a windowed layer's live rows start at liveFrom - base
     size_t save_off = 0;
     if (windowed(li)) {
@@ -1258,6 +1664,8 @@ void KVCacheManager::save(const std::string &path, unsigned int seq_len,
     k_slice.save(f);
     v_slice.save(f);
 #endif
+    if (flash_)
+      flash_->evict(li);
   }
 }
 
@@ -1427,6 +1835,10 @@ unsigned int KVCacheManager::load(const std::string &path, unsigned int seq_len,
     k_slice.read(f);
     v_slice.read(f);
 #endif
+    if (flash_) {
+      flash_->store(i, 0, k_slice.bytes(), true);
+      flash_->evict(i);
+    }
   }
 
   cache_pos_ = seq_len;

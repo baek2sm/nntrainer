@@ -31,6 +31,8 @@
 
 namespace causallm {
 
+class KVFlashStorage;
+
 /**
  * @brief KV Cache Manager - manages KV cache externally for all attention
  *        layers in a transformer model.
@@ -58,14 +60,24 @@ public:
   /** @brief Matching release (ComputeOps::free_shared). */
   using SharedFree = std::function<void(void *block)>;
 
-  KVCacheManager() = default;
+  KVCacheManager();
   ~KVCacheManager();
 
   // Non-copyable, movable
   KVCacheManager(const KVCacheManager &) = delete;
   KVCacheManager &operator=(const KVCacheManager &) = delete;
-  KVCacheManager(KVCacheManager &&) = default;
+  KVCacheManager(KVCacheManager &&);
   KVCacheManager &operator=(KVCacheManager &&other) noexcept;
+
+  /** Opt into per-layer Flash storage for batch-one CPU inference. */
+  void setFlashStorage(std::string directory, unsigned lookahead);
+  bool usesFlashStorage() const { return flash_ != nullptr; }
+  void beginFlashLayer(unsigned layer);
+  void finishFlashLayer(unsigned layer, unsigned from, unsigned to);
+  void beginFlashStep(unsigned from);
+  void finishFlashStep();
+  void abortFlashStep() noexcept;
+  void reportFlashStorage() const;
 
   /**
    * @brief Route every cache slab through an accelerator-visible allocator.
@@ -582,6 +594,10 @@ private:
   bool core_shared_requested_ = false;
   std::unique_ptr<nntrainer::kv::KvCacheManager> core_shared_;
   std::vector<LayerCache> layer_caches_; /**< per-layer KV caches */
+  // The prefetch worker joins before its tensors and mappings are destroyed.
+  std::unique_ptr<KVFlashStorage> flash_;
+  std::string flash_directory_;
+  unsigned flash_lookahead_ = 0;
   std::vector<bool> active_layers_;      /**< empty keeps every layer active */
 
   /**

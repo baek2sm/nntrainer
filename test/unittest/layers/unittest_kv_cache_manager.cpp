@@ -930,3 +930,104 @@ TEST(KVCacheManagerCoreShared, preserves_window_compaction_and_snapshot_bytes) {
   EXPECT_FALSE(manager.droppedAmaxK(0).empty());
   EXPECT_THROW(manager.setCoreSharedStorage(false), std::logic_error);
 }
+
+#if defined(__linux__) && defined(ENABLE_FP16)
+TEST(KVCacheManagerFlash, persists_ring_alias_and_existing_snapshot_format) {
+  using DT = ml::train::TensorDim::DataType;
+  auto path =
+    (std::filesystem::temp_directory_path() / "nntr-kv-fsu-test-XXXXXX")
+      .string();
+  ASSERT_NE(mkdtemp(path.data()), nullptr);
+  struct Directory {
+    std::string path;
+    ~Directory() {
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+    }
+  } directory{path};
+
+  for (unsigned lookahead : {0u, 1u, 3u}) {
+    SCOPED_TRACE(lookahead);
+    causallm::KVCacheManager dram, flash;
+    flash.setFlashStorage(directory.path, lookahead);
+    constexpr unsigned width = 64, ring_rows = 65, context = 128;
+    for (auto *cache : {&dram, &flash}) {
+      cache->setActiveLayers({true, false, true, true});
+      cache->setLayerCaps({ring_rows, 0, ring_rows, 0});
+      cache->setLayerKVSources({-1, -1, 0, -1});
+      cache->allocate(4, 1, context, 1, width, DT::FP16);
+    }
+
+    const auto compareLayer = [&](unsigned layer) {
+      const auto &k = dram.getKeyCache(layer);
+      const auto &v = dram.getValueCache(layer);
+      EXPECT_EQ(0, std::memcmp(k.getData<uint16_t>(),
+                               flash.getKeyCache(layer).getData<uint16_t>(),
+                               k.bytes()));
+      EXPECT_EQ(0, std::memcmp(v.getData<uint16_t>(),
+                               flash.getValueCache(layer).getData<uint16_t>(),
+                               v.bytes()));
+    };
+
+    unsigned from = 0;
+    for (unsigned to : {64u, 70u, 71u}) {
+      flash.beginFlashStep(from);
+      for (unsigned layer : {0u, 2u, 3u}) {
+        flash.beginFlashLayer(layer);
+        compareLayer(layer);
+        if (layer != 2u) {
+          for (auto *cache : {&dram, &flash}) {
+            for (unsigned row = from; row < to; ++row) {
+              const auto offset = row % cache->getLayerCap(layer) * width;
+              for (unsigned col = 0; col < width; ++col) {
+                auto value = static_cast<uint16_t>(layer * 500 + row + col);
+                cache->getKeyCache(layer).getData<uint16_t>()[offset + col] =
+                  value;
+                cache->getValueCache(layer).getData<uint16_t>()[offset + col] =
+                  0xff00u + (value & 0xffu);
+              }
+            }
+          }
+        }
+        flash.finishFlashLayer(layer, from, to);
+        EXPECT_EQ(0u, flash.getKeyCache(layer).getData<uint16_t>()[0]);
+      }
+      flash.finishFlashStep();
+      dram.setPosition(to);
+      flash.setPosition(to);
+      from = to;
+    }
+
+    const auto expected = directory.path + "/dram.bin";
+    const auto actual = directory.path + "/flash.bin";
+    const auto bytes = [](const std::string &file) {
+      std::ifstream in(file, std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(in),
+                         std::istreambuf_iterator<char>());
+    };
+    dram.save(expected);
+    const auto baseline = bytes(expected);
+    ASSERT_FALSE(baseline.empty());
+    const auto compareSnapshot = [&] {
+      const auto result = bytes(actual);
+      ASSERT_EQ(baseline.size(), result.size());
+      const auto mismatch =
+        std::mismatch(baseline.begin(), baseline.end(), result.begin());
+      EXPECT_EQ(baseline.size(),
+                static_cast<size_t>(mismatch.first - baseline.begin()));
+    };
+    flash.save(actual);
+    compareSnapshot();
+
+    flash.reset();
+    EXPECT_EQ(from, flash.load(expected, 0));
+    flash.save(actual);
+    compareSnapshot();
+
+    flash.beginFlashStep(0);
+    flash.beginFlashLayer(0);
+    EXPECT_EQ(0u, flash.getValueCache(0).getData<uint16_t>()[0]);
+    flash.finishFlashStep();
+  }
+}
+#endif

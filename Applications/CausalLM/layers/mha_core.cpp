@@ -1640,6 +1640,24 @@ void MHACoreLayer::forwarding(nntrainer::RunLayerContext &context,
 void MHACoreLayer::incremental_forwarding(nntrainer::RunLayerContext &context,
                                           unsigned int _from, unsigned int _to,
                                           bool training) {
+  if (begin_flash_kv_)
+    begin_flash_kv_();
+  incrementalForwardingImpl(context, _from, _to, training);
+  if (finish_flash_kv_)
+    finish_flash_kv_(_from, _to);
+}
+
+void MHACoreLayer::bindFlashKV(std::function<void()> begin,
+                               std::function<void(unsigned, unsigned)> finish) {
+  if (!use_external_cache)
+    throw std::invalid_argument("KV FSU requires external attention inputs");
+  begin_flash_kv_ = std::move(begin);
+  finish_flash_kv_ = std::move(finish);
+}
+
+void MHACoreLayer::incrementalForwardingImpl(
+  nntrainer::RunLayerContext &context, unsigned _from, unsigned _to,
+  bool training) {
   if (fp16_attention_) {
     fp16_attention_->incremental_forwarding(context, _from, _to, training);
     return;

@@ -33,6 +33,7 @@
 #endif
 
 #include <complex>
+#include <functional>
 
 #include <acti_func.h>
 #include <common_properties.h>
@@ -388,6 +389,10 @@ public:
                                          unsigned int from, unsigned int to,
                                          bool training) override;
 
+  /** Attach the cache owner once the graph's external inputs are bound. */
+  WIN_EXPORT void bindFlashKV(std::function<void()> begin,
+                              std::function<void(unsigned, unsigned)> finish);
+
   /**
    * @copydoc Layer::calcDerivative(RunLayerContext &context)
    */
@@ -495,6 +500,10 @@ public:
   inline static const std::string type = "mha_core";
 
 private:
+  void incrementalForwardingImpl(nntrainer::RunLayerContext &context,
+                                 unsigned from, unsigned to, bool training);
+  std::function<void()> begin_flash_kv_;
+  std::function<void(unsigned, unsigned)> finish_flash_kv_;
   std::unique_ptr<nntrainer::Fp16Attention> fp16_attention_;
   std::tuple<
     nntrainer::props::NumHeads, props::NumHeads_KV,

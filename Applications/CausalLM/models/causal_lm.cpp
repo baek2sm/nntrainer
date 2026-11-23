@@ -468,6 +468,16 @@ CausalLM::KVCacheLayout CausalLM::planKVCache() {
 }
 
 void CausalLM::allocateKVCacheStorage(const KVCacheLayout &layout) {
+  if (const auto fsu = system_prefix_nntr_.find("kv_flash_fsu");
+      fsu != system_prefix_nntr_.end()) {
+    if (causallm_engine() != "cpu" || htp_execution_profile_)
+      throw std::invalid_argument("KV FSU requires the CPU engine");
+    const auto lookahead = fsu->value("lookahead", 1);
+    if (lookahead < 0)
+      throw std::invalid_argument("KV FSU lookahead must be non-negative");
+    kv_cache.setFlashStorage(fsu->at("directory").get<std::string>(),
+                             static_cast<unsigned>(lookahead));
+  }
   // dtype matches mha_core's cache placeholders so external cache storage
   // is interpreted consistently across platforms.
 #ifdef ENABLE_FP16
@@ -588,6 +598,35 @@ void CausalLM::allocateAndBindKVCache() {
     vp->setData(vc.getMemoryData(), vc.getOffset(), false);
   }
 
+  if (kv_cache.usesFlashStorage()) {
+    std::unordered_map<std::string, unsigned> attention;
+    for (int i = 0; i < NUM_LAYERS; ++i) {
+      if (kv_cache.isLayerActive(i))
+        attention.emplace("layer" + std::to_string(i) + "_attention", i);
+    }
+    model->forEachLayer(
+      [&](ml::train::Layer &layer, nntrainer::RunLayerContext &, void *) {
+        const auto it = attention.find(layer.getName());
+        if (it == attention.end())
+          return;
+        auto *node = dynamic_cast<nntrainer::LayerNode *>(&layer);
+        auto *mha =
+          node ? dynamic_cast<MHACoreLayer *>(node->getLayer()) : nullptr;
+        if (!mha || layer.getType() != MHACoreLayer::type)
+          throw std::invalid_argument("KV FSU: unsupported attention layer " +
+                                      layer.getName());
+        const auto index = it->second;
+        mha->bindFlashKV([this, index] { kv_cache.beginFlashLayer(index); },
+                         [this, index](unsigned from, unsigned to) {
+                           kv_cache.finishFlashLayer(index, from, to);
+                         });
+        attention.erase(it);
+      },
+      nullptr);
+    if (!attention.empty())
+      throw std::invalid_argument("KV FSU: missing external attention layers");
+  }
+
   kv_cache_bound = true;
 }
 
@@ -704,8 +743,16 @@ std::vector<float *> CausalLM::incrementalInference(
     }
   }
 
-  nntrainer::sharedConstTensors output_tensors =
-    nn->incremental_inference(input_tensors, init_seq_len, from, to);
+  kv_cache.beginFlashStep(from);
+  nntrainer::sharedConstTensors output_tensors;
+  try {
+    output_tensors =
+      nn->incremental_inference(input_tensors, init_seq_len, from, to);
+    kv_cache.finishFlashStep();
+  } catch (...) {
+    kv_cache.abortFlashStep();
+    throw;
+  }
 
   // Output conversion identical to the float* overload in neuralnet.cpp.
   std::vector<float *> output;
@@ -3153,6 +3200,7 @@ void CausalLM::run(const WSTR prompt, bool do_sample, const WSTR system_prompt,
   nntrainer::opencl::clMemAcctDump("after-decode");
   nntrainer::opencl::clLaunchStatDump("after-decode");
 #endif
+  kv_cache.reportFlashStorage();
   const size_t maxrss_kb = getPeakMemoryKb();
   const size_t honest_kb = FootprintSampler::get().finish();
   const size_t peak_memory = resolvePeakMemoryKb(honest_kb, maxrss_kb);
