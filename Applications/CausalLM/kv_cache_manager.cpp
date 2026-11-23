@@ -81,15 +81,18 @@ private:
 
 #if defined(__linux__)
 /**
- * Stable tensor addresses backed by demand-allocated anonymous pages. The
- * file is sparse and private to this cache. A single worker loads lookahead
- * layers while the model computes and writes back the current layer.
+ * CPU inference leases page-aligned KV buffers from a bounded pool. Each
+ * tensor keeps its own MemoryData so graph views and aliases follow the
+ * active buffer during attention. Outside the lease the tensor points back
+ * to its original mapping. The worker reads buffers without rebinding them.
  */
 class KVFlashStorage {
 public:
   KVFlashStorage(const std::string &directory, unsigned layers,
                  unsigned lookahead) :
-    lookahead_(lookahead), layers_(layers) {
+    lookahead_(lookahead),
+    layers_(layers),
+    buffers_(std::min<size_t>(lookahead, layers - 1) + 1) {
     const long page = sysconf(_SC_PAGESIZE);
     if (page <= 0)
       throw std::runtime_error("KV FSU: cannot determine page size");
@@ -102,17 +105,8 @@ public:
     try {
       if (unlink(path.c_str()))
         fail("unlink backing file");
-      worker_ = std::thread([this] {
-        for (;;) {
-          std::unique_lock<std::mutex> lock(mutex_);
-          work_.wait(lock, [this] { return job_.valid() || stopping_; });
-          if (!job_.valid())
-            return;
-          auto job = std::move(job_);
-          lock.unlock();
-          job();
-        }
-      });
+      if (lookahead_ != 0)
+        prefetch_worker_ = std::make_unique<IOWorker>();
     } catch (...) {
       close(fd_);
       throw;
@@ -120,12 +114,8 @@ public:
   }
 
   ~KVFlashStorage() {
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      stopping_ = true;
-    }
-    work_.notify_one();
-    worker_.join();
+    prefetch_worker_.reset();
+    value_worker_.reset();
     close(fd_);
   }
 
@@ -142,7 +132,8 @@ public:
     entry.capacity = bytes;
     for (auto *tensor : {&k, &v}) {
       auto data = std::make_shared<Mapping>(bytes);
-      entry.addresses[tensor == &v] = data->getAddr<char>();
+      const auto plane = tensor == &v;
+      entry.bindings[plane] = data.get();
       tensor->setData(data, 0, false);
     }
     next_offset_ += 2 * bytes;
@@ -154,13 +145,20 @@ public:
       if (flags >= 0 && fcntl(fd_, F_SETFL, flags | O_DIRECT) == 0) {
         ssize_t n;
         do {
-          n = pwrite(fd_, entry.addresses[0], page_, 0);
+          n = pwrite(fd_, entry.bindings[0]->address(), page_, 0);
         } while (n < 0 && errno == EINTR);
         direct_ = n == static_cast<ssize_t>(page_);
         if (!direct_ && fcntl(fd_, F_SETFL, flags) != 0)
           fail("disable unsupported direct I/O");
-        if (madvise(entry.addresses[0], page_, MADV_DONTNEED))
+        if (madvise(entry.bindings[0]->address(), page_, MADV_DONTNEED))
           fail("release direct I/O probe");
+        if (direct_ && lookahead_ != 0) {
+          try {
+            value_worker_ = std::make_unique<IOWorker>();
+          } catch (const std::system_error &) {
+            // A process with no spare threads can still use serial reads.
+          }
+        }
       }
     }
   }
@@ -176,30 +174,25 @@ public:
       layer + 1 + std::min<unsigned>(lookahead_, layers_.size() - layer - 1);
     if (layer + 1 == end)
       return;
-    const auto owner = layers_[layer].owner;
-    std::packaged_task<void()> task([this, layer, end, owner] {
-      for (unsigned next = layer + 1; next < end; ++next) {
-        const auto target = layers_[next].owner;
-        if (target != inactive && target != owner)
-          load(next);
-      }
-    });
-    pending_ = task.get_future();
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      job_ = std::move(task);
-    }
-    work_.notify_one();
+    prefetch(layer + 1, end, layers_[layer].owner);
   }
 
-  void load(unsigned layer) {
+  void load(unsigned layer, bool bind = true) {
     auto &entry = layers_[layers_[layer].owner];
-    if (entry.resident != 0 || entry.saved == 0)
-      return;
-    account(entry, entry.saved);
-    for (unsigned p = 0; p < 2; ++p)
-      transfer(entry, p, 0, entry.saved, false);
-    read_bytes_ += 2 * entry.saved;
+    if (!entry.buffer) {
+      entry.buffer = &acquire(entry.capacity, entry.saved);
+      try {
+        readPlanes(entry);
+      } catch (...) {
+        releaseBuffer(entry);
+        throw;
+      }
+      read_bytes_ += 2 * entry.saved;
+    }
+    if (bind) {
+      for (unsigned plane = 0; plane < 2; ++plane)
+        entry.bindings[plane]->setAddr(entry.buffer->planes[plane]->address());
+    }
   }
 
   void store(unsigned layer, size_t start, size_t end, bool replace = false) {
@@ -210,7 +203,7 @@ public:
     const size_t last = alignUp(end);
     if (last > entry.capacity || first > last)
       throw std::out_of_range("KV FSU: write outside layer capacity");
-    account(entry, std::max(entry.resident, last));
+    account(*entry.buffer, std::max(entry.buffer->resident, last));
     for (unsigned p = 0; p < 2; ++p)
       transfer(entry, p, first, last - first, true);
     if (!direct_ && last != first) {
@@ -227,19 +220,18 @@ public:
 
   void evict(unsigned layer) {
     auto &entry = layers_[layers_[layer].owner];
-    size_t bytes = entry.resident;
-    if (!bytes)
+    if (!entry.buffer)
       return;
-    for (unsigned p = 0; p < 2; ++p) {
-      if (madvise(entry.addresses[p], bytes, MADV_DONTNEED))
-        fail("release KV pages");
-      if (!direct_) {
-        const auto off = static_cast<off_t>(entry.offset + p * entry.capacity);
-        posix_fadvise(fd_, off, static_cast<off_t>(bytes), POSIX_FADV_DONTNEED);
+    for (unsigned plane = 0; plane < 2; ++plane) {
+      entry.bindings[plane]->setAddr(entry.bindings[plane]->address());
+      if (!direct_ && entry.saved != 0) {
+        const auto off =
+          static_cast<off_t>(entry.offset + plane * entry.capacity);
+        posix_fadvise(fd_, off, static_cast<off_t>(entry.saved),
+                      POSIX_FADV_DONTNEED);
       }
     }
-    resident_bytes_ -= 2 * bytes;
-    entry.resident = 0;
+    releaseBuffer(entry);
   }
 
   void finishStep() {
@@ -254,6 +246,15 @@ public:
       reset();
     else if (failed_)
       throw std::runtime_error("KV FSU: start a new prompt after an I/O error");
+    if (lookahead_ == 0)
+      return;
+    const auto first =
+      std::find_if(layers_.begin(), layers_.end(),
+                   [](const Layer &layer) { return layer.owner != inactive; });
+    if (first != layers_.end() && layers_[first->owner].saved != 0) {
+      const auto index = static_cast<unsigned>(first - layers_.begin());
+      prefetch(index, index + 1, inactive);
+    }
   }
 
   void abortStep() noexcept {
@@ -267,6 +268,8 @@ public:
 
   void reset() {
     finishStep();
+    for (auto &buffer : buffers_)
+      discardTail(buffer, 0);
     failed_ = false;
     for (auto &layer : layers_)
       layer.saved = 0;
@@ -275,35 +278,88 @@ public:
   void report() const {
     std::fprintf(stderr,
                  "[kv-fsu] lookahead=%u direct_io=%d peak_kv_bytes=%zu "
-                 "read_bytes=%zu write_bytes=%zu\n",
+                 "read_bytes=%zu write_bytes=%zu reused_buffers=%zu "
+                 "parallel_reads=%zu\n",
                  lookahead_, direct_, peak_bytes_.load(), read_bytes_.load(),
-                 write_bytes_);
+                 write_bytes_, reuse_count_, parallel_reads_);
   }
 
 private:
+  class IOWorker final {
+  public:
+    IOWorker() :
+      thread_([this] {
+        for (;;) {
+          std::unique_lock<std::mutex> lock(mutex_);
+          work_.wait(lock, [this] { return job_.valid() || stopping_; });
+          if (!job_.valid())
+            return;
+          auto job = std::move(job_);
+          lock.unlock();
+          job();
+        }
+      }) {}
+
+    ~IOWorker() {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopping_ = true;
+      }
+      work_.notify_one();
+      thread_.join();
+    }
+
+    std::future<void> submit(std::packaged_task<void()> task) {
+      auto future = task.get_future();
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        job_ = std::move(task);
+      }
+      work_.notify_one();
+      return future;
+    }
+
+  private:
+    std::mutex mutex_;
+    std::condition_variable work_;
+    std::packaged_task<void()> job_;
+    bool stopping_ = false;
+    std::thread thread_;
+  };
+
   class Mapping final : public nntrainer::MemoryData {
   public:
     explicit Mapping(size_t size) :
       MemoryData(mmap(nullptr, size, PROT_READ | PROT_WRITE,
                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)),
+      original_(getAddr<char>()),
       size_(size) {
-      if (getAddr<void>() == MAP_FAILED)
+      if (original_ == MAP_FAILED)
         fail("reserve KV address space");
     }
-    ~Mapping() override { munmap(getAddr<void>(), size_); }
+    ~Mapping() override { munmap(original_, size_); }
+    char *address() const { return original_; }
 
   private:
+    char *const original_;
     size_t size_;
+  };
+
+  struct Buffer {
+    std::unique_ptr<Mapping> planes[2];
+    size_t capacity = 0;
+    size_t resident = 0;
+    bool used = false;
   };
 
   static constexpr unsigned inactive = std::numeric_limits<unsigned>::max();
   struct Layer {
     unsigned owner = inactive;
-    char *addresses[2]{};
+    Mapping *bindings[2]{};
     size_t offset = 0;
     size_t capacity = 0;
     size_t saved = 0;
-    size_t resident = 0;
+    Buffer *buffer = nullptr;
   };
 
   [[noreturn]] static void fail(const char *operation) {
@@ -315,14 +371,97 @@ private:
     return (bytes + page_ - 1) / page_ * page_;
   }
 
+  void prefetch(unsigned first, unsigned end, unsigned exclude) {
+    pending_ = prefetch_worker_->submit(
+      std::packaged_task<void()>([this, first, end, exclude] {
+        for (unsigned next = first; next < end; ++next) {
+          const auto owner = layers_[next].owner;
+          if (owner != inactive && owner != exclude &&
+              layers_[owner].saved != 0)
+            load(next, false);
+        }
+      }));
+  }
+
+  void readPlanes(const Layer &entry) {
+    // Independent positioned reads keep more than one large request in
+    // flight, using the same two aligned planes already leased by this layer.
+    constexpr size_t min_parallel_read = 1024 * 1024;
+    if (!value_worker_ || entry.saved < min_parallel_read) {
+      transfer(entry, 0, 0, entry.saved, false);
+      transfer(entry, 1, 0, entry.saved, false);
+      return;
+    }
+    auto value = value_worker_->submit(std::packaged_task<void()>(
+      [this, &entry] { transfer(entry, 1, 0, entry.saved, false); }));
+    try {
+      transfer(entry, 0, 0, entry.saved, false);
+    } catch (...) {
+      // Do not release the value plane while its I/O is still running.
+      value.wait();
+      throw;
+    }
+    value.get();
+    ++parallel_reads_;
+  }
+
   void wait() {
     if (pending_.valid())
       pending_.get();
   }
 
-  void account(Layer &entry, size_t bytes) {
-    const size_t added = 2 * (bytes - entry.resident);
-    entry.resident = bytes;
+  Buffer &acquire(size_t capacity, size_t saved) {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    auto available = std::find_if(
+      buffers_.begin(), buffers_.end(), [capacity](const Buffer &buffer) {
+        return !buffer.used && buffer.capacity == capacity;
+      });
+    if (available == buffers_.end()) {
+      available = std::find_if(buffers_.begin(), buffers_.end(),
+                               [](const Buffer &buf) { return !buf.used; });
+      if (available == buffers_.end())
+        throw std::logic_error("KV FSU: no available layer buffer");
+      auto key = std::make_unique<Mapping>(capacity);
+      auto value = std::make_unique<Mapping>(capacity);
+      resident_bytes_ -= 2 * available->resident;
+      available->planes[0] = std::move(key);
+      available->planes[1] = std::move(value);
+      available->capacity = capacity;
+      available->resident = 0;
+    } else if (available->resident != 0 && saved != 0) {
+      ++reuse_count_;
+    }
+
+    // Recycled pages within saved are overwritten by pread. The uncached
+    // tail must still enter the layer zero-filled (including after reset).
+    if (saved < available->resident)
+      discardTail(*available, saved);
+    account(*available, saved);
+    available->used = true;
+    return *available;
+  }
+
+  void releaseBuffer(Layer &entry) {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    entry.buffer->used = false;
+    entry.buffer = nullptr;
+  }
+
+  void discardTail(Buffer &buffer, size_t bytes) {
+    if (buffer.resident <= bytes)
+      return;
+    const size_t discarded = buffer.resident - bytes;
+    for (const auto &plane : buffer.planes) {
+      if (madvise(plane->address() + bytes, discarded, MADV_DONTNEED))
+        fail("release unused KV buffer pages");
+    }
+    resident_bytes_ -= 2 * discarded;
+    buffer.resident = bytes;
+  }
+
+  void account(Buffer &buffer, size_t bytes) {
+    const size_t added = 2 * (bytes - buffer.resident);
+    buffer.resident = bytes;
     const size_t now = resident_bytes_.fetch_add(added) + added;
     size_t peak = peak_bytes_.load();
     while (now > peak && !peak_bytes_.compare_exchange_weak(peak, now)) {
@@ -331,7 +470,7 @@ private:
 
   void transfer(const Layer &entry, unsigned plane, size_t first, size_t bytes,
                 bool write) {
-    char *address = entry.addresses[plane] + first;
+    char *address = entry.buffer->planes[plane]->address() + first;
     auto offset =
       static_cast<off_t>(entry.offset + plane * entry.capacity + first);
     while (bytes) {
@@ -351,6 +490,9 @@ private:
 
   const unsigned lookahead_;
   std::vector<Layer> layers_;
+  std::vector<Buffer> buffers_;
+  std::mutex buffer_mutex_;
+  size_t reuse_count_ = 0;
   size_t page_ = 0;
   size_t next_offset_ = 0;
   int fd_ = -1;
@@ -358,12 +500,10 @@ private:
   bool failed_ = false;
   std::atomic<size_t> resident_bytes_{0}, peak_bytes_{0}, read_bytes_{0};
   size_t write_bytes_ = 0;
-  std::mutex mutex_;
-  std::condition_variable work_;
-  std::packaged_task<void()> job_;
+  size_t parallel_reads_ = 0;
+  std::unique_ptr<IOWorker> prefetch_worker_;
+  std::unique_ptr<IOWorker> value_worker_;
   std::future<void> pending_;
-  bool stopping_ = false;
-  std::thread worker_;
 };
 #else
 class KVFlashStorage {
@@ -384,6 +524,29 @@ public:
   void report() const {}
 };
 #endif
+
+namespace {
+class FlashSnapshotLease {
+public:
+  FlashSnapshotLease(KVFlashStorage *storage, unsigned layer) :
+    storage_(storage), layer_(layer) {
+    if (storage_)
+      storage_->load(layer_);
+  }
+
+  ~FlashSnapshotLease() {
+    if (storage_)
+      storage_->evict(layer_);
+  }
+
+  FlashSnapshotLease(const FlashSnapshotLease &) = delete;
+  FlashSnapshotLease &operator=(const FlashSnapshotLease &) = delete;
+
+private:
+  KVFlashStorage *storage_;
+  unsigned layer_;
+};
+} // namespace
 
 KVCacheManager::KVCacheManager() = default;
 KVCacheManager::KVCacheManager(KVCacheManager &&) = default;
@@ -1626,8 +1789,7 @@ void KVCacheManager::save(const std::string &path, unsigned int seq_len,
       padding.save(f);
       continue;
     }
-    if (flash_)
-      flash_->load(li);
+    const FlashSnapshotLease lease(flash_.get(), li);
     // [HTP window] a windowed layer's live rows start at liveFrom - base
     size_t save_off = 0;
     if (windowed(li)) {
@@ -1664,8 +1826,6 @@ void KVCacheManager::save(const std::string &path, unsigned int seq_len,
     k_slice.save(f);
     v_slice.save(f);
 #endif
-    if (flash_)
-      flash_->evict(li);
   }
 }
 
@@ -1773,6 +1933,8 @@ unsigned int KVCacheManager::load(const std::string &path, unsigned int seq_len,
       "KVCacheManager::load: seq_len exceeds max_seq_len");
   }
 
+  if (flash_)
+    flash_->reset();
   for (unsigned int i = 0; i < layer_caches_.size(); ++i) {
     auto &lc = layer_caches_[i];
     ml::train::TensorDim load_dim = lc.key_cache.getDim();
@@ -1789,6 +1951,8 @@ unsigned int KVCacheManager::load(const std::string &path, unsigned int seq_len,
     if (windowed(i))
       bases_[i] = liveFrom(i, seq_len);
 
+    const FlashSnapshotLease lease(isLayerKVAliased(i) ? nullptr : flash_.get(),
+                                   i);
     nntrainer::Tensor k_slice =
       lc.key_cache.getSharedDataTensor(load_dim, 0, true);
     nntrainer::Tensor v_slice =
@@ -1835,10 +1999,8 @@ unsigned int KVCacheManager::load(const std::string &path, unsigned int seq_len,
     k_slice.read(f);
     v_slice.read(f);
 #endif
-    if (flash_) {
+    if (flash_)
       flash_->store(i, 0, k_slice.bytes(), true);
-      flash_->evict(i);
-    }
   }
 
   cache_pos_ = seq_len;

@@ -958,6 +958,12 @@ TEST(KVCacheManagerFlash, persists_ring_alias_and_existing_snapshot_format) {
       cache->allocate(4, 1, context, 1, width, DT::FP16);
     }
 
+    // The graph caches raw addresses for its persistent KV bindings.
+    std::vector<const uint16_t *> key_addresses(4), value_addresses(4);
+    for (unsigned layer : {0u, 2u, 3u}) {
+      key_addresses[layer] = flash.getKeyCache(layer).getData<uint16_t>();
+      value_addresses[layer] = flash.getValueCache(layer).getData<uint16_t>();
+    }
     const auto compareLayer = [&](unsigned layer) {
       const auto &k = dram.getKeyCache(layer);
       const auto &v = dram.getValueCache(layer);
@@ -990,6 +996,10 @@ TEST(KVCacheManagerFlash, persists_ring_alias_and_existing_snapshot_format) {
           }
         }
         flash.finishFlashLayer(layer, from, to);
+        EXPECT_EQ(key_addresses[layer],
+                  flash.getKeyCache(layer).getData<uint16_t>());
+        EXPECT_EQ(value_addresses[layer],
+                  flash.getValueCache(layer).getData<uint16_t>());
         EXPECT_EQ(0u, flash.getKeyCache(layer).getData<uint16_t>()[0]);
       }
       flash.finishFlashStep();
