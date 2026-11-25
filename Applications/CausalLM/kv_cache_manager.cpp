@@ -114,6 +114,12 @@ public:
   }
 
   ~KVFlashStorage() {
+    try {
+      waitWrite();
+    } catch (...) {
+      // Destructors cannot report a pending I/O error.
+    }
+    write_worker_.reset();
     prefetch_worker_.reset();
     value_worker_.reset();
     close(fd_);
@@ -154,6 +160,8 @@ public:
           fail("release direct I/O probe");
         if (direct_ && lookahead_ != 0) {
           try {
+            if (std::getenv("NNTR_KV_ASYNC_WRITE"))
+              write_worker_ = std::make_unique<IOWorker>();
             value_worker_ = std::make_unique<IOWorker>();
           } catch (const std::system_error &) {
             // A process with no spare threads can still use serial reads.
@@ -165,6 +173,7 @@ public:
 
   void alias(unsigned layer, unsigned source) {
     layers_[layer].owner = layers_[source].owner;
+    has_aliases_ = true;
   }
 
   void begin(unsigned layer) {
@@ -178,6 +187,8 @@ public:
   }
 
   void load(unsigned layer, bool bind = true) {
+    if (bind && write_owner_ == layers_[layer].owner)
+      waitWrite();
     auto &entry = layers_[layers_[layer].owner];
     if (!entry.buffer) {
       entry.buffer = &acquire(entry.capacity, entry.saved);
@@ -204,8 +215,35 @@ public:
     if (last > entry.capacity || first > last)
       throw std::out_of_range("KV FSU: write outside layer capacity");
     account(*entry.buffer, std::max(entry.buffer->resident, last));
-    for (unsigned p = 0; p < 2; ++p)
-      transfer(entry, p, first, last - first, true);
+    const size_t bytes = last - first;
+    // Serialize dirty ranges even when a later write uses the sync path.
+    waitWrite();
+    // Small decode writes can contend with prefetch on mobile storage.
+    // Pipeline larger prefill chunks; leave decode writes synchronous.
+    // Snapshot restore must report write errors before returning.
+    if (write_worker_ && !has_aliases_ && !replace && bytes >= 64 * 1024) {
+      if (write_capacity_ < bytes) {
+        write_planes_[0] = std::make_unique<Mapping>(bytes);
+        write_planes_[1] = std::make_unique<Mapping>(bytes);
+        write_capacity_ = bytes;
+      }
+      for (unsigned p = 0; p < 2; ++p)
+        std::memcpy(write_planes_[p]->address(),
+                    entry.buffer->planes[p]->address() + first, bytes);
+      const auto offset = entry.offset + first;
+      const auto capacity = entry.capacity;
+      write_owner_ = layer;
+      write_pending_ = write_worker_->submit(std::packaged_task<void()>(
+        [this, offset, capacity, bytes] {
+          for (unsigned p = 0; p < 2; ++p)
+            transferRaw(write_planes_[p]->address(), offset + p * capacity,
+                        bytes, true);
+        }));
+      ++async_writes_;
+    } else {
+      for (unsigned p = 0; p < 2; ++p)
+        transfer(entry, p, first, bytes, true);
+    }
     if (!direct_ && last != first) {
       int rc;
       do {
@@ -236,12 +274,15 @@ public:
 
   void finishStep() {
     wait();
+    waitWrite();
     for (unsigned i = 0; i < layers_.size(); ++i)
       if (layers_[i].owner == i)
         evict(i);
   }
 
   void startStep(unsigned from) {
+    // A snapshot load can leave a write pending before the next step.
+    waitWrite();
     if (from == 0)
       reset();
     else if (failed_)
@@ -279,9 +320,10 @@ public:
     std::fprintf(stderr,
                  "[kv-fsu] lookahead=%u direct_io=%d peak_kv_bytes=%zu "
                  "read_bytes=%zu write_bytes=%zu reused_buffers=%zu "
-                 "parallel_reads=%zu\n",
+                 "parallel_reads=%zu async_writes=%zu staging_bytes=%zu\n",
                  lookahead_, direct_, peak_bytes_.load(), read_bytes_.load(),
-                 write_bytes_, reuse_count_, parallel_reads_);
+                 write_bytes_, reuse_count_, parallel_reads_, async_writes_,
+                 2 * write_capacity_);
   }
 
 private:
@@ -410,6 +452,13 @@ private:
       pending_.get();
   }
 
+  void waitWrite() {
+    if (write_pending_.valid()) {
+      write_owner_ = inactive;
+      write_pending_.get();
+    }
+  }
+
   Buffer &acquire(size_t capacity, size_t saved) {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
     auto available = std::find_if(
@@ -471,8 +520,12 @@ private:
   void transfer(const Layer &entry, unsigned plane, size_t first, size_t bytes,
                 bool write) {
     char *address = entry.buffer->planes[plane]->address() + first;
-    auto offset =
-      static_cast<off_t>(entry.offset + plane * entry.capacity + first);
+    transferRaw(address, entry.offset + plane * entry.capacity + first, bytes,
+                write);
+  }
+
+  void transferRaw(char *address, size_t file_offset, size_t bytes, bool write) {
+    auto offset = static_cast<off_t>(file_offset);
     while (bytes) {
       const ssize_t n = write ? pwrite(fd_, address, bytes, offset)
                               : pread(fd_, address, bytes, offset);
@@ -501,6 +554,12 @@ private:
   std::atomic<size_t> resident_bytes_{0}, peak_bytes_{0}, read_bytes_{0};
   size_t write_bytes_ = 0;
   size_t parallel_reads_ = 0;
+  size_t async_writes_ = 0, write_capacity_ = 0;
+  bool has_aliases_ = false;
+  unsigned write_owner_ = inactive;
+  std::unique_ptr<Mapping> write_planes_[2];
+  std::unique_ptr<IOWorker> write_worker_;
+  std::future<void> write_pending_;
   std::unique_ptr<IOWorker> prefetch_worker_;
   std::unique_ptr<IOWorker> value_worker_;
   std::future<void> pending_;
